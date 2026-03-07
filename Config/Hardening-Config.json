@@ -1,0 +1,66 @@
+{
+  "Settings": {
+    "LogDirectory": "./Logs"
+  },
+
+  "Tasks": [
+    {
+      "Name": "SetMachineAccountQuota",
+      "Description": "Set ms-DS-MachineAccountQuota to 0 to prevent unprivileged users from joining computers to the domain",
+      "Enabled": true,
+      "Parameters": {
+        "Quota": 0
+      }
+    },
+    {
+      "Name": "RaiseFunctionalLevel",
+      "Description": "Raise domain and forest functional levels to the target version",
+      "Enabled": true,
+      "Parameters": {
+        "TargetDomainLevel": "Windows2016Domain",
+        "TargetForestLevel": "Windows2016Forest"
+      }
+    },
+    {
+      "Name": "EnableRecycleBin",
+      "Description": "Enable the Active Directory Recycle Bin optional feature",
+      "Enabled": true
+    },
+    {
+      "Name": "EnablePAMFeature",
+      "Description": "Enable the Privileged Access Management (PAM) optional feature",
+      "Enabled": true
+    },
+    {
+      "Name": "DisableAnonymousAccess",
+      "Description": "Disable anonymous LDAP read access by removing ANONYMOUS LOGON from Pre-Windows 2000 Compatible Access group",
+      "Enabled": true
+    },
+    {
+      "Name": "DeployT0AuthPolicy",
+      "Description": "Create a dedicated Authentication Policy and Silo for Tier 0 accounts",
+      "Enabled": true,
+      "Parameters": {
+        "PolicyName": "T0-AuthenticationPolicy",
+        "SiloName": "T0-Silo",
+        "TGTLifetimeMinutes": 240,
+        "Enforce": false
+      }
+    },
+    {
+      "Name": "EnableReplicationNotify",
+      "Description": "Enable the Change Notification flag (USE_NOTIFY) on all inter-site replication links",
+      "Enabled": true
+    },
+    {
+      "Name": "ConfigureCentralStore",
+      "Description": "Create the Group Policy Central Store by copying PolicyDefinitions to SYSVOL",
+      "Enabled": true
+    },
+    {
+      "Name": "ExtendLAPSSchema",
+      "Description": "Extend the Active Directory schema for Windows LAPS",
+      "Enabled": true
+    }
+  ]
+}
