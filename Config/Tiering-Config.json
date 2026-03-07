@@ -1,0 +1,117 @@
+{
+  "Settings": {
+    "BaseDN": "DC=forest,DC=lol",
+    "LogDirectory": "./Logs",
+    "OUDefaults": {
+      "ProtectedFromAccidentalDeletion": true
+    }
+  },
+  "OUStructure": [
+    {
+      "Name": "Admin",
+      "Description": "Administration OU - AD Tiering",
+      "Children": [
+        {
+          "Name": "GroupsT0",
+          "Description": "Tier 0 administration groups",
+          "Children": [
+            {
+              "Name": "Delegation",
+              "Description": "Tier 0 Domain Local delegation groups"
+            }
+          ]
+        },
+        {
+          "Name": "GroupsT1",
+          "Description": "Tier 1 administration groups",
+          "Children": [
+            {
+              "Name": "Delegation",
+              "Description": "Tier 1 Domain Local delegation groups"
+            }
+          ]
+        },
+        {
+          "Name": "GroupsT2",
+          "Description": "Tier 2 administration groups",
+          "Children": [
+            {
+              "Name": "Delegation",
+              "Description": "Tier 2 Domain Local delegation groups"
+            }
+          ]
+        },
+        {
+          "Name": "UsersT0",
+          "Description": "Tier 0 admin accounts"
+        },
+        {
+          "Name": "UsersT1",
+          "Description": "Tier 1 admin accounts"
+        },
+        {
+          "Name": "UsersT2",
+          "Description": "Tier 2 admin accounts"
+        }
+      ]
+    },
+    {
+      "Name": "T0-Prod",
+      "Description": "Tier 0 production resources",
+      "Children": [
+        {
+          "Name": "Contacts",
+          "Description": "Tier 0 contacts"
+        },
+        {
+          "Name": "Users",
+          "Description": "Tier 0 users"
+        },
+        {
+          "Name": "Servers",
+          "Description": "Tier 0 servers"
+        },
+        {
+          "Name": "PAWs",
+          "Description": "Tier 0 Privileged Access Workstations (PAW)"
+        }
+      ]
+    },
+    {
+      "Name": "T1-Prod",
+      "Description": "Tier 1 production resources",
+      "Children": [
+        {
+          "Name": "Contacts",
+          "Description": "Tier 1 contacts"
+        },
+        {
+          "Name": "Users",
+          "Description": "Tier 1 users"
+        },
+        {
+          "Name": "Servers",
+          "Description": "Tier 1 servers"
+        }
+      ]
+    },
+    {
+      "Name": "T2-Prod",
+      "Description": "Tier 2 production resources",
+      "Children": [
+        {
+          "Name": "Contacts",
+          "Description": "Tier 2 contacts"
+        },
+        {
+          "Name": "Users",
+          "Description": "Tier 2 users"
+        },
+        {
+          "Name": "Workstations",
+          "Description": "Tier 2 workstations"
+        }
+      ]
+    }
+  ]
+}
