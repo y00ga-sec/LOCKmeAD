@@ -54,7 +54,7 @@ function Count-TieringOUs($nodes) {
 # ============================================================================
 
 function Load-AllConfigs {
-    foreach ($module in @('Hardening', 'Tiering', 'RBAC')) {
+    foreach ($module in @('Hardening', 'GPO', 'Tiering', 'RBAC')) {
         $path = $script:ConfigPaths[$module]
         if (Test-Path $path) {
             $script:Configs[$module] = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -84,6 +84,22 @@ function Save-AllConfigs {
         $script:Configs.Hardening | ConvertTo-Json -Depth 10 | Set-Content $script:ConfigPaths.Hardening -Encoding UTF8
     }
 
+    # GPO: read toggle states and link targets back into config
+    if ($script:Configs.GPO) {
+        for ($i = 0; $i -lt $script:GPOToggles.Count; $i++) {
+            $script:Configs.GPO.GPOs[$i].Enabled = [bool]$script:GPOToggles[$i].IsChecked
+        }
+        foreach ($key in $script:GPOLinkControls.Keys) {
+            $idx = [int]$key
+            $text = $script:GPOLinkControls[$key].Text
+            $links = if ([string]::IsNullOrWhiteSpace($text)) { @() } else {
+                @($text -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+            }
+            $script:Configs.GPO.GPOs[$idx].LinkTargets = $links
+        }
+        $script:Configs.GPO | ConvertTo-Json -Depth 10 | Set-Content $script:ConfigPaths.GPO -Encoding UTF8
+    }
+
     # Tiering: rebuild from TreeView
     if ($script:Configs.Tiering) {
         $script:Configs.Tiering.Settings.BaseDN = $UI.TieringBaseDN.Text
@@ -96,7 +112,7 @@ function Save-AllConfigs {
         $script:Configs.RBAC | ConvertTo-Json -Depth 20 | Set-Content $script:ConfigPaths.RBAC -Encoding UTF8
     }
 
-    $script:UnsavedChanges = @{ Hardening = $false; Tiering = $false; RBAC = $false }
+    $script:UnsavedChanges = @{ Hardening = $false; GPO = $false; Tiering = $false; RBAC = $false }
     Write-ConsoleUI "All configurations saved." "Success"
 }
 
@@ -145,6 +161,12 @@ function Populate-Dashboard {
         $total = $script:Configs.Hardening.Tasks.Count
         $UI.DashHardeningSummary.Text = "$enabled / $total"
         $UI.DashHardeningDetail.Text = "tasks enabled"
+    }
+    if ($script:Configs.GPO) {
+        $gpoEnabled = @($script:Configs.GPO.GPOs | Where-Object { $_.Enabled }).Count
+        $gpoTotal = $script:Configs.GPO.GPOs.Count
+        $UI.DashGPOSummary.Text = "$gpoEnabled / $gpoTotal"
+        $UI.DashGPODetail.Text = "GPOs enabled"
     }
     if ($script:Configs.Tiering) {
         $ouCount = Count-TieringOUs $script:Configs.Tiering.OUStructure
@@ -264,6 +286,229 @@ function Populate-HardeningTab {
 
         $card.Child = $outerStack
         [void]$UI.HardeningTaskList.Children.Add($card)
+    }
+}
+
+function Populate-GPOTab {
+    $UI.GPOTaskList.Children.Clear()
+    $script:GPOToggles = @()
+    $script:GPOLinkControls = @{}
+
+    for ($i = 0; $i -lt $script:Configs.GPO.GPOs.Count; $i++) {
+        $gpo = $script:Configs.GPO.GPOs[$i]
+        $idx = $i
+
+        # Card border
+        $card = New-Object System.Windows.Controls.Border
+        $card.Background = Get-WPFBrush "#FFFFFF"
+        $card.CornerRadius = [System.Windows.CornerRadius]::new(8)
+        $card.Padding = [System.Windows.Thickness]::new(16)
+        $card.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
+
+        $outerStack = New-Object System.Windows.Controls.StackPanel
+
+        # Header row: toggle + text + badge
+        $headerDock = New-Object System.Windows.Controls.DockPanel
+
+        $toggle = New-Object System.Windows.Controls.CheckBox
+        $toggle.IsChecked = [bool]$gpo.Enabled
+        $toggle.Style = $script:Window.FindResource("ToggleSwitch")
+        $toggle.VerticalAlignment = "Center"
+        [System.Windows.Controls.DockPanel]::SetDock($toggle, "Left")
+        $script:GPOToggles += $toggle
+
+        # Settings count badges
+        $badgePanel = New-Object System.Windows.Controls.StackPanel
+        $badgePanel.Orientation = "Horizontal"
+        $badgePanel.VerticalAlignment = "Center"
+        [System.Windows.Controls.DockPanel]::SetDock($badgePanel, "Right")
+
+        $regCount = if ($gpo.RegistrySettings) { $gpo.RegistrySettings.Count } else { 0 }
+        $uraCount = if ($gpo.UserRightsAssignments) { $gpo.UserRightsAssignments.Count } else { 0 }
+
+        if ($regCount -gt 0) {
+            $regBadge = New-Object System.Windows.Controls.TextBlock
+            $regBadge.Text = "$regCount reg"
+            $regBadge.FontSize = 10
+            $regBadge.Foreground = Get-WPFBrush "#1E8449"
+            $regBadge.Background = Get-WPFBrush "#E8F8F0"
+            $regBadge.Padding = [System.Windows.Thickness]::new(6, 2, 6, 2)
+            $regBadge.Margin = [System.Windows.Thickness]::new(4, 0, 0, 0)
+            [void]$badgePanel.Children.Add($regBadge)
+        }
+        if ($uraCount -gt 0) {
+            $uraBadge = New-Object System.Windows.Controls.TextBlock
+            $uraBadge.Text = "$uraCount URA"
+            $uraBadge.FontSize = 10
+            $uraBadge.Foreground = Get-WPFBrush "#6C3483"
+            $uraBadge.Background = Get-WPFBrush "#F3E8FC"
+            $uraBadge.Padding = [System.Windows.Thickness]::new(6, 2, 6, 2)
+            $uraBadge.Margin = [System.Windows.Thickness]::new(4, 0, 0, 0)
+            [void]$badgePanel.Children.Add($uraBadge)
+        }
+
+        $textStack = New-Object System.Windows.Controls.StackPanel
+        $textStack.Margin = [System.Windows.Thickness]::new(14, 0, 10, 0)
+
+        $nameBlock = New-Object System.Windows.Controls.TextBlock
+        $nameBlock.Text = $gpo.Name
+        $nameBlock.FontSize = 14
+        $nameBlock.FontWeight = "SemiBold"
+
+        $descBlock = New-Object System.Windows.Controls.TextBlock
+        $descBlock.Text = $gpo.Description
+        $descBlock.FontSize = 12
+        $descBlock.Foreground = Get-WPFBrush "#666666"
+        $descBlock.TextWrapping = "Wrap"
+
+        [void]$textStack.Children.Add($nameBlock)
+        [void]$textStack.Children.Add($descBlock)
+
+        [void]$headerDock.Children.Add($toggle)
+        [void]$headerDock.Children.Add($badgePanel)
+        [void]$headerDock.Children.Add($textStack)
+        [void]$outerStack.Children.Add($headerDock)
+
+        # Registry Settings expander (read-only, only if registry settings exist)
+        if ($regCount -gt 0) {
+            $regExpander = New-Object System.Windows.Controls.Expander
+            $regExpander.Header = "Registry Settings"
+            $regExpander.Margin = [System.Windows.Thickness]::new(58, 8, 0, 0)
+            $regExpander.FontSize = 12
+
+            $regGrid = New-Object System.Windows.Controls.Grid
+            $regGrid.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+
+            $colKey = New-Object System.Windows.Controls.ColumnDefinition
+            $colKey.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+            $colVal = New-Object System.Windows.Controls.ColumnDefinition
+            $colVal.Width = [System.Windows.GridLength]::new(80)
+            $colType = New-Object System.Windows.Controls.ColumnDefinition
+            $colType.Width = [System.Windows.GridLength]::new(60)
+            [void]$regGrid.ColumnDefinitions.Add($colKey)
+            [void]$regGrid.ColumnDefinitions.Add($colVal)
+            [void]$regGrid.ColumnDefinitions.Add($colType)
+
+            $rowIdx = 0
+            foreach ($setting in $gpo.RegistrySettings) {
+                [void]$regGrid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition))
+
+                $keyLabel = New-Object System.Windows.Controls.TextBlock
+                $shortKey = $setting.Key -replace '^HKLM\\', ''
+                $keyLabel.Text = "$shortKey\$($setting.ValueName)"
+                $keyLabel.FontSize = 11
+                $keyLabel.Foreground = Get-WPFBrush "#555"
+                $keyLabel.TextTrimming = "CharacterEllipsis"
+                $keyLabel.ToolTip = if ($setting.Description) { $setting.Description } else { $setting.Key }
+                $keyLabel.Margin = [System.Windows.Thickness]::new(0, 3, 8, 3)
+                [System.Windows.Controls.Grid]::SetRow($keyLabel, $rowIdx)
+                [System.Windows.Controls.Grid]::SetColumn($keyLabel, 0)
+
+                $valLabel = New-Object System.Windows.Controls.TextBlock
+                $valLabel.Text = [string]$setting.Value
+                $valLabel.FontSize = 11
+                $valLabel.FontWeight = "SemiBold"
+                $valLabel.Foreground = Get-WPFBrush "#0078D4"
+                $valLabel.Margin = [System.Windows.Thickness]::new(0, 3, 8, 3)
+                [System.Windows.Controls.Grid]::SetRow($valLabel, $rowIdx)
+                [System.Windows.Controls.Grid]::SetColumn($valLabel, 1)
+
+                $typeLabel = New-Object System.Windows.Controls.TextBlock
+                $typeLabel.Text = $setting.Type
+                $typeLabel.FontSize = 10
+                $typeLabel.Foreground = Get-WPFBrush "#999"
+                $typeLabel.Margin = [System.Windows.Thickness]::new(0, 3, 0, 3)
+                [System.Windows.Controls.Grid]::SetRow($typeLabel, $rowIdx)
+                [System.Windows.Controls.Grid]::SetColumn($typeLabel, 2)
+
+                [void]$regGrid.Children.Add($keyLabel)
+                [void]$regGrid.Children.Add($valLabel)
+                [void]$regGrid.Children.Add($typeLabel)
+                $rowIdx++
+            }
+
+            $regExpander.Content = $regGrid
+            [void]$outerStack.Children.Add($regExpander)
+        }
+
+        # User Rights Assignments expander (read-only, only if URA exist)
+        if ($uraCount -gt 0) {
+            $uraExpander = New-Object System.Windows.Controls.Expander
+            $uraExpander.Header = "User Rights Assignments"
+            $uraExpander.Margin = [System.Windows.Thickness]::new(58, 8, 0, 0)
+            $uraExpander.FontSize = 12
+
+            $uraStack = New-Object System.Windows.Controls.StackPanel
+            $uraStack.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+
+            foreach ($assignment in $gpo.UserRightsAssignments) {
+                $uraRow = New-Object System.Windows.Controls.DockPanel
+                $uraRow.Margin = [System.Windows.Thickness]::new(0, 2, 0, 2)
+
+                $rightLabel = New-Object System.Windows.Controls.TextBlock
+                $rightLabel.FontSize = 11
+                $rightLabel.Foreground = Get-WPFBrush "#6C3483"
+                $rightLabel.FontWeight = "SemiBold"
+                $rightLabel.MinWidth = 220
+                $rightLabel.ToolTip = $assignment.Right
+                if ($assignment.Description) {
+                    $rightLabel.Text = $assignment.Description
+                } else {
+                    $rightLabel.Text = $assignment.Right
+                }
+                [System.Windows.Controls.DockPanel]::SetDock($rightLabel, "Left")
+
+                $groupsLabel = New-Object System.Windows.Controls.TextBlock
+                $groupsLabel.Text = ($assignment.Groups -join ", ")
+                $groupsLabel.FontSize = 11
+                $groupsLabel.Foreground = Get-WPFBrush "#555"
+                $groupsLabel.TextWrapping = "Wrap"
+
+                [void]$uraRow.Children.Add($rightLabel)
+                [void]$uraRow.Children.Add($groupsLabel)
+                [void]$uraStack.Children.Add($uraRow)
+            }
+
+            $uraExpander.Content = $uraStack
+            [void]$outerStack.Children.Add($uraExpander)
+        }
+
+        # Link Targets expander
+        $linkExpander = New-Object System.Windows.Controls.Expander
+        $linkExpander.Header = "Link Targets (OUs)"
+        $linkExpander.Margin = [System.Windows.Thickness]::new(58, 4, 0, 0)
+        $linkExpander.FontSize = 12
+
+        $linkStack = New-Object System.Windows.Controls.StackPanel
+        $linkStack.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+
+        $linkHint = New-Object System.Windows.Controls.TextBlock
+        $linkHint.Text = "One Distinguished Name per line (e.g. OU=Workstations,DC=corp,DC=local)"
+        $linkHint.FontSize = 10
+        $linkHint.Foreground = Get-WPFBrush "#999"
+        $linkHint.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
+        [void]$linkStack.Children.Add($linkHint)
+
+        $linkTextBox = New-Object System.Windows.Controls.TextBox
+        $linkTextBox.AcceptsReturn = $true
+        $linkTextBox.TextWrapping = "Wrap"
+        $linkTextBox.MinLines = 2
+        $linkTextBox.MaxLines = 6
+        $linkTextBox.FontSize = 12
+        $linkTextBox.Padding = [System.Windows.Thickness]::new(6, 4, 6, 4)
+        $linkTextBox.BorderBrush = Get-WPFBrush "#DDD"
+        $linkTextBox.VerticalScrollBarVisibility = "Auto"
+        if ($gpo.LinkTargets -and $gpo.LinkTargets.Count -gt 0) {
+            $linkTextBox.Text = ($gpo.LinkTargets -join "`r`n")
+        }
+        $script:GPOLinkControls["$idx"] = $linkTextBox
+        [void]$linkStack.Children.Add($linkTextBox)
+
+        $linkExpander.Content = $linkStack
+        [void]$outerStack.Children.Add($linkExpander)
+
+        $card.Child = $outerStack
+        [void]$UI.GPOTaskList.Children.Add($card)
     }
 }
 
@@ -625,14 +870,18 @@ function Show-RBACRoleDetail($role) {
 
 function Set-ActiveTab([int]$index) {
     $UI.MainTabs.SelectedIndex = $index
-    $navButtons = @($UI.NavDashboard, $UI.NavHardening, $UI.NavTiering, $UI.NavRBAC)
+    $navButtons = @($UI.NavDashboard, $UI.NavHardening, $UI.NavGPO, $UI.NavTiering, $UI.NavRBAC)
     $activeStyle = $script:Window.FindResource("NavBtnActive")
     $normalStyle = $script:Window.FindResource("NavBtn")
     for ($i = 0; $i -lt $navButtons.Count; $i++) {
         $navButtons[$i].Style = if ($i -eq $index) { $activeStyle } else { $normalStyle }
     }
-    # Search bar only visible on Hardening tab
-    $UI.SearchBarPanel.Visibility = if ($index -eq 1) { "Visible" } else { "Collapsed" }
+    # Search bar visible on Hardening and GPO tabs
+    $UI.SearchBarPanel.Visibility = if ($index -in @(1, 2)) { "Visible" } else { "Collapsed" }
+    if ($index -eq 1) { $UI.SearchPlaceholder.Text = "Search hardening tasks..." }
+    elseif ($index -eq 2) { $UI.SearchPlaceholder.Text = "Search GPO templates..." }
+    # Clear search when switching tabs
+    if ($index -in @(1, 2)) { $UI.SearchBox.Text = "" }
 }
 
 # ============================================================================
@@ -640,19 +889,33 @@ function Set-ActiveTab([int]$index) {
 # ============================================================================
 
 function Invoke-Search([string]$query) {
+    $activeTab = $UI.MainTabs.SelectedIndex
+
     if ([string]::IsNullOrWhiteSpace($query)) {
         $UI.SearchPlaceholder.Visibility = "Visible"
-        foreach ($child in $UI.HardeningTaskList.Children) { $child.Visibility = "Visible" }
+        if ($activeTab -eq 1) {
+            foreach ($child in $UI.HardeningTaskList.Children) { $child.Visibility = "Visible" }
+        } elseif ($activeTab -eq 2) {
+            foreach ($child in $UI.GPOTaskList.Children) { $child.Visibility = "Visible" }
+        }
         return
     }
 
     $UI.SearchPlaceholder.Visibility = "Collapsed"
     $q = $query.ToLower()
 
-    for ($i = 0; $i -lt $UI.HardeningTaskList.Children.Count; $i++) {
-        $task = $script:Configs.Hardening.Tasks[$i]
-        $match = $task.Name.ToLower().Contains($q) -or $task.Description.ToLower().Contains($q)
-        $UI.HardeningTaskList.Children[$i].Visibility = if ($match) { "Visible" } else { "Collapsed" }
+    if ($activeTab -eq 1) {
+        for ($i = 0; $i -lt $UI.HardeningTaskList.Children.Count; $i++) {
+            $task = $script:Configs.Hardening.Tasks[$i]
+            $match = $task.Name.ToLower().Contains($q) -or $task.Description.ToLower().Contains($q)
+            $UI.HardeningTaskList.Children[$i].Visibility = if ($match) { "Visible" } else { "Collapsed" }
+        }
+    } elseif ($activeTab -eq 2) {
+        for ($i = 0; $i -lt $UI.GPOTaskList.Children.Count; $i++) {
+            $gpo = $script:Configs.GPO.GPOs[$i]
+            $match = $gpo.Name.ToLower().Contains($q) -or $gpo.Description.ToLower().Contains($q)
+            $UI.GPOTaskList.Children[$i].Visibility = if ($match) { "Visible" } else { "Collapsed" }
+        }
     }
 }
 
@@ -668,12 +931,14 @@ function Start-Deployment([string]$module) {
     $scriptPath = $null
     switch ($module) {
         "Hardening" { $scriptPath = $script:ScriptPaths.Hardening }
+        "GPO"       { $scriptPath = $script:ScriptPaths.GPO }
         "Tiering"   { $scriptPath = $script:ScriptPaths.Tiering }
         "RBAC"      { $scriptPath = $script:ScriptPaths.RBAC }
         "All" {
             Start-Deployment "Hardening"
             Start-Deployment "Tiering"
             Start-Deployment "RBAC"
+            Start-Deployment "GPO"
             return
         }
     }
@@ -1247,6 +1512,7 @@ function Initialize-GUI {
 
     Populate-Dashboard
     if ($script:Configs.Hardening) { Populate-HardeningTab }
+    if ($script:Configs.GPO)       { Populate-GPOTab }
     if ($script:Configs.Tiering)   { Populate-TieringTab }
     if ($script:Configs.RBAC)      { Populate-RBACTab }
 
@@ -1257,8 +1523,9 @@ function Register-GUIEvents {
     # Navigation
     $UI.NavDashboard.Add_Click({ Set-ActiveTab 0 })
     $UI.NavHardening.Add_Click({ Set-ActiveTab 1 })
-    $UI.NavTiering.Add_Click({ Set-ActiveTab 2 })
-    $UI.NavRBAC.Add_Click({ Set-ActiveTab 3 })
+    $UI.NavGPO.Add_Click({ Set-ActiveTab 2 })
+    $UI.NavTiering.Add_Click({ Set-ActiveTab 3 })
+    $UI.NavRBAC.Add_Click({ Set-ActiveTab 4 })
 
     # Search
     $UI.SearchBox.Add_TextChanged({ Invoke-Search $UI.SearchBox.Text })
@@ -1275,6 +1542,14 @@ function Register-GUIEvents {
     })
     $UI.BtnDeselectAll.Add_Click({
         foreach ($t in $script:HardeningToggles) { $t.IsChecked = $false }
+    })
+
+    # GPO toolbar
+    $UI.BtnGPOSelectAll.Add_Click({
+        foreach ($t in $script:GPOToggles) { $t.IsChecked = $true }
+    })
+    $UI.BtnGPODeselectAll.Add_Click({
+        foreach ($t in $script:GPOToggles) { $t.IsChecked = $false }
     })
 
     # Tiering tree selection
@@ -1392,8 +1667,9 @@ function Register-GUIEvents {
     $deployMenu = $UI.BtnDeploy.ContextMenu
     $deployMenu.Items[0].Add_Click({ Save-AllConfigs; Start-Deployment "All" })       # Deploy All
     $deployMenu.Items[2].Add_Click({ Save-AllConfigs; Start-Deployment "Hardening" }) # Deploy Hardening
-    $deployMenu.Items[3].Add_Click({ Save-AllConfigs; Start-Deployment "Tiering" })   # Deploy Tiering
-    $deployMenu.Items[4].Add_Click({ Save-AllConfigs; Start-Deployment "RBAC" })      # Deploy RBAC
+    $deployMenu.Items[3].Add_Click({ Save-AllConfigs; Start-Deployment "GPO" })       # Deploy GPO
+    $deployMenu.Items[4].Add_Click({ Save-AllConfigs; Start-Deployment "Tiering" })   # Deploy Tiering
+    $deployMenu.Items[5].Add_Click({ Save-AllConfigs; Start-Deployment "RBAC" })      # Deploy RBAC
 
     # Save button
     $UI.BtnSave.Add_Click({ Save-AllConfigs })
@@ -1408,6 +1684,20 @@ function Register-GUIEvents {
         $newRole = Show-AddRoleDialog
         if ($newRole) {
             $script:Configs.RBAC.Roles = @($script:Configs.RBAC.Roles) + @($newRole)
+
+            # Add GG to the matching DL_Tx root group Members
+            $ggName = $newRole.GlobalGroup.Name
+            $tier = if ($ggName -match '^GG_(T\d)_') { $Matches[1] } else { $null }
+            if ($tier -and $script:Configs.RBAC.RootGroups) {
+                $rootGroup = $script:Configs.RBAC.RootGroups | Where-Object { $_.Name -eq "DL_$tier" }
+                if ($rootGroup) {
+                    $currentMembers = @(if ($rootGroup.Members) { $rootGroup.Members } else { @() })
+                    if ($ggName -notin $currentMembers) {
+                        $rootGroup.Members = @($currentMembers) + @($ggName)
+                    }
+                }
+            }
+
             Refresh-RBACRole $newRole.Name
             Write-ConsoleUI "Role '$($newRole.Name)' added." "Success"
         }
@@ -1425,6 +1715,19 @@ function Register-GUIEvents {
             "Delete role '$roleName'? This cannot be undone.", "Confirm Deletion",
             [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning)
         if ($result -eq "Yes") {
+            # Remove GG from the matching DL_Tx root group Members
+            $role = $script:Configs.RBAC.Roles | Where-Object { $_.Name -eq $roleName }
+            if ($role -and $role.GlobalGroup) {
+                $ggName = $role.GlobalGroup.Name
+                $tier = if ($ggName -match '^GG_(T\d)_') { $Matches[1] } else { $null }
+                if ($tier -and $script:Configs.RBAC.RootGroups) {
+                    $rootGroup = $script:Configs.RBAC.RootGroups | Where-Object { $_.Name -eq "DL_$tier" }
+                    if ($rootGroup -and $rootGroup.Members) {
+                        $rootGroup.Members = @($rootGroup.Members | Where-Object { $_ -ne $ggName })
+                    }
+                }
+            }
+
             $script:Configs.RBAC.Roles = @($script:Configs.RBAC.Roles | Where-Object { $_.Name -ne $roleName })
             $UI.RBACDLList.Children.Clear()
             Populate-RBACTab

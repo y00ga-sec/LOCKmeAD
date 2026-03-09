@@ -160,6 +160,7 @@ function Get-MainWindowXaml {
                 <StackPanel DockPanel.Dock="Top">
                     <Button Name="NavDashboard" Content="Dashboard" Style="{StaticResource NavBtnActive}"/>
                     <Button Name="NavHardening" Content="Hardening" Style="{StaticResource NavBtn}"/>
+                    <Button Name="NavGPO"       Content="GPO"       Style="{StaticResource NavBtn}"/>
                     <Button Name="NavTiering"   Content="Tiering"   Style="{StaticResource NavBtn}"/>
                     <Button Name="NavRBAC"      Content="RBAC"      Style="{StaticResource NavBtn}"/>
                 </StackPanel>
@@ -175,6 +176,7 @@ function Get-MainWindowXaml {
                                 <MenuItem Header="Deploy All"/>
                                 <Separator/>
                                 <MenuItem Header="Deploy Hardening"/>
+                                <MenuItem Header="Deploy GPO"/>
                                 <MenuItem Header="Deploy Tiering"/>
                                 <MenuItem Header="Deploy RBAC"/>
                             </ContextMenu>
@@ -237,13 +239,21 @@ function Get-MainWindowXaml {
                             </Border>
 
                             <!-- Module summaries -->
-                            <UniformGrid Columns="3" Margin="0,8,0,0">
-                                <Border Style="{StaticResource Card}" Margin="0,0,8,0" Padding="20">
+                            <UniformGrid Columns="4" Margin="0,8,0,0">
+                                <Border Style="{StaticResource Card}" Margin="0,0,4,0" Padding="20">
                                     <StackPanel>
                                         <TextBlock Text="Hardening" FontSize="15" FontWeight="SemiBold"/>
                                         <TextBlock Name="DashHardeningSummary" Text="..." FontSize="28"
                                                    FontWeight="Bold" Foreground="#0078D4" Margin="0,8,0,4"/>
                                         <TextBlock Name="DashHardeningDetail" Text="tasks enabled" FontSize="12" Foreground="#888"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Style="{StaticResource Card}" Margin="4,0,4,0" Padding="20">
+                                    <StackPanel>
+                                        <TextBlock Text="GPO" FontSize="15" FontWeight="SemiBold"/>
+                                        <TextBlock Name="DashGPOSummary" Text="..." FontSize="28"
+                                                   FontWeight="Bold" Foreground="#0078D4" Margin="0,8,0,4"/>
+                                        <TextBlock Name="DashGPODetail" Text="GPOs enabled" FontSize="12" Foreground="#888"/>
                                     </StackPanel>
                                 </Border>
                                 <Border Style="{StaticResource Card}" Margin="4,0,4,0" Padding="20">
@@ -254,7 +264,7 @@ function Get-MainWindowXaml {
                                         <TextBlock Name="DashTieringDetail" Text="OUs defined" FontSize="12" Foreground="#888"/>
                                     </StackPanel>
                                 </Border>
-                                <Border Style="{StaticResource Card}" Margin="8,0,0,0" Padding="20">
+                                <Border Style="{StaticResource Card}" Margin="4,0,0,0" Padding="20">
                                     <StackPanel>
                                         <TextBlock Text="RBAC" FontSize="15" FontWeight="SemiBold"/>
                                         <TextBlock Name="DashRBACSummary" Text="..." FontSize="28"
@@ -278,6 +288,21 @@ function Get-MainWindowXaml {
                         </StackPanel>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
                             <StackPanel Name="HardeningTaskList"/>
+                        </ScrollViewer>
+                    </DockPanel>
+                </TabItem>
+
+                <!-- ======== GPO ======== -->
+                <TabItem>
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,12">
+                            <TextBlock Text="Security GPO Templates" FontSize="22" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" Margin="0,0,20,0"/>
+                            <Button Name="BtnGPOSelectAll"   Content="Select All"   Style="{StaticResource ToolbarBtn}" Margin="0,0,6,0"/>
+                            <Button Name="BtnGPODeselectAll" Content="Deselect All" Style="{StaticResource ToolbarBtn}"/>
+                        </StackPanel>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
+                            <StackPanel Name="GPOTaskList"/>
                         </ScrollViewer>
                     </DockPanel>
                 </TabItem>

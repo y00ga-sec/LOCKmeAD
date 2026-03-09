@@ -112,10 +112,11 @@ foreach ($role in $config.Roles) {
 
 if ($config.RootGroups) {
     Write-Host ""
-    Write-Host "  Root groups (DL -> DL nesting):" -ForegroundColor White
+    Write-Host "  Root groups:" -ForegroundColor White
     foreach ($rootGroup in $config.RootGroups) {
-        $memberOfCount = $rootGroup.MemberOf.Count
-        Write-Host "    - $($rootGroup.Name) : member of $memberOfCount DL group(s)" -ForegroundColor Cyan
+        $membersCount = if ($rootGroup.Members) { $rootGroup.Members.Count } else { 0 }
+        $memberOfCount = if ($rootGroup.MemberOf) { $rootGroup.MemberOf.Count } else { 0 }
+        Write-Host "    - $($rootGroup.Name) : $membersCount GG members, member of $memberOfCount DL group(s)" -ForegroundColor Cyan
     }
 }
 
@@ -279,18 +280,37 @@ if ($config.RootGroups) {
             continue
         }
 
-        # Add root group into each target DL group (DL -> DL nesting)
-        foreach ($targetDL in $rootGroup.MemberOf) {
-            try {
-                Add-RBACGroupMember -GlobalGroupName $rootGroup.Name `
-                                    -DomainLocalGroupName $targetDL `
-                                    -LogDirectory $logDir `
-                                    -WhatIf:$WhatIfPreference
-                $stats.RootGroupsMemberships++
+        # Add GG groups into root group (GG -> DL_Tx nesting for tiering)
+        if ($rootGroup.Members) {
+            foreach ($ggName in $rootGroup.Members) {
+                try {
+                    Add-RBACGroupMember -GlobalGroupName $ggName `
+                                        -DomainLocalGroupName $rootGroup.Name `
+                                        -LogDirectory $logDir `
+                                        -WhatIf:$WhatIfPreference
+                    $stats.RootGroupsMemberships++
+                }
+                catch {
+                    Write-RBACLog -Message "Failed to add member '$ggName' -> '$($rootGroup.Name)': $_" -Level Error -LogDirectory $logDir
+                    $stats.Errors++
+                }
             }
-            catch {
-                Write-RBACLog -Message "Failed to add root membership '$($rootGroup.Name)' -> '$targetDL': $_" -Level Error -LogDirectory $logDir
-                $stats.Errors++
+        }
+
+        # Add root group into each target DL group (DL -> DL nesting)
+        if ($rootGroup.MemberOf) {
+            foreach ($targetDL in $rootGroup.MemberOf) {
+                try {
+                    Add-RBACGroupMember -GlobalGroupName $rootGroup.Name `
+                                        -DomainLocalGroupName $targetDL `
+                                        -LogDirectory $logDir `
+                                        -WhatIf:$WhatIfPreference
+                    $stats.RootGroupsMemberships++
+                }
+                catch {
+                    Write-RBACLog -Message "Failed to add root membership '$($rootGroup.Name)' -> '$targetDL': $_" -Level Error -LogDirectory $logDir
+                    $stats.Errors++
+                }
             }
         }
     }

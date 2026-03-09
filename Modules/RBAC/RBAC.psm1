@@ -120,8 +120,10 @@ function Import-RBACConfiguration {
             if (-not $rootGroup.Name) {
                 throw "A RootGroup is missing the 'Name' property."
             }
-            if (-not $rootGroup.MemberOf -or $rootGroup.MemberOf.Count -eq 0) {
-                throw "RootGroup '$($rootGroup.Name)' is missing 'MemberOf' or the list is empty."
+            $hasMembers = $rootGroup.Members -and $rootGroup.Members.Count -gt 0
+            $hasMemberOf = $rootGroup.MemberOf -and $rootGroup.MemberOf.Count -gt 0
+            if (-not $hasMembers -and -not $hasMemberOf) {
+                throw "RootGroup '$($rootGroup.Name)' needs at least 'Members' or 'MemberOf'."
             }
         }
     }

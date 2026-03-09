@@ -14,8 +14,14 @@
   "RootGroups": [
     {
       "Name": "DL_T0",
-      "Description": "Tier 0 root group - Full access to all T0 delegations (break-glass)",
+      "Description": "Tier 0 root group - Full access to all T0 delegations (break-glass) and deny logon target for T0 accounts",
       "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
+      "Members": [
+        "GG_T0_PKI_Operators",
+        "GG_T0_DNS_Operators",
+        "GG_T0_Server_Operators",
+        "GG_T0_Account_Operators"
+      ],
       "MemberOf": [
         "DL_T0_PKI_ManageCA",
         "DL_T0_PKI_ManageCerts",
@@ -28,8 +34,13 @@
     },
     {
       "Name": "DL_T1",
-      "Description": "Tier 1 root group - Full access to all T1 delegations (break-glass)",
+      "Description": "Tier 1 root group - Full access to all T1 delegations (break-glass) and deny logon target for T1 accounts",
       "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=forest,DC=lol",
+      "Members": [
+        "GG_T1_Server_Operators",
+        "GG_T1_Account_Operators",
+        "GG_T1_FileServer_Managers"
+      ],
       "MemberOf": [
         "DL_T1_Servers_Manage",
         "DL_T1_Users_Manage",
@@ -39,8 +50,13 @@
     },
     {
       "Name": "DL_T2",
-      "Description": "Tier 2 root group - Full access to all T2 delegations (break-glass)",
+      "Description": "Tier 2 root group - Full access to all T2 delegations (break-glass) and deny logon target for T2 accounts",
       "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=forest,DC=lol",
+      "Members": [
+        "GG_T2_Workstation_Operators",
+        "GG_T2_Account_Operators",
+        "GG_T2_Helpdesk"
+      ],
       "MemberOf": [
         "DL_T2_Workstations_Manage",
         "DL_T2_Users_Manage",

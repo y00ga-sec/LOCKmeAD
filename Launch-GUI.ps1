@@ -38,11 +38,13 @@ $xamlDoc.SelectNodes('//*[@Name]') | ForEach-Object {
 # Config file paths
 $script:ConfigPaths = @{
     Hardening = Join-Path $scriptRoot "Config\Hardening-Config.json"
+    GPO       = Join-Path $scriptRoot "Config\GPO-Config.json"
     Tiering   = Join-Path $scriptRoot "Config\Tiering-Config.json"
     RBAC      = Join-Path $scriptRoot "Config\RBAC-Config.json"
 }
 $script:ScriptPaths = @{
     Hardening = Join-Path $scriptRoot "Deploy-Hardening.ps1"
+    GPO       = Join-Path $scriptRoot "Deploy-GPO.ps1"
     Tiering   = Join-Path $scriptRoot "Deploy-Tiering.ps1"
     RBAC      = Join-Path $scriptRoot "Deploy-RBAC.ps1"
 }
@@ -51,7 +53,9 @@ $script:ScriptPaths = @{
 $script:Configs = @{}
 $script:HardeningToggles = @()
 $script:HardeningParamControls = @{}
-$script:UnsavedChanges = @{ Hardening = $false; Tiering = $false; RBAC = $false }
+$script:GPOToggles = @()
+$script:GPOLinkControls = @{}
+$script:UnsavedChanges = @{ Hardening = $false; GPO = $false; Tiering = $false; RBAC = $false }
 $script:isUpdatingSelection = $false
 $script:RemovedDLGroups = @()
 
