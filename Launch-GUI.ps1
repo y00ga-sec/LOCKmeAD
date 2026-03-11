@@ -2,7 +2,7 @@
 
 <#
 .SYNOPSIS
-    Launches the AD-RBAC Manager graphical interface.
+    Launches the AD-FrameLock Manager graphical interface.
 .DESCRIPTION
     Unified WPF GUI for managing Hardening, Tiering, and RBAC configurations.
     Allows enabling/disabling tasks, editing OU structures, managing RBAC roles,
@@ -43,10 +43,10 @@ $script:ConfigPaths = @{
     RBAC      = Join-Path $scriptRoot "Config\RBAC-Config.json"
 }
 $script:ScriptPaths = @{
-    Hardening = Join-Path $scriptRoot "Deploy-Hardening.ps1"
-    GPO       = Join-Path $scriptRoot "Deploy-GPO.ps1"
-    Tiering   = Join-Path $scriptRoot "Deploy-Tiering.ps1"
-    RBAC      = Join-Path $scriptRoot "Deploy-RBAC.ps1"
+    Hardening = Join-Path $scriptRoot "Scripts\Deploy-Hardening.ps1"
+    GPO       = Join-Path $scriptRoot "Scripts\Deploy-GPO.ps1"
+    Tiering   = Join-Path $scriptRoot "Scripts\Deploy-Tiering.ps1"
+    RBAC      = Join-Path $scriptRoot "Scripts\Deploy-RBAC.ps1"
 }
 
 # Runtime state

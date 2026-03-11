@@ -3,32 +3,35 @@ function Get-MainWindowXaml {
 <Window
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    Title="AD-RBAC Manager" Width="1400" Height="900"
+    Title="AD-FrameLock Manager" Width="1400" Height="900"
     MinWidth="1100" MinHeight="700"
     WindowStartupLocation="CenterScreen"
-    Background="#F3F3F3" FontFamily="Segoe UI">
+    Background="#F5F5F5" FontFamily="Segoe UI">
 
     <Window.Resources>
-        <!-- Sidebar nav button -->
+        <!-- Sidebar nav button - light theme with indicator slot -->
         <Style x:Key="NavBtn" TargetType="Button">
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="#999999"/>
-            <Setter Property="FontSize" Value="14"/>
-            <Setter Property="HorizontalContentAlignment" Value="Left"/>
-            <Setter Property="Padding" Value="20,11"/>
+            <Setter Property="Foreground" Value="#616161"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border Name="Bd" Background="{TemplateBinding Background}"
-                                Padding="{TemplateBinding Padding}" CornerRadius="6" Margin="6,2">
-                            <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
-                        </Border>
+                        <Grid Margin="4,2,6,2">
+                            <Border Name="Indicator" Width="3" HorizontalAlignment="Left"
+                                    CornerRadius="1.5" Background="Transparent"
+                                    VerticalAlignment="Center" Height="16"/>
+                            <Border Name="Bd" Background="{TemplateBinding Background}"
+                                    CornerRadius="4" Padding="14,8,10,8" Margin="5,0,0,0">
+                                <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                            </Border>
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#2D2D2D"/>
-                                <Setter Property="Foreground" Value="White"/>
+                                <Setter TargetName="Bd" Property="Background" Value="#E9E9E9"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -36,11 +39,35 @@ function Get-MainWindowXaml {
             </Setter>
         </Style>
 
-        <!-- Active nav button -->
-        <Style x:Key="NavBtnActive" TargetType="Button" BasedOn="{StaticResource NavBtn}">
-            <Setter Property="Background" Value="#2D2D2D"/>
-            <Setter Property="Foreground" Value="White"/>
+        <!-- Active nav button with accent indicator -->
+        <Style x:Key="NavBtnActive" TargetType="Button">
+            <Setter Property="Background" Value="#ECF2FF"/>
+            <Setter Property="Foreground" Value="#005FB8"/>
+            <Setter Property="FontSize" Value="13"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid Margin="4,2,6,2">
+                            <Border Width="3" HorizontalAlignment="Left"
+                                    CornerRadius="1.5" Background="#0078D4"
+                                    VerticalAlignment="Center" Height="16"/>
+                            <Border Name="Bd" Background="{TemplateBinding Background}"
+                                    CornerRadius="4" Padding="14,8,10,8" Margin="5,0,0,0">
+                                <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                            </Border>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#DEE9FC"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <!-- Toggle switch -->
@@ -123,7 +150,7 @@ function Get-MainWindowXaml {
             </Setter>
         </Style>
 
-        <!-- Filter button (RBAC tier filters) -->
+        <!-- Filter button -->
         <Style x:Key="FilterBtn" TargetType="Button" BasedOn="{StaticResource ToolbarBtn}">
             <Setter Property="Padding" Value="14,6"/>
             <Setter Property="Margin" Value="0,0,4,0"/>
@@ -135,9 +162,11 @@ function Get-MainWindowXaml {
             <Setter Property="CornerRadius" Value="8"/>
             <Setter Property="Padding" Value="16"/>
             <Setter Property="Margin" Value="0,0,0,8"/>
+            <Setter Property="BorderBrush" Value="#E5E5E5"/>
+            <Setter Property="BorderThickness" Value="1"/>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#FAFAFA"/>
+                    <Setter Property="BorderBrush" Value="#C8C8C8"/>
                 </Trigger>
             </Style.Triggers>
         </Style>
@@ -145,30 +174,73 @@ function Get-MainWindowXaml {
 
     <Grid>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="240"/>
+            <ColumnDefinition Width="220"/>
             <ColumnDefinition Width="*"/>
         </Grid.ColumnDefinitions>
 
         <!-- ============ SIDEBAR ============ -->
-        <Border Grid.Column="0" Background="#1B1B1B">
+        <Border Grid.Column="0" Background="#FAFAFA" BorderBrush="#E5E5E5" BorderThickness="0,0,1,0">
             <DockPanel>
-                <StackPanel DockPanel.Dock="Top" Margin="20,24,20,24">
-                    <TextBlock Text="AD-RBAC" FontSize="22" FontWeight="Bold" Foreground="White"/>
-                    <TextBlock Text="Manager" FontSize="13" Foreground="#666" Margin="0,2,0,0"/>
+                <!-- App title -->
+                <StackPanel DockPanel.Dock="Top" Margin="16,20,16,8">
+                    <TextBlock Text="AD-FrameLock" FontSize="18" FontWeight="Bold" Foreground="#1A1A1A"/>
+                    <TextBlock Text="Manager" FontSize="11" Foreground="#888" Margin="0,2,0,0"/>
                 </StackPanel>
 
-                <StackPanel DockPanel.Dock="Top">
-                    <Button Name="NavDashboard" Content="Dashboard" Style="{StaticResource NavBtnActive}"/>
-                    <Button Name="NavHardening" Content="Hardening" Style="{StaticResource NavBtn}"/>
-                    <Button Name="NavGPO"       Content="GPO"       Style="{StaticResource NavBtn}"/>
-                    <Button Name="NavTiering"   Content="Tiering"   Style="{StaticResource NavBtn}"/>
-                    <Button Name="NavRBAC"      Content="RBAC"      Style="{StaticResource NavBtn}"/>
+                <!-- Navigation -->
+                <StackPanel DockPanel.Dock="Top" Margin="0,8,0,0">
+                    <Button Name="NavDashboard" Style="{StaticResource NavBtnActive}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE80F;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                       VerticalAlignment="Center" Width="24"/>
+                            <TextBlock Text="Dashboard" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+
+                    <TextBlock Text="MODULES" FontSize="10" FontWeight="SemiBold" Foreground="#999"
+                               Margin="24,14,0,6"/>
+
+                    <Button Name="NavHardening" Style="{StaticResource NavBtn}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE72E;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                       VerticalAlignment="Center" Width="24"/>
+                            <TextBlock Text="Hardening" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Name="NavGPO" Style="{StaticResource NavBtn}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                       VerticalAlignment="Center" Width="24"/>
+                            <TextBlock Text="GPO" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Name="NavTiering" Style="{StaticResource NavBtn}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE7EF;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                       VerticalAlignment="Center" Width="24"/>
+                            <TextBlock Text="Tiering" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Name="NavRBAC" Style="{StaticResource NavBtn}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE716;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                       VerticalAlignment="Center" Width="24"/>
+                            <TextBlock Text="RBAC" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
                 </StackPanel>
 
-                <StackPanel DockPanel.Dock="Bottom" Margin="16,0,16,20">
-                    <CheckBox Name="WhatIfToggle" Style="{StaticResource ToggleSwitch}" Margin="20,0,0,14"/>
-                    <TextBlock Text="WhatIf (simulation)" Foreground="#999" FontSize="11"
-                               Margin="20,-10,0,16"/>
+                <!-- Bottom controls -->
+                <StackPanel DockPanel.Dock="Bottom" Margin="12,0,12,16">
+                    <Border Height="1" Background="#E5E5E5" Margin="4,0,4,14"/>
+
+                    <StackPanel Orientation="Horizontal" Margin="6,0,0,12">
+                        <CheckBox Name="WhatIfToggle" Style="{StaticResource ToggleSwitch}"
+                                  VerticalAlignment="Center"/>
+                        <TextBlock Text="WhatIf mode" Foreground="#666" FontSize="12"
+                                   Margin="10,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+
                     <Button Name="BtnDeploy" Content="Deploy" Style="{StaticResource AccentBtn}"
                             HorizontalAlignment="Stretch">
                         <Button.ContextMenu>
@@ -183,7 +255,7 @@ function Get-MainWindowXaml {
                         </Button.ContextMenu>
                     </Button>
                     <Button Name="BtnSave" Content="Save configs" Style="{StaticResource ToolbarBtn}"
-                            HorizontalAlignment="Stretch" Margin="0,8,0,0"/>
+                            HorizontalAlignment="Stretch" Margin="0,6,0,0"/>
                 </StackPanel>
 
                 <Border/> <!-- spacer -->
@@ -199,16 +271,22 @@ function Get-MainWindowXaml {
                 <RowDefinition Height="170"/>
             </Grid.RowDefinitions>
 
-            <!-- Search bar (Hardening only) -->
+            <!-- Search bar -->
             <Border Name="SearchBarPanel" Grid.Row="0" Background="White" CornerRadius="8"
-                    Margin="16,16,16,0" Padding="12,10" Visibility="Collapsed">
-                <Grid>
-                    <TextBlock Name="SearchPlaceholder" Text="Search hardening tasks..."
-                               Foreground="#AAAAAA" FontSize="14" VerticalAlignment="Center"
-                               IsHitTestVisible="False"/>
-                    <TextBox Name="SearchBox" Background="Transparent" BorderThickness="0"
-                             FontSize="14" VerticalAlignment="Center"/>
-                </Grid>
+                    Margin="16,16,16,0" Padding="12,10" Visibility="Collapsed"
+                    BorderBrush="#E5E5E5" BorderThickness="1">
+                <DockPanel>
+                    <TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                               Foreground="#AAAAAA" VerticalAlignment="Center"
+                               DockPanel.Dock="Left" Margin="0,0,10,0"/>
+                    <Grid>
+                        <TextBlock Name="SearchPlaceholder" Text="Search hardening tasks..."
+                                   Foreground="#AAAAAA" FontSize="14" VerticalAlignment="Center"
+                                   IsHitTestVisible="False"/>
+                        <TextBox Name="SearchBox" Background="Transparent" BorderThickness="0"
+                                 FontSize="14" VerticalAlignment="Center"/>
+                    </Grid>
+                </DockPanel>
             </Border>
 
             <!-- Tab content -->
@@ -224,7 +302,25 @@ function Get-MainWindowXaml {
                 <TabItem>
                     <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
                         <StackPanel>
-                            <TextBlock Text="Dashboard" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,16"/>
+                            <!-- Gradient banner -->
+                            <Border CornerRadius="8" ClipToBounds="True" Margin="0,0,0,16">
+                                <Border.Background>
+                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,0.6">
+                                        <GradientStop Color="#4A6CF7" Offset="0"/>
+                                        <GradientStop Color="#7B5FC7" Offset="0.5"/>
+                                        <GradientStop Color="#B66DB8" Offset="0.8"/>
+                                        <GradientStop Color="#C9A0D4" Offset="1"/>
+                                    </LinearGradientBrush>
+                                </Border.Background>
+                                <StackPanel Margin="32,28,32,32">
+                                    <TextBlock Text="Active Directory" FontSize="11" Foreground="#C8C8FF"
+                                               FontWeight="SemiBold" Margin="0,0,0,4"/>
+                                    <TextBlock Text="AD-FrameLock Manager" FontSize="28" Foreground="White"
+                                               FontWeight="Bold" Margin="0,0,0,8"/>
+                                    <TextBlock Text="Configure and deploy RBAC, Tiering, Hardening, and GPO policies"
+                                               FontSize="13" Foreground="#DDDDF0"/>
+                                </StackPanel>
+                            </Border>
 
                             <!-- Environment info -->
                             <Border Style="{StaticResource Card}" Padding="20">
@@ -240,35 +336,43 @@ function Get-MainWindowXaml {
 
                             <!-- Module summaries -->
                             <UniformGrid Columns="4" Margin="0,8,0,0">
-                                <Border Style="{StaticResource Card}" Margin="0,0,4,0" Padding="20">
+                                <Border Style="{StaticResource Card}" Margin="0,0,6,0" Padding="20">
                                     <StackPanel>
-                                        <TextBlock Text="Hardening" FontSize="15" FontWeight="SemiBold"/>
+                                        <TextBlock Text="&#xE72E;" FontFamily="Segoe MDL2 Assets" FontSize="22"
+                                                   Foreground="#0078D4" Margin="0,0,0,10"/>
+                                        <TextBlock Text="Hardening" FontSize="14" FontWeight="SemiBold"/>
                                         <TextBlock Name="DashHardeningSummary" Text="..." FontSize="28"
-                                                   FontWeight="Bold" Foreground="#0078D4" Margin="0,8,0,4"/>
+                                                   FontWeight="Bold" Foreground="#0078D4" Margin="0,6,0,2"/>
                                         <TextBlock Name="DashHardeningDetail" Text="tasks enabled" FontSize="12" Foreground="#888"/>
                                     </StackPanel>
                                 </Border>
-                                <Border Style="{StaticResource Card}" Margin="4,0,4,0" Padding="20">
+                                <Border Style="{StaticResource Card}" Margin="3,0,3,0" Padding="20">
                                     <StackPanel>
-                                        <TextBlock Text="GPO" FontSize="15" FontWeight="SemiBold"/>
+                                        <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="22"
+                                                   Foreground="#0078D4" Margin="0,0,0,10"/>
+                                        <TextBlock Text="GPO" FontSize="14" FontWeight="SemiBold"/>
                                         <TextBlock Name="DashGPOSummary" Text="..." FontSize="28"
-                                                   FontWeight="Bold" Foreground="#0078D4" Margin="0,8,0,4"/>
+                                                   FontWeight="Bold" Foreground="#0078D4" Margin="0,6,0,2"/>
                                         <TextBlock Name="DashGPODetail" Text="GPOs enabled" FontSize="12" Foreground="#888"/>
                                     </StackPanel>
                                 </Border>
-                                <Border Style="{StaticResource Card}" Margin="4,0,4,0" Padding="20">
+                                <Border Style="{StaticResource Card}" Margin="3,0,3,0" Padding="20">
                                     <StackPanel>
-                                        <TextBlock Text="Tiering" FontSize="15" FontWeight="SemiBold"/>
+                                        <TextBlock Text="&#xE7EF;" FontFamily="Segoe MDL2 Assets" FontSize="22"
+                                                   Foreground="#0078D4" Margin="0,0,0,10"/>
+                                        <TextBlock Text="Tiering" FontSize="14" FontWeight="SemiBold"/>
                                         <TextBlock Name="DashTieringSummary" Text="..." FontSize="28"
-                                                   FontWeight="Bold" Foreground="#0078D4" Margin="0,8,0,4"/>
+                                                   FontWeight="Bold" Foreground="#0078D4" Margin="0,6,0,2"/>
                                         <TextBlock Name="DashTieringDetail" Text="OUs defined" FontSize="12" Foreground="#888"/>
                                     </StackPanel>
                                 </Border>
-                                <Border Style="{StaticResource Card}" Margin="4,0,0,0" Padding="20">
+                                <Border Style="{StaticResource Card}" Margin="6,0,0,0" Padding="20">
                                     <StackPanel>
-                                        <TextBlock Text="RBAC" FontSize="15" FontWeight="SemiBold"/>
+                                        <TextBlock Text="&#xE716;" FontFamily="Segoe MDL2 Assets" FontSize="22"
+                                                   Foreground="#0078D4" Margin="0,0,0,10"/>
+                                        <TextBlock Text="RBAC" FontSize="14" FontWeight="SemiBold"/>
                                         <TextBlock Name="DashRBACSummary" Text="..." FontSize="28"
-                                                   FontWeight="Bold" Foreground="#0078D4" Margin="0,8,0,4"/>
+                                                   FontWeight="Bold" Foreground="#0078D4" Margin="0,6,0,2"/>
                                         <TextBlock Name="DashRBACDetail" Text="roles defined" FontSize="12" Foreground="#888"/>
                                     </StackPanel>
                                 </Border>
@@ -420,16 +524,19 @@ function Get-MainWindowXaml {
 
             <!-- Console splitter -->
             <GridSplitter Grid.Row="2" Height="6" HorizontalAlignment="Stretch"
-                          Background="Transparent" Margin="16,0"/>
+                          Background="Transparent" Margin="16,4"/>
 
             <!-- Console panel -->
-            <Border Grid.Row="3" Background="#1E1E1E" Margin="16,0,16,16" CornerRadius="0,0,8,8">
+            <Border Grid.Row="3" Background="#1E1E1E" Margin="16,0,16,16" CornerRadius="8"
+                    BorderBrush="#333333" BorderThickness="1" ClipToBounds="True">
                 <DockPanel>
-                    <Border DockPanel.Dock="Top" Background="#2D2D2D" CornerRadius="0" Padding="12,6">
+                    <Border DockPanel.Dock="Top" Background="#252525" Padding="14,8">
                         <DockPanel>
                             <Button Name="BtnClearConsole" DockPanel.Dock="Right" Content="Clear"
                                     Background="#3D3D3D" Foreground="#CCC" BorderThickness="0"
                                     Padding="10,3" FontSize="11" Cursor="Hand"/>
+                            <TextBlock Text="&#xE756;" FontFamily="Segoe MDL2 Assets" FontSize="13"
+                                       Foreground="#777" VerticalAlignment="Center" Margin="0,0,8,0"/>
                             <TextBlock Text="Console Output" Foreground="#999" FontSize="12"
                                        VerticalAlignment="Center"/>
                         </DockPanel>

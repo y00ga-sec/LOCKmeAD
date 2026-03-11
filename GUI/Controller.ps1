@@ -195,6 +195,8 @@ function Populate-HardeningTab {
         $card.CornerRadius = [System.Windows.CornerRadius]::new(8)
         $card.Padding = [System.Windows.Thickness]::new(16)
         $card.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
+        $card.BorderBrush = Get-WPFBrush "#E5E5E5"
+        $card.BorderThickness = [System.Windows.Thickness]::new(1)
 
         $outerStack = New-Object System.Windows.Controls.StackPanel
 
@@ -304,6 +306,8 @@ function Populate-GPOTab {
         $card.CornerRadius = [System.Windows.CornerRadius]::new(8)
         $card.Padding = [System.Windows.Thickness]::new(16)
         $card.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
+        $card.BorderBrush = Get-WPFBrush "#E5E5E5"
+        $card.BorderThickness = [System.Windows.Thickness]::new(1)
 
         $outerStack = New-Object System.Windows.Controls.StackPanel
 

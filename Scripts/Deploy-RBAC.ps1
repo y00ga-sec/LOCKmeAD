@@ -19,7 +19,7 @@
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string]$ConfigPath = (Join-Path $PSScriptRoot "Config\RBAC-Config.json")
+    [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\RBAC-Config.json")
 )
 
 # ============================================================================
@@ -27,9 +27,10 @@ param(
 # ============================================================================
 
 $ErrorActionPreference = "Stop"
+$rootDir = Split-Path $PSScriptRoot -Parent
 
 # Import RBAC module
-$modulePath = Join-Path $PSScriptRoot "Modules\RBAC\RBAC.psm1"
+$modulePath = Join-Path $rootDir "Modules\RBAC\RBAC.psm1"
 if (-not (Test-Path $modulePath)) {
     Write-Host "[ERROR] RBAC module not found: $modulePath" -ForegroundColor Red
     exit 1
@@ -50,7 +51,7 @@ try {
     $config = Import-RBACConfiguration -ConfigPath $ConfigPath
     $logDir = $config.Settings.LogDirectory
     if (-not [System.IO.Path]::IsPathRooted($logDir)) {
-        $logDir = Join-Path $PSScriptRoot $logDir
+        $logDir = Join-Path $rootDir $logDir
     }
     Write-RBACLog -Message "Configuration loaded successfully from '$ConfigPath'." -Level Success -LogDirectory $logDir
 }

@@ -21,7 +21,7 @@
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string]$ConfigPath = (Join-Path $PSScriptRoot "Config\GPO-Config.json")
+    [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\GPO-Config.json")
 )
 
 # ============================================================================
@@ -29,9 +29,10 @@ param(
 # ============================================================================
 
 $ErrorActionPreference = "Stop"
+$rootDir = Split-Path $PSScriptRoot -Parent
 
 # Import GPO module
-$modulePath = Join-Path $PSScriptRoot "Modules\GPO\GPO.psm1"
+$modulePath = Join-Path $rootDir "Modules\GPO\GPO.psm1"
 if (-not (Test-Path $modulePath)) {
     Write-Host "[ERROR] GPO module not found: $modulePath" -ForegroundColor Red
     exit 1
@@ -52,7 +53,7 @@ try {
     $config = Import-GPOConfiguration -ConfigPath $ConfigPath
     $logDir = $config.Settings.LogDirectory
     if (-not [System.IO.Path]::IsPathRooted($logDir)) {
-        $logDir = Join-Path $PSScriptRoot $logDir
+        $logDir = Join-Path $rootDir $logDir
     }
     Write-GPOLog -Message "Configuration loaded successfully from '$ConfigPath'." -Level Success -LogDirectory $logDir
 }

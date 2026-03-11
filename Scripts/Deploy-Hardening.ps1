@@ -20,7 +20,7 @@
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string]$ConfigPath = (Join-Path $PSScriptRoot "Config\Hardening-Config.json")
+    [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\Hardening-Config.json")
 )
 
 # ============================================================================
@@ -28,9 +28,10 @@ param(
 # ============================================================================
 
 $ErrorActionPreference = "Stop"
+$rootDir = Split-Path $PSScriptRoot -Parent
 
 # Import Hardening module
-$modulePath = Join-Path $PSScriptRoot "Modules\Hardening\Hardening.psm1"
+$modulePath = Join-Path $rootDir "Modules\Hardening\Hardening.psm1"
 if (-not (Test-Path $modulePath)) {
     Write-Host "[ERROR] Hardening module not found: $modulePath" -ForegroundColor Red
     exit 1
@@ -51,7 +52,7 @@ try {
     $config = Import-HardeningConfiguration -ConfigPath $ConfigPath
     $logDir = $config.Settings.LogDirectory
     if (-not [System.IO.Path]::IsPathRooted($logDir)) {
-        $logDir = Join-Path $PSScriptRoot $logDir
+        $logDir = Join-Path $rootDir $logDir
     }
     Write-HardeningLog -Message "Configuration loaded successfully from '$ConfigPath'." -Level Success -LogDirectory $logDir
 }
