@@ -40,6 +40,26 @@ function Write-ConsoleUI {
     $UI.ConsoleOutput.ScrollToEnd()
 }
 
+function New-CopyDNButton([string]$dnText) {
+    $btn = New-Object System.Windows.Controls.Button
+    $btn.Content = [char]0xE8C8  # Copy icon
+    $btn.FontFamily = New-Object System.Windows.Media.FontFamily("Segoe MDL2 Assets")
+    $btn.FontSize = 11
+    $btn.Background = Get-WPFBrush "Transparent"
+    $btn.BorderThickness = [System.Windows.Thickness]::new(0)
+    $btn.Cursor = "Hand"
+    $btn.Foreground = Get-WPFBrush "#999"
+    $btn.ToolTip = "Copy DN to clipboard"
+    $btn.Padding = [System.Windows.Thickness]::new(4, 0, 4, 0)
+    $btn.VerticalAlignment = "Center"
+    $btn.Margin = [System.Windows.Thickness]::new(6, 0, 0, 0)
+    $btn.Tag = $dnText
+    $btn.Add_Click({
+        [System.Windows.Clipboard]::SetText($this.Tag)
+    })
+    return $btn
+}
+
 function Count-TieringOUs($nodes) {
     $count = 0
     foreach ($node in $nodes) {
@@ -54,7 +74,7 @@ function Count-TieringOUs($nodes) {
 # ============================================================================
 
 function Load-AllConfigs {
-    foreach ($module in @('Hardening', 'GPO', 'Tiering', 'RBAC')) {
+    foreach ($module in @('Hardening', 'GPO', 'Tiering', 'RBAC', 'PSO')) {
         $path = $script:ConfigPaths[$module]
         if (Test-Path $path) {
             $script:Configs[$module] = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -84,7 +104,7 @@ function Save-AllConfigs {
         $script:Configs.Hardening | ConvertTo-Json -Depth 10 | Set-Content $script:ConfigPaths.Hardening -Encoding UTF8
     }
 
-    # GPO: read toggle states and link targets back into config
+    # GPO: read toggle states, link targets, and filtering OU back into config
     if ($script:Configs.GPO) {
         for ($i = 0; $i -lt $script:GPOToggles.Count; $i++) {
             $script:Configs.GPO.GPOs[$i].Enabled = [bool]$script:GPOToggles[$i].IsChecked
@@ -97,7 +117,37 @@ function Save-AllConfigs {
             }
             $script:Configs.GPO.GPOs[$idx].LinkTargets = $links
         }
+        $script:Configs.GPO.Settings.FilteringGroupsOU = $UI.GPOFilteringGroupsOU.Text.Trim()
         $script:Configs.GPO | ConvertTo-Json -Depth 10 | Set-Content $script:ConfigPaths.GPO -Encoding UTF8
+    }
+
+    # PSO: read toggle states, parameters, and AppliesTo back into config
+    if ($script:Configs.PSO) {
+        for ($i = 0; $i -lt $script:PSOToggles.Count; $i++) {
+            $script:Configs.PSO.Policies[$i].Enabled = [bool]$script:PSOToggles[$i].IsChecked
+        }
+        foreach ($key in $script:PSOParamControls.Keys) {
+            $parts = $key -split '\.'
+            $policyIdx = [int]$parts[0]
+            $paramName = $parts[1]
+            $control = $script:PSOParamControls[$key]
+            $value = if ($control -is [System.Windows.Controls.CheckBox]) {
+                [bool]$control.IsChecked
+            } elseif ($control -is [System.Windows.Controls.TextBox]) {
+                $text = $control.Text
+                if ($text -match '^\d+$') { [int]$text } else { $text }
+            } else { $control.Text }
+            $script:Configs.PSO.Policies[$policyIdx].$paramName = $value
+        }
+        foreach ($key in $script:PSOAppliesToControls.Keys) {
+            $idx = [int]$key
+            $text = $script:PSOAppliesToControls[$key].Text
+            $subjects = if ([string]::IsNullOrWhiteSpace($text)) { @() } else {
+                @($text -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+            }
+            $script:Configs.PSO.Policies[$idx].AppliesTo = $subjects
+        }
+        $script:Configs.PSO | ConvertTo-Json -Depth 10 | Set-Content $script:ConfigPaths.PSO -Encoding UTF8
     }
 
     # Tiering: rebuild from TreeView
@@ -112,7 +162,7 @@ function Save-AllConfigs {
         $script:Configs.RBAC | ConvertTo-Json -Depth 20 | Set-Content $script:ConfigPaths.RBAC -Encoding UTF8
     }
 
-    $script:UnsavedChanges = @{ Hardening = $false; GPO = $false; Tiering = $false; RBAC = $false }
+    $script:UnsavedChanges = @{ Hardening = $false; GPO = $false; Tiering = $false; RBAC = $false; PSO = $false }
     Write-ConsoleUI "All configurations saved." "Success"
 }
 
@@ -177,6 +227,12 @@ function Populate-Dashboard {
         $roleCount = $script:Configs.RBAC.Roles.Count
         $UI.DashRBACSummary.Text = "$roleCount"
         $UI.DashRBACDetail.Text = "roles defined"
+    }
+    if ($script:Configs.PSO) {
+        $psoEnabled = @($script:Configs.PSO.Policies | Where-Object { $_.Enabled }).Count
+        $psoTotal = $script:Configs.PSO.Policies.Count
+        $UI.DashPSOSummary.Text = "$psoEnabled / $psoTotal"
+        $UI.DashPSODetail.Text = "policies enabled"
     }
 }
 
@@ -291,10 +347,32 @@ function Populate-HardeningTab {
     }
 }
 
+function Update-GPOFilteringOUWarning {
+    $text = $UI.GPOFilteringGroupsOU.Text.Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        $UI.GPOFilteringOUWarning.Visibility = "Collapsed"
+    }
+    elseif ($text -notmatch 'OU=GroupsT0,OU=Admin') {
+        $UI.GPOFilteringOUWarning.Text = "Warning: This OU is not within OU=GroupsT0,OU=Admin. Filtering groups will not be deployed."
+        $UI.GPOFilteringOUWarning.Foreground = Get-WPFBrush "#D35400"
+        $UI.GPOFilteringOUWarning.Visibility = "Visible"
+    }
+    else {
+        $UI.GPOFilteringOUWarning.Text = "OK: OU is within OU=GroupsT0,OU=Admin."
+        $UI.GPOFilteringOUWarning.Foreground = Get-WPFBrush "#1E8449"
+        $UI.GPOFilteringOUWarning.Visibility = "Visible"
+    }
+}
+
 function Populate-GPOTab {
     $UI.GPOTaskList.Children.Clear()
     $script:GPOToggles = @()
     $script:GPOLinkControls = @{}
+
+    # Populate Filtering Groups OU
+    $filterOU = $script:Configs.GPO.Settings.FilteringGroupsOU
+    $UI.GPOFilteringGroupsOU.Text = if ($filterOU) { $filterOU } else { "" }
+    Update-GPOFilteringOUWarning
 
     for ($i = 0; $i -lt $script:Configs.GPO.GPOs.Count; $i++) {
         $gpo = $script:Configs.GPO.GPOs[$i]
@@ -622,6 +700,231 @@ function Populate-RBACTab {
     }
 }
 
+function Populate-PSOTab {
+    $UI.PSOPolicyList.Children.Clear()
+    $script:PSOToggles = @()
+    $script:PSOParamControls = @{}
+    $script:PSOAppliesToControls = @{}
+
+    for ($i = 0; $i -lt $script:Configs.PSO.Policies.Count; $i++) {
+        $policy = $script:Configs.PSO.Policies[$i]
+        $idx = $i
+
+        # Card border
+        $card = New-Object System.Windows.Controls.Border
+        $card.Background = Get-WPFBrush "#FFFFFF"
+        $card.CornerRadius = [System.Windows.CornerRadius]::new(8)
+        $card.Padding = [System.Windows.Thickness]::new(16)
+        $card.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
+        $card.BorderBrush = Get-WPFBrush "#E5E5E5"
+        $card.BorderThickness = [System.Windows.Thickness]::new(1)
+
+        $outerStack = New-Object System.Windows.Controls.StackPanel
+
+        # Header row: toggle + text + precedence badge
+        $headerDock = New-Object System.Windows.Controls.DockPanel
+
+        $toggle = New-Object System.Windows.Controls.CheckBox
+        $toggle.IsChecked = [bool]$policy.Enabled
+        $toggle.Style = $script:Window.FindResource("ToggleSwitch")
+        $toggle.VerticalAlignment = "Center"
+        [System.Windows.Controls.DockPanel]::SetDock($toggle, "Left")
+        $script:PSOToggles += $toggle
+
+        # Precedence badge (updated live)
+        $precBadge = New-Object System.Windows.Controls.TextBlock
+        $precBadge.Text = "P: $($policy.Precedence)"
+        $precBadge.FontSize = 10
+        $precBadge.Foreground = Get-WPFBrush "#6C3483"
+        $precBadge.Background = Get-WPFBrush "#F3E8FC"
+        $precBadge.Padding = [System.Windows.Thickness]::new(6, 2, 6, 2)
+        $precBadge.VerticalAlignment = "Center"
+        [System.Windows.Controls.DockPanel]::SetDock($precBadge, "Right")
+
+        # Subjects count badge (updated live)
+        $subjectCount = if ($policy.AppliesTo) { $policy.AppliesTo.Count } else { 0 }
+        $subBadge = New-Object System.Windows.Controls.TextBlock
+        $subBadge.Text = "$subjectCount subjects"
+        $subBadge.FontSize = 10
+        $subBadge.Foreground = Get-WPFBrush "#1E8449"
+        $subBadge.Background = Get-WPFBrush "#E8F8F0"
+        $subBadge.Padding = [System.Windows.Thickness]::new(6, 2, 6, 2)
+        $subBadge.Margin = [System.Windows.Thickness]::new(0, 0, 4, 0)
+        $subBadge.VerticalAlignment = "Center"
+        $subBadge.Visibility = if ($subjectCount -gt 0) { "Visible" } else { "Collapsed" }
+        [System.Windows.Controls.DockPanel]::SetDock($subBadge, "Right")
+        [void]$headerDock.Children.Add($subBadge)
+
+        $textStack = New-Object System.Windows.Controls.StackPanel
+        $textStack.Margin = [System.Windows.Thickness]::new(14, 0, 10, 0)
+
+        $nameBlock = New-Object System.Windows.Controls.TextBlock
+        $nameBlock.Text = $policy.Name
+        $nameBlock.FontSize = 14
+        $nameBlock.FontWeight = "SemiBold"
+
+        $descBlock = New-Object System.Windows.Controls.TextBlock
+        $descBlock.Text = $policy.Description
+        $descBlock.FontSize = 12
+        $descBlock.Foreground = Get-WPFBrush "#666666"
+        $descBlock.TextWrapping = "Wrap"
+
+        [void]$textStack.Children.Add($nameBlock)
+        [void]$textStack.Children.Add($descBlock)
+
+        [void]$headerDock.Children.Add($toggle)
+        [void]$headerDock.Children.Add($precBadge)
+        [void]$headerDock.Children.Add($textStack)
+        [void]$outerStack.Children.Add($headerDock)
+
+        # Policy Settings expander
+        $expander = New-Object System.Windows.Controls.Expander
+        $expander.Header = "Policy Settings"
+        $expander.Margin = [System.Windows.Thickness]::new(58, 8, 0, 0)
+        $expander.FontSize = 12
+
+        $paramGrid = New-Object System.Windows.Controls.Grid
+        $paramGrid.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+        $col1 = New-Object System.Windows.Controls.ColumnDefinition
+        $col1.Width = [System.Windows.GridLength]::new(220)
+        $col2 = New-Object System.Windows.Controls.ColumnDefinition
+        $col2.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+        [void]$paramGrid.ColumnDefinitions.Add($col1)
+        [void]$paramGrid.ColumnDefinitions.Add($col2)
+
+        $paramDefs = @(
+            @{ Name = "Precedence"; Type = "int" }
+            @{ Name = "ComplexityEnabled"; Type = "bool" }
+            @{ Name = "MinPasswordLength"; Type = "int" }
+            @{ Name = "MinPasswordAgeDays"; Type = "int" }
+            @{ Name = "MaxPasswordAgeDays"; Type = "int" }
+            @{ Name = "PasswordHistoryCount"; Type = "int" }
+            @{ Name = "LockoutThreshold"; Type = "int" }
+            @{ Name = "LockoutDurationMinutes"; Type = "int" }
+            @{ Name = "LockoutObservationWindowMinutes"; Type = "int" }
+            @{ Name = "ReversibleEncryptionEnabled"; Type = "bool" }
+            @{ Name = "ProtectedFromAccidentalDeletion"; Type = "bool" }
+        )
+
+        $rowIdx = 0
+        foreach ($paramDef in $paramDefs) {
+            [void]$paramGrid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition))
+
+            $label = New-Object System.Windows.Controls.TextBlock
+            $label.Text = $paramDef.Name
+            $label.VerticalAlignment = "Center"
+            $label.Foreground = Get-WPFBrush "#555"
+            $label.Margin = [System.Windows.Thickness]::new(0, 4, 10, 4)
+            [System.Windows.Controls.Grid]::SetRow($label, $rowIdx)
+            [System.Windows.Controls.Grid]::SetColumn($label, 0)
+
+            $paramValue = $policy.($paramDef.Name)
+            if ($paramDef.Type -eq "bool") {
+                $ctrl = New-Object System.Windows.Controls.CheckBox
+                $ctrl.IsChecked = [bool]$paramValue
+                $ctrl.VerticalAlignment = "Center"
+            } else {
+                $ctrl = New-Object System.Windows.Controls.TextBox
+                $ctrl.Text = [string]$paramValue
+                $ctrl.Padding = [System.Windows.Thickness]::new(6, 4, 6, 4)
+                $ctrl.BorderBrush = Get-WPFBrush "#DDD"
+            }
+            $ctrl.Margin = [System.Windows.Thickness]::new(0, 4, 0, 4)
+            [System.Windows.Controls.Grid]::SetRow($ctrl, $rowIdx)
+            [System.Windows.Controls.Grid]::SetColumn($ctrl, 1)
+
+            [void]$paramGrid.Children.Add($label)
+            [void]$paramGrid.Children.Add($ctrl)
+            $script:PSOParamControls["$idx.$($paramDef.Name)"] = $ctrl
+            $rowIdx++
+        }
+
+        # "Lock until admin unlocks" checkbox row (sets LockoutDurationMinutes to 0)
+        [void]$paramGrid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition))
+        $lockForeverCheck = New-Object System.Windows.Controls.CheckBox
+        $lockForeverCheck.Content = "Until an administrator manually unlocks the account"
+        $lockForeverCheck.FontSize = 11
+        $lockForeverCheck.Foreground = Get-WPFBrush "#555"
+        $lockForeverCheck.VerticalAlignment = "Center"
+        $lockForeverCheck.Margin = [System.Windows.Thickness]::new(0, 4, 0, 4)
+        [System.Windows.Controls.Grid]::SetRow($lockForeverCheck, $rowIdx)
+        [System.Windows.Controls.Grid]::SetColumn($lockForeverCheck, 0)
+        [System.Windows.Controls.Grid]::SetColumnSpan($lockForeverCheck, 2)
+
+        $durationCtrl = $script:PSOParamControls["$idx.LockoutDurationMinutes"]
+        $isLockForever = [int]$policy.LockoutDurationMinutes -eq 0 -and [int]$policy.LockoutThreshold -gt 0
+        $lockForeverCheck.IsChecked = $isLockForever
+        if ($isLockForever) { $durationCtrl.IsEnabled = $false }
+
+        $lockForeverCheck.Tag = $durationCtrl
+        $lockForeverCheck.Add_Checked({
+            $this.Tag.Text = "0"
+            $this.Tag.IsEnabled = $false
+        })
+        $lockForeverCheck.Add_Unchecked({
+            $this.Tag.IsEnabled = $true
+            if ($this.Tag.Text -eq "0") { $this.Tag.Text = "30" }
+        })
+
+        [void]$paramGrid.Children.Add($lockForeverCheck)
+
+        $expander.Content = $paramGrid
+        [void]$outerStack.Children.Add($expander)
+
+        # AppliesTo expander
+        $appliesToExpander = New-Object System.Windows.Controls.Expander
+        $appliesToExpander.Header = "Applies To (Groups / Users)"
+        $appliesToExpander.Margin = [System.Windows.Thickness]::new(58, 4, 0, 0)
+        $appliesToExpander.FontSize = 12
+
+        $appliesToStack = New-Object System.Windows.Controls.StackPanel
+        $appliesToStack.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+
+        $appliesToHint = New-Object System.Windows.Controls.TextBlock
+        $appliesToHint.Text = "One group or user name per line (e.g. GG_T0_PKI_Operators)"
+        $appliesToHint.FontSize = 10
+        $appliesToHint.Foreground = Get-WPFBrush "#999"
+        $appliesToHint.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
+        [void]$appliesToStack.Children.Add($appliesToHint)
+
+        $appliesToTextBox = New-Object System.Windows.Controls.TextBox
+        $appliesToTextBox.AcceptsReturn = $true
+        $appliesToTextBox.TextWrapping = "Wrap"
+        $appliesToTextBox.MinLines = 2
+        $appliesToTextBox.MaxLines = 6
+        $appliesToTextBox.FontSize = 12
+        $appliesToTextBox.Padding = [System.Windows.Thickness]::new(6, 4, 6, 4)
+        $appliesToTextBox.BorderBrush = Get-WPFBrush "#DDD"
+        $appliesToTextBox.VerticalScrollBarVisibility = "Auto"
+        if ($policy.AppliesTo -and $policy.AppliesTo.Count -gt 0) {
+            $appliesToTextBox.Text = ($policy.AppliesTo -join "`r`n")
+        }
+        $script:PSOAppliesToControls["$idx"] = $appliesToTextBox
+        [void]$appliesToStack.Children.Add($appliesToTextBox)
+
+        $appliesToExpander.Content = $appliesToStack
+        [void]$outerStack.Children.Add($appliesToExpander)
+
+        # Wire live badge updates
+        $precControl = $script:PSOParamControls["$idx.Precedence"]
+        $precControl.Tag = $precBadge
+        $precControl.Add_TextChanged({
+            $this.Tag.Text = "P: $($this.Text)"
+        })
+
+        $appliesToTextBox.Tag = $subBadge
+        $appliesToTextBox.Add_TextChanged({
+            $lines = @($this.Text -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+            $count = $lines.Count
+            $this.Tag.Text = "$count subjects"
+            $this.Tag.Visibility = if ($count -gt 0) { "Visible" } else { "Collapsed" }
+        })
+
+        $card.Child = $outerStack
+        [void]$UI.PSOPolicyList.Children.Add($card)
+    }
+}
+
 function Show-RBACRoleDetail($role) {
     $UI.RBACDetailTitle.Text = $role.Name
     $UI.RBACDetailDesc.Text = $role.Description
@@ -743,12 +1046,18 @@ function Show-RBACRoleDetail($role) {
         $dlDesc.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
         [void]$dlStack.Children.Add($dlDesc)
 
+        $dlOUPanel = New-Object System.Windows.Controls.DockPanel
+        $dlOUPanel.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
+        $dlOUCopyBtn = New-CopyDNButton $dl.OU
+        [System.Windows.Controls.DockPanel]::SetDock($dlOUCopyBtn, "Right")
+        [void]$dlOUPanel.Children.Add($dlOUCopyBtn)
         $dlOUText = New-Object System.Windows.Controls.TextBlock
         $dlOUText.Text = $dl.OU
         $dlOUText.FontSize = 10
         $dlOUText.Foreground = Get-WPFBrush "#999"
-        $dlOUText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
-        [void]$dlStack.Children.Add($dlOUText)
+        $dlOUText.TextWrapping = "Wrap"
+        [void]$dlOUPanel.Children.Add($dlOUText)
+        [void]$dlStack.Children.Add($dlOUPanel)
 
         # Permissions
         for ($pIdx = 0; $pIdx -lt $dl.Permissions.Count; $pIdx++) {
@@ -832,6 +1141,18 @@ function Show-RBACRoleDetail($role) {
                 "ADCS" { $permInfo.Text = "$($perm.Right) on $($perm.CAName) ($($perm.CAHostname))" }
             }
 
+            # Copy DN button for AD/NTFS permissions
+            $permDN = switch ($perm.Type) {
+                "AD"   { $perm.TargetOU }
+                "NTFS" { $perm.Path }
+                default { $null }
+            }
+            if ($permDN) {
+                $permCopyBtn = New-CopyDNButton $permDN
+                [System.Windows.Controls.DockPanel]::SetDock($permCopyBtn, "Right")
+                [void]$permDock.Children.Add($permCopyBtn)
+            }
+
             [void]$permDock.Children.Add($delPermBtn)
             [void]$permDock.Children.Add($editPermBtn)
             [void]$permDock.Children.Add($typeBadge)
@@ -874,18 +1195,19 @@ function Show-RBACRoleDetail($role) {
 
 function Set-ActiveTab([int]$index) {
     $UI.MainTabs.SelectedIndex = $index
-    $navButtons = @($UI.NavDashboard, $UI.NavHardening, $UI.NavGPO, $UI.NavTiering, $UI.NavRBAC)
+    $navButtons = @($UI.NavDashboard, $UI.NavHardening, $UI.NavGPO, $UI.NavTiering, $UI.NavRBAC, $UI.NavPSO)
     $activeStyle = $script:Window.FindResource("NavBtnActive")
     $normalStyle = $script:Window.FindResource("NavBtn")
     for ($i = 0; $i -lt $navButtons.Count; $i++) {
         $navButtons[$i].Style = if ($i -eq $index) { $activeStyle } else { $normalStyle }
     }
     # Search bar visible on Hardening and GPO tabs
-    $UI.SearchBarPanel.Visibility = if ($index -in @(1, 2)) { "Visible" } else { "Collapsed" }
+    $UI.SearchBarPanel.Visibility = if ($index -in @(1, 2, 5)) { "Visible" } else { "Collapsed" }
     if ($index -eq 1) { $UI.SearchPlaceholder.Text = "Search hardening tasks..." }
     elseif ($index -eq 2) { $UI.SearchPlaceholder.Text = "Search GPO templates..." }
+    elseif ($index -eq 5) { $UI.SearchPlaceholder.Text = "Search password policies..." }
     # Clear search when switching tabs
-    if ($index -in @(1, 2)) { $UI.SearchBox.Text = "" }
+    if ($index -in @(1, 2, 5)) { $UI.SearchBox.Text = "" }
 }
 
 # ============================================================================
@@ -901,6 +1223,8 @@ function Invoke-Search([string]$query) {
             foreach ($child in $UI.HardeningTaskList.Children) { $child.Visibility = "Visible" }
         } elseif ($activeTab -eq 2) {
             foreach ($child in $UI.GPOTaskList.Children) { $child.Visibility = "Visible" }
+        } elseif ($activeTab -eq 5) {
+            foreach ($child in $UI.PSOPolicyList.Children) { $child.Visibility = "Visible" }
         }
         return
     }
@@ -920,6 +1244,12 @@ function Invoke-Search([string]$query) {
             $match = $gpo.Name.ToLower().Contains($q) -or $gpo.Description.ToLower().Contains($q)
             $UI.GPOTaskList.Children[$i].Visibility = if ($match) { "Visible" } else { "Collapsed" }
         }
+    } elseif ($activeTab -eq 5) {
+        for ($i = 0; $i -lt $UI.PSOPolicyList.Children.Count; $i++) {
+            $policy = $script:Configs.PSO.Policies[$i]
+            $match = $policy.Name.ToLower().Contains($q) -or $policy.Description.ToLower().Contains($q)
+            $UI.PSOPolicyList.Children[$i].Visibility = if ($match) { "Visible" } else { "Collapsed" }
+        }
     }
 }
 
@@ -927,33 +1257,20 @@ function Invoke-Search([string]$query) {
 # Deploy
 # ============================================================================
 
-function Start-Deployment([string]$module) {
+# Canonical safe execution order
+$script:DeploySafeOrder = @("Hardening", "Tiering", "RBAC", "PSO", "GPO")
+
+function Start-SingleDeployment([string]$module) {
     $whatIf = [bool]$UI.WhatIfToggle.IsChecked
-    $whatIfLabel = if ($whatIf) { " (WhatIf)" } else { "" }
-    Write-ConsoleUI "Starting $module deployment$whatIfLabel..." "Info"
 
-    $scriptPath = $null
-    switch ($module) {
-        "Hardening" { $scriptPath = $script:ScriptPaths.Hardening }
-        "GPO"       { $scriptPath = $script:ScriptPaths.GPO }
-        "Tiering"   { $scriptPath = $script:ScriptPaths.Tiering }
-        "RBAC"      { $scriptPath = $script:ScriptPaths.RBAC }
-        "All" {
-            Start-Deployment "Hardening"
-            Start-Deployment "Tiering"
-            Start-Deployment "RBAC"
-            Start-Deployment "GPO"
-            return
-        }
-    }
-
+    $scriptPath = $script:ScriptPaths[$module]
     if (-not $scriptPath -or -not (Test-Path $scriptPath)) {
         Write-ConsoleUI "Script not found: $scriptPath" "Error"
         return
     }
 
     $configPath = $script:ConfigPaths[$module]
-    $cmd = "& '$scriptPath' -ConfigPath '$configPath'"
+    $cmd = "& '$scriptPath' -ConfigPath '$configPath' -NoConfirm"
     if ($whatIf) { $cmd += " -WhatIf" }
 
     try {
@@ -969,6 +1286,51 @@ function Start-Deployment([string]$module) {
         Write-ConsoleUI "$module deployment completed." "Success"
     } catch {
         Write-ConsoleUI "$module deployment failed: $_" "Error"
+    }
+}
+
+function Start-SelectedDeployments {
+    $selected = @()
+    if ($UI.DeployHardening.IsChecked) { $selected += "Hardening" }
+    if ($UI.DeployTiering.IsChecked)   { $selected += "Tiering" }
+    if ($UI.DeployRBAC.IsChecked)      { $selected += "RBAC" }
+    if ($UI.DeployPSO.IsChecked)       { $selected += "PSO" }
+    if ($UI.DeployGPO.IsChecked)       { $selected += "GPO" }
+
+    if ($selected.Count -eq 0) {
+        Write-ConsoleUI "No modules selected for deployment." "Warning"
+        return
+    }
+
+    # Enforce safe order
+    $ordered = $script:DeploySafeOrder | Where-Object { $selected -contains $_ }
+
+    $whatIf = [bool]$UI.WhatIfToggle.IsChecked
+    $whatIfLabel = if ($whatIf) { " (WhatIf)" } else { "" }
+    Write-ConsoleUI "Deploying: $($ordered -join ' > ')$whatIfLabel" "Info"
+
+    foreach ($module in $ordered) {
+        Write-ConsoleUI "=== $module ===" "Info"
+        Start-SingleDeployment $module
+    }
+    Write-ConsoleUI "All selected deployments completed." "Success"
+}
+
+function Update-DeployOrderHint {
+    $selected = @()
+    if ($UI.DeployHardening.IsChecked) { $selected += "Hardening" }
+    if ($UI.DeployTiering.IsChecked)   { $selected += "Tiering" }
+    if ($UI.DeployRBAC.IsChecked)      { $selected += "RBAC" }
+    if ($UI.DeployPSO.IsChecked)       { $selected += "PSO" }
+    if ($UI.DeployGPO.IsChecked)       { $selected += "GPO" }
+
+    if ($selected.Count -le 1) {
+        $UI.DeployOrderHint.Visibility = "Collapsed"
+    }
+    else {
+        $ordered = $script:DeploySafeOrder | Where-Object { $selected -contains $_ }
+        $UI.DeployOrderHint.Text = "Order: $($ordered -join ' > ')"
+        $UI.DeployOrderHint.Visibility = "Visible"
     }
 }
 
@@ -1507,6 +1869,256 @@ function Show-PermissionDialog($existingPerm) {
 }
 
 # ============================================================================
+# PSO Dialogs & Helpers
+# ============================================================================
+
+function Show-AddPSODialog {
+    $dialogXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Add Password Policy" Width="580" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        Background="#F3F3F3" FontFamily="Segoe UI">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="700">
+    <StackPanel Margin="24">
+        <TextBlock Text="New Password Policy (PSO)" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,20"/>
+
+        <TextBlock Text="Name" FontSize="12" Foreground="#555" Margin="0,0,0,4"/>
+        <TextBox Name="PSOName" FontSize="13" Padding="8,6" BorderBrush="#DDD"/>
+
+        <TextBlock Text="Description" FontSize="12" Foreground="#555" Margin="0,12,0,4"/>
+        <TextBox Name="PSODesc" FontSize="13" Padding="8,6" BorderBrush="#DDD"/>
+
+        <TextBlock Text="Precedence (lower = higher priority)" FontSize="12" Foreground="#555" Margin="0,12,0,4"/>
+        <TextBox Name="PSOPrecedence" FontSize="13" Padding="8,6" BorderBrush="#DDD" Text="50"/>
+
+        <Border Background="#E8F2FC" CornerRadius="6" Padding="14" Margin="0,16,0,0">
+            <StackPanel>
+                <TextBlock Text="Password Settings" FontSize="13" FontWeight="SemiBold"
+                           Foreground="#0078D4" Margin="0,0,0,10"/>
+
+                <CheckBox Name="PSOComplexity" Content="Password must meet complexity requirements"
+                          FontSize="12" IsChecked="True" Margin="0,0,0,8"/>
+
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                    <TextBlock Text="Minimum password length" FontSize="12" Foreground="#555"
+                               VerticalAlignment="Center" Width="220"/>
+                    <TextBox Name="PSOMinLength" FontSize="13" Padding="6,4" BorderBrush="#DDD"
+                             Width="80" Text="12"/>
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                    <TextBlock Text="Minimum password age (days)" FontSize="12" Foreground="#555"
+                               VerticalAlignment="Center" Width="220"/>
+                    <TextBox Name="PSOMinAge" FontSize="13" Padding="6,4" BorderBrush="#DDD"
+                             Width="80" Text="1"/>
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                    <TextBlock Text="Maximum password age (days)" FontSize="12" Foreground="#555"
+                               VerticalAlignment="Center" Width="220"/>
+                    <TextBox Name="PSOMaxAge" FontSize="13" Padding="6,4" BorderBrush="#DDD"
+                             Width="80" Text="90"/>
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                    <TextBlock Text="Password history count" FontSize="12" Foreground="#555"
+                               VerticalAlignment="Center" Width="220"/>
+                    <TextBox Name="PSOHistoryCount" FontSize="13" Padding="6,4" BorderBrush="#DDD"
+                             Width="80" Text="24"/>
+                </StackPanel>
+
+                <CheckBox Name="PSOReversible" Content="Store password using reversible encryption"
+                          FontSize="12" IsChecked="False" Margin="0,4,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <Border Background="#FFF8E8" CornerRadius="6" Padding="14" Margin="0,12,0,0">
+            <StackPanel>
+                <TextBlock Text="Account Lockout" FontSize="13" FontWeight="SemiBold"
+                           Foreground="#B7950B" Margin="0,0,0,10"/>
+
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                    <TextBlock Text="Lockout threshold (0 = no lockout)" FontSize="12" Foreground="#555"
+                               VerticalAlignment="Center" Width="220"/>
+                    <TextBox Name="PSOLockoutThreshold" FontSize="13" Padding="6,4" BorderBrush="#DDD"
+                             Width="80" Text="5"/>
+                </StackPanel>
+
+                <CheckBox Name="PSOLockForever" Content="Until an administrator manually unlocks the account"
+                          FontSize="12" IsChecked="False" Margin="0,4,0,8"/>
+
+                <StackPanel Name="PSOLockDurationPanel" Orientation="Horizontal" Margin="0,0,0,6">
+                    <TextBlock Text="Lockout duration (minutes)" FontSize="12" Foreground="#555"
+                               VerticalAlignment="Center" Width="220"/>
+                    <TextBox Name="PSOLockDuration" FontSize="13" Padding="6,4" BorderBrush="#DDD"
+                             Width="80" Text="30"/>
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                    <TextBlock Text="Observation window (minutes)" FontSize="12" Foreground="#555"
+                               VerticalAlignment="Center" Width="220"/>
+                    <TextBox Name="PSOLockWindow" FontSize="13" Padding="6,4" BorderBrush="#DDD"
+                             Width="80" Text="30"/>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <Border Background="#F0F0F0" CornerRadius="6" Padding="14" Margin="0,12,0,0">
+            <StackPanel>
+                <TextBlock Text="Applies To" FontSize="13" FontWeight="SemiBold"
+                           Foreground="#555" Margin="0,0,0,4"/>
+                <TextBlock Text="One group or user name per line" FontSize="10"
+                           Foreground="#999" Margin="0,0,0,6"/>
+                <TextBox Name="PSOAppliesTo" FontSize="12" Padding="6,4" BorderBrush="#DDD"
+                         AcceptsReturn="True" TextWrapping="Wrap" MinLines="2" MaxLines="5"
+                         VerticalScrollBarVisibility="Auto"/>
+            </StackPanel>
+        </Border>
+
+        <CheckBox Name="PSOProtected" Content="Protected from accidental deletion"
+                  FontSize="12" IsChecked="True" Margin="0,14,0,0"/>
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+            <Button Name="BtnCancel" Content="Cancel" Width="90" Padding="0,8"
+                    Background="#E8E8E8" BorderThickness="0" FontSize="13" Cursor="Hand" Margin="0,0,8,0"/>
+            <Button Name="BtnOK" Content="Add Policy" Width="120" Padding="0,8"
+                    Background="#0078D4" Foreground="White" BorderThickness="0"
+                    FontSize="13" FontWeight="SemiBold" Cursor="Hand"/>
+        </StackPanel>
+    </StackPanel>
+    </ScrollViewer>
+</Window>
+"@
+    [xml]$dlgDoc = $dialogXaml
+    $reader = [System.Xml.XmlNodeReader]::new($dlgDoc)
+    $dlg = [System.Windows.Markup.XamlReader]::Load($reader)
+    $dlg.Owner = $script:Window
+
+    $txtName      = $dlg.FindName("PSOName")
+    $txtDesc      = $dlg.FindName("PSODesc")
+    $txtPrec      = $dlg.FindName("PSOPrecedence")
+    $chkComplex   = $dlg.FindName("PSOComplexity")
+    $txtMinLen    = $dlg.FindName("PSOMinLength")
+    $txtMinAge    = $dlg.FindName("PSOMinAge")
+    $txtMaxAge    = $dlg.FindName("PSOMaxAge")
+    $txtHistory   = $dlg.FindName("PSOHistoryCount")
+    $chkReversible = $dlg.FindName("PSOReversible")
+    $txtThreshold = $dlg.FindName("PSOLockoutThreshold")
+    $chkLockForever = $dlg.FindName("PSOLockForever")
+    $pnlLockDuration = $dlg.FindName("PSOLockDurationPanel")
+    $txtLockDur   = $dlg.FindName("PSOLockDuration")
+    $txtLockWin   = $dlg.FindName("PSOLockWindow")
+    $txtAppliesTo = $dlg.FindName("PSOAppliesTo")
+    $chkProtected = $dlg.FindName("PSOProtected")
+    $btnOK        = $dlg.FindName("BtnOK")
+    $btnCancel    = $dlg.FindName("BtnCancel")
+
+    # Lock forever toggle
+    $chkLockForever.Add_Checked({
+        $pnlLockDuration.IsEnabled = $false
+        $txtLockDur.Text = "0"
+    }.GetNewClosure())
+    $chkLockForever.Add_Unchecked({
+        $pnlLockDuration.IsEnabled = $true
+        if ($txtLockDur.Text -eq "0") { $txtLockDur.Text = "30" }
+    }.GetNewClosure())
+
+    $dlg.Tag = $null
+    $btnOK.Add_Click({
+        if ([string]::IsNullOrWhiteSpace($txtName.Text)) {
+            [System.Windows.MessageBox]::Show("Policy name is required.", "Validation",
+                [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
+            return
+        }
+        $prec = 0
+        if (-not [int]::TryParse($txtPrec.Text, [ref]$prec) -or $prec -lt 1) {
+            [System.Windows.MessageBox]::Show("Precedence must be a positive integer.", "Validation",
+                [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
+            return
+        }
+        # Check for duplicate name
+        $existingNames = @($script:Configs.PSO.Policies | ForEach-Object { $_.Name })
+        if ($txtName.Text.Trim() -in $existingNames) {
+            [System.Windows.MessageBox]::Show("A policy with this name already exists.", "Validation",
+                [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
+            return
+        }
+
+        $subjects = @()
+        if (-not [string]::IsNullOrWhiteSpace($txtAppliesTo.Text)) {
+            $subjects = @($txtAppliesTo.Text -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+        }
+
+        $dlg.Tag = [PSCustomObject]@{
+            Name                            = $txtName.Text.Trim()
+            Description                     = $txtDesc.Text
+            Enabled                         = $true
+            Precedence                      = [int]$txtPrec.Text
+            ComplexityEnabled               = [bool]$chkComplex.IsChecked
+            MinPasswordLength               = [int]$txtMinLen.Text
+            MinPasswordAgeDays              = [int]$txtMinAge.Text
+            MaxPasswordAgeDays              = [int]$txtMaxAge.Text
+            PasswordHistoryCount            = [int]$txtHistory.Text
+            LockoutThreshold                = [int]$txtThreshold.Text
+            LockoutDurationMinutes          = [int]$txtLockDur.Text
+            LockoutObservationWindowMinutes = [int]$txtLockWin.Text
+            ReversibleEncryptionEnabled     = [bool]$chkReversible.IsChecked
+            ProtectedFromAccidentalDeletion = [bool]$chkProtected.IsChecked
+            AppliesTo                       = $subjects
+        }
+        $dlg.Close()
+    }.GetNewClosure())
+
+    $btnCancel.Add_Click({ $dlg.Close() }.GetNewClosure())
+    $dlg.ShowDialog() | Out-Null
+    return $dlg.Tag
+}
+
+function Show-DeletePSODialog([string[]]$policyNames) {
+    $dialogXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Delete Password Policy" Width="400" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        Background="#F3F3F3" FontFamily="Segoe UI">
+    <StackPanel Margin="24">
+        <TextBlock Text="Select a policy to delete" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,12"/>
+        <ListBox Name="PolicyList" FontSize="13" Padding="4" MinHeight="80" MaxHeight="300"
+                 BorderBrush="#DDD" BorderThickness="1"/>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Name="BtnCancel" Content="Cancel" Width="90" Padding="0,8"
+                    Background="#E8E8E8" BorderThickness="0" FontSize="13" Cursor="Hand" Margin="0,0,8,0"/>
+            <Button Name="BtnOK" Content="Delete" Width="100" Padding="0,8"
+                    Background="#A93226" Foreground="White" BorderThickness="0"
+                    FontSize="13" FontWeight="SemiBold" Cursor="Hand"/>
+        </StackPanel>
+    </StackPanel>
+</Window>
+"@
+    [xml]$dlgDoc = $dialogXaml
+    $reader = [System.Xml.XmlNodeReader]::new($dlgDoc)
+    $dlg = [System.Windows.Markup.XamlReader]::Load($reader)
+    $dlg.Owner = $script:Window
+
+    $listBox = $dlg.FindName("PolicyList")
+    foreach ($name in $policyNames) {
+        $listBox.Items.Add($name) | Out-Null
+    }
+    if ($listBox.Items.Count -gt 0) { $listBox.SelectedIndex = 0 }
+
+    $dlg.Tag = $null
+    $dlg.FindName("BtnOK").Add_Click({
+        if ($listBox.SelectedItem) {
+            $dlg.Tag = $listBox.SelectedItem
+        }
+        $dlg.Close()
+    }.GetNewClosure())
+    $dlg.FindName("BtnCancel").Add_Click({ $dlg.Close() }.GetNewClosure())
+
+    $dlg.ShowDialog() | Out-Null
+    return $dlg.Tag
+}
+
+# ============================================================================
 # Initialize & Register Events
 # ============================================================================
 
@@ -1519,6 +2131,7 @@ function Initialize-GUI {
     if ($script:Configs.GPO)       { Populate-GPOTab }
     if ($script:Configs.Tiering)   { Populate-TieringTab }
     if ($script:Configs.RBAC)      { Populate-RBACTab }
+    if ($script:Configs.PSO)       { Populate-PSOTab }
 
     Write-ConsoleUI "GUI initialized. Ready." "Info"
 }
@@ -1530,6 +2143,7 @@ function Register-GUIEvents {
     $UI.NavGPO.Add_Click({ Set-ActiveTab 2 })
     $UI.NavTiering.Add_Click({ Set-ActiveTab 3 })
     $UI.NavRBAC.Add_Click({ Set-ActiveTab 4 })
+    $UI.NavPSO.Add_Click({ Set-ActiveTab 5 })
 
     # Search
     $UI.SearchBox.Add_TextChanged({ Invoke-Search $UI.SearchBox.Text })
@@ -1554,6 +2168,71 @@ function Register-GUIEvents {
     })
     $UI.BtnGPODeselectAll.Add_Click({
         foreach ($t in $script:GPOToggles) { $t.IsChecked = $false }
+    })
+
+    # PSO toolbar
+    $UI.BtnPSOSelectAll.Add_Click({
+        foreach ($t in $script:PSOToggles) { $t.IsChecked = $true }
+    })
+    $UI.BtnPSODeselectAll.Add_Click({
+        foreach ($t in $script:PSOToggles) { $t.IsChecked = $false }
+    })
+
+    # PSO add policy
+    $UI.BtnAddPSO.Add_Click({
+        $newPolicy = Show-AddPSODialog
+        if ($newPolicy) {
+            $script:Configs.PSO.Policies = @($script:Configs.PSO.Policies) + @($newPolicy)
+            Populate-PSOTab
+            Write-ConsoleUI "Policy '$($newPolicy.Name)' added." "Success"
+        }
+    })
+
+    # PSO delete policy
+    $UI.BtnDeletePSO.Add_Click({
+        # Find which policy card is toggled ON and at the end of the list, or use a simpler approach:
+        # Delete the last policy whose toggle matches, or ask the user to pick.
+        # Simplest: show a picker dialog.
+        if (-not $script:Configs.PSO -or $script:Configs.PSO.Policies.Count -eq 0) {
+            Write-ConsoleUI "No policies to delete." "Warning"
+            return
+        }
+        $names = @($script:Configs.PSO.Policies | ForEach-Object { $_.Name })
+        $picked = Show-DeletePSODialog $names
+        if ($picked) {
+            $result = [System.Windows.MessageBox]::Show(
+                "Delete policy '$picked'? This cannot be undone.", "Confirm Deletion",
+                [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning)
+            if ($result -eq "Yes") {
+                $script:Configs.PSO.Policies = @($script:Configs.PSO.Policies | Where-Object { $_.Name -ne $picked })
+                Populate-PSOTab
+                Write-ConsoleUI "Policy '$picked' deleted." "Success"
+            }
+        }
+    })
+
+    # GPO Filtering Groups OU copy button
+    $UI.GPOFilteringOUCopy.Add_Click({
+        $ou = $UI.GPOFilteringGroupsOU.Text
+        if ($ou) { [System.Windows.Clipboard]::SetText($ou) }
+    })
+
+    # GPO Filtering Groups OU: real-time validation
+    $UI.GPOFilteringGroupsOU.Add_TextChanged({
+        Update-GPOFilteringOUWarning
+        $script:UnsavedChanges.GPO = $true
+    })
+
+    # Tiering DN copy button
+    $UI.TieringPropDNCopy.Add_Click({
+        $dn = $UI.TieringPropDN.Text
+        if ($dn -and $dn -ne '-') { [System.Windows.Clipboard]::SetText($dn) }
+    })
+
+    # RBAC GG OU copy button
+    $UI.RBACGGOUCopy.Add_Click({
+        $ou = $UI.RBACGGOU.Text
+        if ($ou) { [System.Windows.Clipboard]::SetText($ou) }
     })
 
     # Tiering tree selection
@@ -1666,14 +2345,40 @@ function Register-GUIEvents {
         }
     })
 
-    # Deploy button -> open context menu
-    $UI.BtnDeploy.Add_Click({ $UI.BtnDeploy.ContextMenu.IsOpen = $true })
-    $deployMenu = $UI.BtnDeploy.ContextMenu
-    $deployMenu.Items[0].Add_Click({ Save-AllConfigs; Start-Deployment "All" })       # Deploy All
-    $deployMenu.Items[2].Add_Click({ Save-AllConfigs; Start-Deployment "Hardening" }) # Deploy Hardening
-    $deployMenu.Items[3].Add_Click({ Save-AllConfigs; Start-Deployment "GPO" })       # Deploy GPO
-    $deployMenu.Items[4].Add_Click({ Save-AllConfigs; Start-Deployment "Tiering" })   # Deploy Tiering
-    $deployMenu.Items[5].Add_Click({ Save-AllConfigs; Start-Deployment "RBAC" })      # Deploy RBAC
+    # Deploy module checkboxes: update order hint on toggle
+    $UI.DeployHardening.Add_Checked({ Update-DeployOrderHint })
+    $UI.DeployHardening.Add_Unchecked({ Update-DeployOrderHint })
+    $UI.DeployTiering.Add_Checked({ Update-DeployOrderHint })
+    $UI.DeployTiering.Add_Unchecked({ Update-DeployOrderHint })
+    $UI.DeployRBAC.Add_Checked({ Update-DeployOrderHint })
+    $UI.DeployRBAC.Add_Unchecked({ Update-DeployOrderHint })
+    $UI.DeployPSO.Add_Checked({ Update-DeployOrderHint })
+    $UI.DeployPSO.Add_Unchecked({ Update-DeployOrderHint })
+    $UI.DeployGPO.Add_Checked({ Update-DeployOrderHint })
+    $UI.DeployGPO.Add_Unchecked({ Update-DeployOrderHint })
+
+    # Deploy button -> confirm, save configs, then deploy selected modules in safe order
+    $UI.BtnDeploy.Add_Click({
+        $selected = @()
+        if ($UI.DeployHardening.IsChecked) { $selected += "Hardening" }
+        if ($UI.DeployTiering.IsChecked)   { $selected += "Tiering" }
+        if ($UI.DeployRBAC.IsChecked)      { $selected += "RBAC" }
+        if ($UI.DeployPSO.IsChecked)       { $selected += "PSO" }
+        if ($UI.DeployGPO.IsChecked)       { $selected += "GPO" }
+        if ($selected.Count -eq 0) {
+            Write-ConsoleUI "No modules selected for deployment." "Warning"
+            return
+        }
+        $ordered = $script:DeploySafeOrder | Where-Object { $selected -contains $_ }
+        $whatIfLabel = if ($UI.WhatIfToggle.IsChecked) { " (WhatIf)" } else { "" }
+        $result = [System.Windows.MessageBox]::Show(
+            "Deploy: $($ordered -join ' > ')$whatIfLabel?", "Confirm Deployment",
+            [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question)
+        if ($result -eq "Yes") {
+            Save-AllConfigs
+            Start-SelectedDeployments
+        }
+    })
 
     # Save button
     $UI.BtnSave.Add_Click({ Save-AllConfigs })

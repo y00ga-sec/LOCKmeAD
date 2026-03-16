@@ -19,7 +19,8 @@
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\RBAC-Config.json")
+    [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\RBAC-Config.json"),
+    [switch]$NoConfirm
 )
 
 # ============================================================================
@@ -70,6 +71,7 @@ Write-Host ""
 
 try {
     $envInfo = Get-RBACEnvironmentInfo
+    $targetServer = $envInfo.PDCEmulator
 
     Write-Host "  Current DC        : $($envInfo.CurrentDC)" -ForegroundColor Cyan
     if ($envInfo.IsPDC) {
@@ -78,6 +80,7 @@ try {
     else {
         Write-Host "  PDC Role          : NO (PDC = $($envInfo.PDCEmulator))" -ForegroundColor Yellow
     }
+    Write-Host "  Target DC         : $targetServer" -ForegroundColor Cyan
     Write-Host "  Domain            : $($envInfo.DomainName)" -ForegroundColor Cyan
     Write-Host "  Domain DN         : $($envInfo.DomainDN)" -ForegroundColor Cyan
     Write-Host "  Forest            : $($envInfo.ForestName)" -ForegroundColor Cyan
@@ -135,7 +138,7 @@ if ($WhatIfPreference) {
 # User confirmation
 # ============================================================================
 
-if (-not $WhatIfPreference) {
+if (-not $WhatIfPreference -and -not $NoConfirm) {
     Write-Host ""
     $confirmation = Read-Host "Confirm deployment? (Y/N)"
     if ($confirmation -notin @("Y", "y", "Yes", "yes")) {
@@ -173,6 +176,7 @@ foreach ($role in $config.Roles) {
                       -Description $role.GlobalGroup.Description `
                       -GroupScope Global `
                       -OU $ggOU `
+                      -Server $targetServer `
                       -LogDirectory $logDir `
                       -WhatIf:$WhatIfPreference
         $stats.GroupsCreated++
@@ -193,6 +197,7 @@ foreach ($role in $config.Roles) {
                           -Description $dlGroup.Description `
                           -GroupScope DomainLocal `
                           -OU $dlOU `
+                          -Server $targetServer `
                           -LogDirectory $logDir `
                           -WhatIf:$WhatIfPreference
             $stats.GroupsCreated++
@@ -207,6 +212,7 @@ foreach ($role in $config.Roles) {
         try {
             Add-RBACGroupMember -GlobalGroupName $role.GlobalGroup.Name `
                                 -DomainLocalGroupName $dlGroup.Name `
+                                -Server $targetServer `
                                 -LogDirectory $logDir `
                                 -WhatIf:$WhatIfPreference
             $stats.MembershipsSet++
@@ -223,6 +229,7 @@ foreach ($role in $config.Roles) {
                     "NTFS" {
                         Set-RBACNTFSPermission -GroupName $dlGroup.Name `
                                                -Permission $perm `
+                                               -Server $targetServer `
                                                -LogDirectory $logDir `
                                                -WhatIf:$WhatIfPreference
                         $stats.NTFSPermissionsSet++
@@ -230,6 +237,7 @@ foreach ($role in $config.Roles) {
                     "AD" {
                         Set-RBACADPermission -GroupName $dlGroup.Name `
                                              -Permission $perm `
+                                             -Server $targetServer `
                                              -LogDirectory $logDir `
                                              -WhatIf:$WhatIfPreference
                         $stats.ADPermissionsSet++
@@ -237,6 +245,7 @@ foreach ($role in $config.Roles) {
                     "ADCS" {
                         Set-RBACADCSPermission -GroupName $dlGroup.Name `
                                                -Permission $perm `
+                                               -Server $targetServer `
                                                -LogDirectory $logDir `
                                                -WhatIf:$WhatIfPreference
                         $stats.ADCSPermissionsSet++
@@ -271,6 +280,7 @@ if ($config.RootGroups) {
                           -Description $rootGroup.Description `
                           -GroupScope DomainLocal `
                           -OU $rgOU `
+                          -Server $targetServer `
                           -LogDirectory $logDir `
                           -WhatIf:$WhatIfPreference
             $stats.GroupsCreated++
@@ -287,6 +297,7 @@ if ($config.RootGroups) {
                 try {
                     Add-RBACGroupMember -GlobalGroupName $ggName `
                                         -DomainLocalGroupName $rootGroup.Name `
+                                        -Server $targetServer `
                                         -LogDirectory $logDir `
                                         -WhatIf:$WhatIfPreference
                     $stats.RootGroupsMemberships++
@@ -304,6 +315,7 @@ if ($config.RootGroups) {
                 try {
                     Add-RBACGroupMember -GlobalGroupName $rootGroup.Name `
                                         -DomainLocalGroupName $targetDL `
+                                        -Server $targetServer `
                                         -LogDirectory $logDir `
                                         -WhatIf:$WhatIfPreference
                     $stats.RootGroupsMemberships++

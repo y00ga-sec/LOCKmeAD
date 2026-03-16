@@ -1,6 +1,7 @@
 {
   "Settings": {
-    "LogDirectory": "./Logs"
+    "LogDirectory": "./Logs",
+    "FilteringGroupsOU": ""
   },
 
   "GPOs": [

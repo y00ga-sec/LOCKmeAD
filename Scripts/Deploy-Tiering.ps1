@@ -19,7 +19,8 @@
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\Tiering-Config.json")
+    [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\Tiering-Config.json"),
+    [switch]$NoConfirm
 )
 
 # ============================================================================
@@ -70,6 +71,7 @@ Write-Host ""
 
 try {
     $envInfo = Get-TieringEnvironmentInfo
+    $targetServer = $envInfo.PDCEmulator
 
     Write-Host "  Current DC        : $($envInfo.CurrentDC)" -ForegroundColor Cyan
     if ($envInfo.IsPDC) {
@@ -78,6 +80,7 @@ try {
     else {
         Write-Host "  PDC Role          : NO (PDC = $($envInfo.PDCEmulator))" -ForegroundColor Yellow
     }
+    Write-Host "  Target DC         : $targetServer" -ForegroundColor Cyan
     Write-Host "  Domain            : $($envInfo.DomainName)" -ForegroundColor Cyan
     Write-Host "  Domain DN         : $($envInfo.DomainDN)" -ForegroundColor Cyan
     Write-Host "  Forest            : $($envInfo.ForestName)" -ForegroundColor Cyan
@@ -154,7 +157,7 @@ if ($WhatIfPreference) {
 # User confirmation
 # ============================================================================
 
-if (-not $WhatIfPreference) {
+if (-not $WhatIfPreference -and -not $NoConfirm) {
     Write-Host ""
     $confirmation = Read-Host "Confirm deployment? (Y/N)"
     if ($confirmation -notin @("Y", "y", "Yes", "yes")) {
@@ -174,6 +177,7 @@ Write-Host ""
 $results = Deploy-TieringOUStructure -OUNodes $config.OUStructure `
                                       -ParentDN $config.Settings.BaseDN `
                                       -DefaultProtection $defaultProtection `
+                                      -Server $targetServer `
                                       -LogDirectory $logDir `
                                       -WhatIf:$WhatIfPreference
 

@@ -3,7 +3,7 @@ function Get-MainWindowXaml {
 <Window
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    Title="AD-FrameLock Manager" Width="1400" Height="900"
+    Title="LOCKmeAD Manager" Width="1400" Height="900"
     MinWidth="1100" MinHeight="700"
     WindowStartupLocation="CenterScreen"
     Background="#F5F5F5" FontFamily="Segoe UI">
@@ -183,7 +183,7 @@ function Get-MainWindowXaml {
             <DockPanel>
                 <!-- App title -->
                 <StackPanel DockPanel.Dock="Top" Margin="16,20,16,8">
-                    <TextBlock Text="AD-FrameLock" FontSize="18" FontWeight="Bold" Foreground="#1A1A1A"/>
+                    <TextBlock Text="LOCKmeAD" FontSize="18" FontWeight="Bold" Foreground="#1A1A1A"/>
                     <TextBlock Text="Manager" FontSize="11" Foreground="#888" Margin="0,2,0,0"/>
                 </StackPanel>
 
@@ -228,6 +228,13 @@ function Get-MainWindowXaml {
                             <TextBlock Text="RBAC" VerticalAlignment="Center"/>
                         </StackPanel>
                     </Button>
+                    <Button Name="NavPSO" Style="{StaticResource NavBtn}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE8D7;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                       VerticalAlignment="Center" Width="24"/>
+                            <TextBlock Text="Password Policy" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
                 </StackPanel>
 
                 <!-- Bottom controls -->
@@ -241,19 +248,19 @@ function Get-MainWindowXaml {
                                    Margin="10,0,0,0" VerticalAlignment="Center"/>
                     </StackPanel>
 
-                    <Button Name="BtnDeploy" Content="Deploy" Style="{StaticResource AccentBtn}"
-                            HorizontalAlignment="Stretch">
-                        <Button.ContextMenu>
-                            <ContextMenu>
-                                <MenuItem Header="Deploy All"/>
-                                <Separator/>
-                                <MenuItem Header="Deploy Hardening"/>
-                                <MenuItem Header="Deploy GPO"/>
-                                <MenuItem Header="Deploy Tiering"/>
-                                <MenuItem Header="Deploy RBAC"/>
-                            </ContextMenu>
-                        </Button.ContextMenu>
-                    </Button>
+                    <TextBlock Text="Modules to deploy:" Foreground="#666" FontSize="11"
+                               Margin="6,0,0,6"/>
+                    <StackPanel Margin="6,0,0,8">
+                        <CheckBox Name="DeployHardening" Content="Hardening" FontSize="12" Margin="0,2"/>
+                        <CheckBox Name="DeployTiering"   Content="Tiering"   FontSize="12" Margin="0,2"/>
+                        <CheckBox Name="DeployRBAC"      Content="RBAC"      FontSize="12" Margin="0,2"/>
+                        <CheckBox Name="DeployPSO"       Content="PSO"       FontSize="12" Margin="0,2"/>
+                        <CheckBox Name="DeployGPO"       Content="GPO"       FontSize="12" Margin="0,2"/>
+                    </StackPanel>
+                    <TextBlock Name="DeployOrderHint" Text="" FontSize="10" Foreground="#999"
+                               Margin="6,0,0,4" TextWrapping="Wrap" Visibility="Collapsed"/>
+                    <Button Name="BtnDeploy" Content="Deploy selected" Style="{StaticResource AccentBtn}"
+                            HorizontalAlignment="Stretch"/>
                     <Button Name="BtnSave" Content="Save configs" Style="{StaticResource ToolbarBtn}"
                             HorizontalAlignment="Stretch" Margin="0,6,0,0"/>
                 </StackPanel>
@@ -315,7 +322,7 @@ function Get-MainWindowXaml {
                                 <StackPanel Margin="32,28,32,32">
                                     <TextBlock Text="Active Directory" FontSize="11" Foreground="#C8C8FF"
                                                FontWeight="SemiBold" Margin="0,0,0,4"/>
-                                    <TextBlock Text="AD-FrameLock Manager" FontSize="28" Foreground="White"
+                                    <TextBlock Text="LOCKmeAD Manager" FontSize="28" Foreground="White"
                                                FontWeight="Bold" Margin="0,0,0,8"/>
                                     <TextBlock Text="Configure and deploy RBAC, Tiering, Hardening, and GPO policies"
                                                FontSize="13" Foreground="#DDDDF0"/>
@@ -335,7 +342,7 @@ function Get-MainWindowXaml {
                             </Border>
 
                             <!-- Module summaries -->
-                            <UniformGrid Columns="4" Margin="0,8,0,0">
+                            <UniformGrid Columns="5" Margin="0,8,0,0">
                                 <Border Style="{StaticResource Card}" Margin="0,0,6,0" Padding="20">
                                     <StackPanel>
                                         <TextBlock Text="&#xE72E;" FontFamily="Segoe MDL2 Assets" FontSize="22"
@@ -366,7 +373,7 @@ function Get-MainWindowXaml {
                                         <TextBlock Name="DashTieringDetail" Text="OUs defined" FontSize="12" Foreground="#888"/>
                                     </StackPanel>
                                 </Border>
-                                <Border Style="{StaticResource Card}" Margin="6,0,0,0" Padding="20">
+                                <Border Style="{StaticResource Card}" Margin="3,0,3,0" Padding="20">
                                     <StackPanel>
                                         <TextBlock Text="&#xE716;" FontFamily="Segoe MDL2 Assets" FontSize="22"
                                                    Foreground="#0078D4" Margin="0,0,0,10"/>
@@ -374,6 +381,16 @@ function Get-MainWindowXaml {
                                         <TextBlock Name="DashRBACSummary" Text="..." FontSize="28"
                                                    FontWeight="Bold" Foreground="#0078D4" Margin="0,6,0,2"/>
                                         <TextBlock Name="DashRBACDetail" Text="roles defined" FontSize="12" Foreground="#888"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Style="{StaticResource Card}" Margin="6,0,0,0" Padding="20">
+                                    <StackPanel>
+                                        <TextBlock Text="&#xE8D7;" FontFamily="Segoe MDL2 Assets" FontSize="22"
+                                                   Foreground="#0078D4" Margin="0,0,0,10"/>
+                                        <TextBlock Text="PSO" FontSize="14" FontWeight="SemiBold"/>
+                                        <TextBlock Name="DashPSOSummary" Text="..." FontSize="28"
+                                                   FontWeight="Bold" Foreground="#0078D4" Margin="0,6,0,2"/>
+                                        <TextBlock Name="DashPSODetail" Text="policies enabled" FontSize="12" Foreground="#888"/>
                                     </StackPanel>
                                 </Border>
                             </UniformGrid>
@@ -399,11 +416,31 @@ function Get-MainWindowXaml {
                 <!-- ======== GPO ======== -->
                 <TabItem>
                     <DockPanel>
-                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,12">
-                            <TextBlock Text="Security GPO Templates" FontSize="22" FontWeight="SemiBold"
-                                       VerticalAlignment="Center" Margin="0,0,20,0"/>
-                            <Button Name="BtnGPOSelectAll"   Content="Select All"   Style="{StaticResource ToolbarBtn}" Margin="0,0,6,0"/>
-                            <Button Name="BtnGPODeselectAll" Content="Deselect All" Style="{StaticResource ToolbarBtn}"/>
+                        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                <TextBlock Text="Security GPO Templates" FontSize="22" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" Margin="0,0,20,0"/>
+                                <Button Name="BtnGPOSelectAll"   Content="Select All"   Style="{StaticResource ToolbarBtn}" Margin="0,0,6,0"/>
+                                <Button Name="BtnGPODeselectAll" Content="Deselect All" Style="{StaticResource ToolbarBtn}"/>
+                            </StackPanel>
+                            <Border Background="#F8F8F8" CornerRadius="6" Padding="12,8" BorderBrush="#E0E0E0" BorderThickness="1">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="Filtering Groups OU" FontSize="12" FontWeight="SemiBold"
+                                                   VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                        <TextBox Name="GPOFilteringGroupsOU" Width="450" FontSize="12"
+                                                 Padding="6,4" BorderBrush="#DDD" VerticalAlignment="Center"
+                                                 ToolTip="OU where Apply/Deny filtering groups will be created (must be within T0-Prod)"/>
+                                        <Button Name="GPOFilteringOUCopy" Content="&#xE8C8;"
+                                                FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                                Background="Transparent" BorderThickness="0" Cursor="Hand"
+                                                Foreground="#999" ToolTip="Copy DN to clipboard"
+                                                Padding="4,0" VerticalAlignment="Center" Margin="4,0,0,0"/>
+                                    </StackPanel>
+                                    <TextBlock Name="GPOFilteringOUWarning" Text="" FontSize="11"
+                                               Foreground="#D35400" Margin="0,4,0,0" Visibility="Collapsed"/>
+                                </StackPanel>
+                            </Border>
                         </StackPanel>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
                             <StackPanel Name="GPOTaskList"/>
@@ -446,8 +483,15 @@ function Get-MainWindowXaml {
                                     <CheckBox Name="TieringPropProtected" Content="Protected from accidental deletion"
                                               FontSize="12" Margin="0,12,0,0" IsChecked="True"/>
                                     <TextBlock Text="Distinguished Name" FontSize="12" Foreground="#888" Margin="0,14,0,4"/>
-                                    <TextBlock Name="TieringPropDN" Text="-" FontSize="11" Foreground="#0078D4"
-                                               TextWrapping="Wrap"/>
+                                    <DockPanel>
+                                        <Button Name="TieringPropDNCopy" DockPanel.Dock="Right" Content="&#xE8C8;"
+                                                FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                                Background="Transparent" BorderThickness="0" Cursor="Hand"
+                                                Foreground="#999" ToolTip="Copy DN to clipboard"
+                                                Padding="4,0" VerticalAlignment="Top" Margin="4,0,0,0"/>
+                                        <TextBlock Name="TieringPropDN" Text="-" FontSize="11" Foreground="#0078D4"
+                                                   TextWrapping="Wrap"/>
+                                    </DockPanel>
                                     <TextBlock Text="Base DN" FontSize="12" Foreground="#888" Margin="0,14,0,4"/>
                                     <TextBox Name="TieringBaseDN" FontSize="13" Padding="8,6"
                                              BorderBrush="#DDD" BorderThickness="1"/>
@@ -506,7 +550,14 @@ function Get-MainWindowXaml {
                                                        FontWeight="SemiBold" Foreground="#0078D4" Margin="0,0,0,6"/>
                                             <TextBlock Name="RBACGGName" FontSize="13"/>
                                             <TextBlock Name="RBACGGDesc" FontSize="12" Foreground="#666"/>
-                                            <TextBlock Name="RBACGGOU"   FontSize="11" Foreground="#999" Margin="0,4,0,0"/>
+                                            <DockPanel Margin="0,4,0,0">
+                                                <Button Name="RBACGGOUCopy" DockPanel.Dock="Right" Content="&#xE8C8;"
+                                                        FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                                        Background="Transparent" BorderThickness="0" Cursor="Hand"
+                                                        Foreground="#999" ToolTip="Copy DN to clipboard"
+                                                        Padding="4,0" VerticalAlignment="Center" Margin="4,0,0,0"/>
+                                                <TextBlock Name="RBACGGOU" FontSize="11" Foreground="#999" TextWrapping="Wrap"/>
+                                            </DockPanel>
                                         </StackPanel>
                                     </Border>
 
@@ -519,6 +570,24 @@ function Get-MainWindowXaml {
                             </ScrollViewer>
                         </Border>
                     </Grid>
+                </TabItem>
+
+                <!-- ======== PSO ======== -->
+                <TabItem>
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,12">
+                            <TextBlock Text="Password Policies (PSO)" FontSize="22" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" Margin="0,0,20,0"/>
+                            <Button Name="BtnPSOSelectAll"   Content="Select All"   Style="{StaticResource ToolbarBtn}" Margin="0,0,6,0"/>
+                            <Button Name="BtnPSODeselectAll" Content="Deselect All" Style="{StaticResource ToolbarBtn}" Margin="0,0,6,0"/>
+                            <Button Name="BtnAddPSO"         Content="+ Add Policy" Style="{StaticResource ToolbarBtn}" Margin="0,0,6,0"/>
+                            <Button Name="BtnDeletePSO"      Content="Delete"       Background="#FCE8E8" Foreground="#A93226"
+                                    BorderThickness="0" Padding="12,6" FontSize="12" Cursor="Hand"/>
+                        </StackPanel>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
+                            <StackPanel Name="PSOPolicyList"/>
+                        </ScrollViewer>
+                    </DockPanel>
                 </TabItem>
             </TabControl>
 

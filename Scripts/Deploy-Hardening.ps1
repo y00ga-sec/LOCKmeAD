@@ -20,7 +20,8 @@
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\Hardening-Config.json")
+    [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\Hardening-Config.json"),
+    [switch]$NoConfirm
 )
 
 # ============================================================================
@@ -131,7 +132,7 @@ if ($WhatIfPreference) {
 # User confirmation
 # ============================================================================
 
-if (-not $WhatIfPreference) {
+if (-not $WhatIfPreference -and -not $NoConfirm) {
     Write-Host ""
     $confirmation = Read-Host "Confirm deployment? (Y/N)"
     if ($confirmation -notin @("Y", "y", "Yes", "yes")) {

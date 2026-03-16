@@ -2,7 +2,7 @@
 
 <#
 .SYNOPSIS
-    Launches the AD-FrameLock Manager graphical interface.
+    Launches the LOCKmeAD Manager graphical interface.
 .DESCRIPTION
     Unified WPF GUI for managing Hardening, Tiering, and RBAC configurations.
     Allows enabling/disabling tasks, editing OU structures, managing RBAC roles,
@@ -41,12 +41,14 @@ $script:ConfigPaths = @{
     GPO       = Join-Path $scriptRoot "Config\GPO-Config.json"
     Tiering   = Join-Path $scriptRoot "Config\Tiering-Config.json"
     RBAC      = Join-Path $scriptRoot "Config\RBAC-Config.json"
+    PSO       = Join-Path $scriptRoot "Config\PSO-Config.json"
 }
 $script:ScriptPaths = @{
     Hardening = Join-Path $scriptRoot "Scripts\Deploy-Hardening.ps1"
     GPO       = Join-Path $scriptRoot "Scripts\Deploy-GPO.ps1"
     Tiering   = Join-Path $scriptRoot "Scripts\Deploy-Tiering.ps1"
     RBAC      = Join-Path $scriptRoot "Scripts\Deploy-RBAC.ps1"
+    PSO       = Join-Path $scriptRoot "Scripts\Deploy-PSO.ps1"
 }
 
 # Runtime state
@@ -55,7 +57,10 @@ $script:HardeningToggles = @()
 $script:HardeningParamControls = @{}
 $script:GPOToggles = @()
 $script:GPOLinkControls = @{}
-$script:UnsavedChanges = @{ Hardening = $false; GPO = $false; Tiering = $false; RBAC = $false }
+$script:PSOToggles = @()
+$script:PSOParamControls = @{}
+$script:PSOAppliesToControls = @{}
+$script:UnsavedChanges = @{ Hardening = $false; GPO = $false; Tiering = $false; RBAC = $false; PSO = $false }
 $script:isUpdatingSelection = $false
 $script:RemovedDLGroups = @()
 

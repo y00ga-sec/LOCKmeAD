@@ -177,6 +177,8 @@ function New-TieringOU {
         DN of the parent container where the OU will be created.
     .PARAMETER ProtectedFromAccidentalDeletion
         Protects the OU from accidental deletion.
+    .PARAMETER Server
+        Target DC for all AD operations (avoids replication lag).
     .PARAMETER LogDirectory
         Log directory.
     #>
@@ -192,14 +194,19 @@ function New-TieringOU {
 
         [bool]$ProtectedFromAccidentalDeletion = $true,
 
+        [string]$Server,
+
         [string]$LogDirectory
     )
+
+    $serverParam = @{}
+    if ($Server) { $serverParam.Server = $Server }
 
     $targetDN = "OU=$Name,$ParentDN"
 
     # Check if the OU already exists
     try {
-        $existingOU = Get-ADOrganizationalUnit -Identity $targetDN -ErrorAction Stop
+        $existingOU = Get-ADOrganizationalUnit -Identity $targetDN @serverParam -ErrorAction Stop
         Write-TieringLog -Message "OU '$Name' already exists in '$ParentDN'." -Level Warning -LogDirectory $LogDirectory
         return $existingOU
     }
@@ -215,7 +222,7 @@ function New-TieringOU {
                 Description                     = $Description
                 ProtectedFromAccidentalDeletion = $ProtectedFromAccidentalDeletion
             }
-            $newOU = New-ADOrganizationalUnit @params -PassThru
+            $newOU = New-ADOrganizationalUnit @params @serverParam -PassThru
             Write-TieringLog -Message "OU '$Name' created in '$ParentDN'." -Level Success -LogDirectory $LogDirectory
             return $newOU
         }
@@ -243,6 +250,8 @@ function Deploy-TieringOUStructure {
         DN of the parent container for this level.
     .PARAMETER DefaultProtection
         Default value for ProtectedFromAccidentalDeletion.
+    .PARAMETER Server
+        Target DC for all AD operations (avoids replication lag).
     .PARAMETER LogDirectory
         Log directory.
     .PARAMETER Depth
@@ -257,6 +266,8 @@ function Deploy-TieringOUStructure {
         [string]$ParentDN,
 
         [bool]$DefaultProtection = $true,
+
+        [string]$Server,
 
         [string]$LogDirectory,
 
@@ -289,6 +300,7 @@ function Deploy-TieringOUStructure {
                           -Description $node.Description `
                           -ParentDN $effectiveParent `
                           -ProtectedFromAccidentalDeletion $protection `
+                          -Server $Server `
                           -LogDirectory $LogDirectory `
                           -WhatIf:$WhatIfPreference
             $results.OUsCreated++
@@ -305,6 +317,7 @@ function Deploy-TieringOUStructure {
             $childResults = Deploy-TieringOUStructure -OUNodes $node.Children `
                                                        -ParentDN $childParentDN `
                                                        -DefaultProtection $DefaultProtection `
+                                                       -Server $Server `
                                                        -LogDirectory $LogDirectory `
                                                        -Depth ($Depth + 1) `
                                                        -WhatIf:$WhatIfPreference

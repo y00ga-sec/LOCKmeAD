@@ -135,15 +135,22 @@ function Get-RBACEnvironmentInfo {
     <#
     .SYNOPSIS
         Retrieves Active Directory environment information.
+    .PARAMETER Server
+        Target DC for all AD operations (avoids replication lag).
     .OUTPUTS
         PSCustomObject with environment information.
     #>
     [CmdletBinding()]
-    param()
+    param(
+        [string]$Server
+    )
+
+    $serverParam = @{}
+    if ($Server) { $serverParam.Server = $Server }
 
     try {
-        $domain = Get-ADDomain
-        $forest = Get-ADForest
+        $domain = Get-ADDomain @serverParam
+        $forest = Get-ADForest @serverParam
         $currentDC = $env:COMPUTERNAME
         $pdcEmulator = $domain.PDCEmulator
 
@@ -177,6 +184,8 @@ function New-RBACGroup {
         Group scope: Global or DomainLocal.
     .PARAMETER OU
         Destination OU for the group.
+    .PARAMETER Server
+        Target DC for all AD operations (avoids replication lag).
     .PARAMETER LogDirectory
         Log directory.
     #>
@@ -194,12 +203,17 @@ function New-RBACGroup {
         [Parameter(Mandatory)]
         [string]$OU,
 
+        [string]$Server,
+
         [string]$LogDirectory
     )
 
+    $serverParam = @{}
+    if ($Server) { $serverParam.Server = $Server }
+
     # Check if group already exists
     try {
-        $existingGroup = Get-ADGroup -Identity $Name -ErrorAction Stop
+        $existingGroup = Get-ADGroup -Identity $Name @serverParam -ErrorAction Stop
         Write-RBACLog -Message "Group '$Name' already exists in '$($existingGroup.DistinguishedName)'." -Level Warning -LogDirectory $LogDirectory
         return $existingGroup
     }
@@ -217,7 +231,7 @@ function New-RBACGroup {
                 Description    = $Description
                 Path           = $OU
             }
-            $newGroup = New-ADGroup @params -PassThru
+            $newGroup = New-ADGroup @params @serverParam -PassThru
             Write-RBACLog -Message "Group '$Name' ($GroupScope) created in '$OU'." -Level Success -LogDirectory $LogDirectory
             return $newGroup
         }
@@ -239,6 +253,8 @@ function Add-RBACGroupMember {
         Name of the Global group to add.
     .PARAMETER DomainLocalGroupName
         Name of the target DomainLocal group.
+    .PARAMETER Server
+        Target DC for all AD operations (avoids replication lag).
     .PARAMETER LogDirectory
         Log directory.
     #>
@@ -250,12 +266,17 @@ function Add-RBACGroupMember {
         [Parameter(Mandatory)]
         [string]$DomainLocalGroupName,
 
+        [string]$Server,
+
         [string]$LogDirectory
     )
 
+    $serverParam = @{}
+    if ($Server) { $serverParam.Server = $Server }
+
     # Check if member is already present
     try {
-        $members = Get-ADGroupMember -Identity $DomainLocalGroupName -ErrorAction Stop
+        $members = Get-ADGroupMember -Identity $DomainLocalGroupName @serverParam -ErrorAction Stop
         $alreadyMember = $members | Where-Object { $_.SamAccountName -eq $GlobalGroupName }
         if ($alreadyMember) {
             Write-RBACLog -Message "'$GlobalGroupName' is already a member of '$DomainLocalGroupName'." -Level Warning -LogDirectory $LogDirectory
@@ -268,7 +289,7 @@ function Add-RBACGroupMember {
 
     if ($PSCmdlet.ShouldProcess("$GlobalGroupName -> $DomainLocalGroupName", "Add member")) {
         try {
-            Add-ADGroupMember -Identity $DomainLocalGroupName -Members $GlobalGroupName
+            Add-ADGroupMember -Identity $DomainLocalGroupName -Members $GlobalGroupName @serverParam
             Write-RBACLog -Message "'$GlobalGroupName' added as member of '$DomainLocalGroupName'." -Level Success -LogDirectory $LogDirectory
         }
         catch {
@@ -289,6 +310,8 @@ function Set-RBACNTFSPermission {
         Name of the group to grant permissions to.
     .PARAMETER Permission
         Permission object from JSON containing Path, Rights, InheritanceFlags, PropagationFlags, AccessControlType.
+    .PARAMETER Server
+        Target DC for all AD operations (avoids replication lag).
     .PARAMETER LogDirectory
         Log directory.
     #>
@@ -300,8 +323,13 @@ function Set-RBACNTFSPermission {
         [Parameter(Mandatory)]
         [PSCustomObject]$Permission,
 
+        [string]$Server,
+
         [string]$LogDirectory
     )
+
+    $serverParam = @{}
+    if ($Server) { $serverParam.Server = $Server }
 
     $path = $Permission.Path
     $rights = $Permission.Rights
@@ -317,7 +345,7 @@ function Set-RBACNTFSPermission {
 
         try {
             $acl = Get-Acl -Path $path
-            $identity = (Get-ADDomain).NetBIOSName + "\$GroupName"
+            $identity = (Get-ADDomain @serverParam).NetBIOSName + "\$GroupName"
 
             $aceRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
                 $identity,
@@ -349,6 +377,8 @@ function Set-RBACADPermission {
         Name of the group to grant permissions to.
     .PARAMETER Permission
         Permission object from JSON containing TargetOU, ADRights, ObjectType, InheritanceType, InheritedObjectType, AccessControlType.
+    .PARAMETER Server
+        Target DC for all AD operations (avoids replication lag).
     .PARAMETER LogDirectory
         Log directory.
     #>
@@ -360,8 +390,13 @@ function Set-RBACADPermission {
         [Parameter(Mandatory)]
         [PSCustomObject]$Permission,
 
+        [string]$Server,
+
         [string]$LogDirectory
     )
+
+    $serverParam = @{}
+    if ($Server) { $serverParam.Server = $Server }
 
     $targetOU = $Permission.TargetOU
     $adRights = $Permission.ADRights
@@ -373,7 +408,7 @@ function Set-RBACADPermission {
     if ($PSCmdlet.ShouldProcess("$targetOU", "Apply AD delegation ($adRights) for '$GroupName'")) {
         try {
             # Retrieve the group SID
-            $group = Get-ADGroup -Identity $GroupName
+            $group = Get-ADGroup -Identity $GroupName @serverParam
             $groupSID = New-Object System.Security.Principal.SecurityIdentifier($group.SID)
 
             # Build the AD ACE
@@ -416,6 +451,8 @@ function Set-RBACADCSPermission {
         Name of the group to grant permissions to.
     .PARAMETER Permission
         Permission object from JSON containing CAName, CAHostname, Right.
+    .PARAMETER Server
+        Target DC for all AD operations (avoids replication lag).
     .PARAMETER LogDirectory
         Log directory.
     #>
@@ -427,8 +464,13 @@ function Set-RBACADCSPermission {
         [Parameter(Mandatory)]
         [PSCustomObject]$Permission,
 
+        [string]$Server,
+
         [string]$LogDirectory
     )
+
+    $serverParam = @{}
+    if ($Server) { $serverParam.Server = $Server }
 
     $caName = $Permission.CAName
     $caHostname = $Permission.CAHostname
@@ -450,7 +492,7 @@ function Set-RBACADCSPermission {
     if ($PSCmdlet.ShouldProcess("$caConfig", "Apply ADCS right '$right' for '$GroupName'")) {
         try {
             # Retrieve the group SID
-            $group = Get-ADGroup -Identity $GroupName
+            $group = Get-ADGroup -Identity $GroupName @serverParam
             $groupSID = $group.SID
 
             # Open the remote registry on the CA server
