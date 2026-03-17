@@ -2869,6 +2869,24 @@ function Register-GUIEvents {
     # Save button
     $UI.BtnSave.Add_Click({ Save-AllConfigs })
 
+    # Deploy select all / deselect all
+    $UI.BtnDeploySelectAll.Add_Click({
+        $UI.DeployHardening.IsChecked = $true
+        $UI.DeployTiering.IsChecked   = $true
+        $UI.DeployRBAC.IsChecked      = $true
+        $UI.DeployPSO.IsChecked       = $true
+        $UI.DeploySilo.IsChecked      = $true
+        $UI.DeployGPO.IsChecked       = $true
+    })
+    $UI.BtnDeployDeselectAll.Add_Click({
+        $UI.DeployHardening.IsChecked = $false
+        $UI.DeployTiering.IsChecked   = $false
+        $UI.DeployRBAC.IsChecked      = $false
+        $UI.DeployPSO.IsChecked       = $false
+        $UI.DeploySilo.IsChecked      = $false
+        $UI.DeployGPO.IsChecked       = $false
+    })
+
     # Console clear
     $UI.BtnClearConsole.Add_Click({
         $UI.ConsoleOutput.Document.Blocks.Clear()

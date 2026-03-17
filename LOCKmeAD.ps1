@@ -108,6 +108,7 @@ $menuItems = @(
     @{ Label = "GPO";       Desc = "Security GPO deployment";    Checked = $false }
 )
 $extraItems = @(
+    @{ Label = "All";  Desc = "Select all modules" }
     @{ Label = "GUI";  Desc = "Launch graphical interface" }
     @{ Label = "Quit"; Desc = "" }
 )
@@ -118,7 +119,7 @@ $totalLines = $menuItems.Count + 1 + $extraItems.Count  # +1 for separator
 $deployItems = $menuItems.Count
 
 Show-Logo
-Write-Host "  Select modules (Space to toggle, Enter to deploy):" -ForegroundColor White
+Write-Host "  Select modules (Space to toggle, Enter to deploy, A = all, N = none):" -ForegroundColor White
 Write-Host "  Execution order: Hardening > Tiering > RBAC > PSO > Silo > GPO" -ForegroundColor DarkGray
 Write-Host ""
 
@@ -201,10 +202,15 @@ while ($true) {
                 $action = "deploy"
             }
             elseif ($cursor -eq ($deployItems + 1)) {
+                # All: select all modules and deploy
+                foreach ($item in $menuItems) { $item.Checked = $true }
+                $action = "deploy"
+            }
+            elseif ($cursor -eq ($deployItems + 2)) {
                 # GUI
                 $action = "gui"
             }
-            elseif ($cursor -eq ($deployItems + 2)) {
+            elseif ($cursor -eq ($deployItems + 3)) {
                 # Quit
                 $action = "quit"
             }

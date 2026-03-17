@@ -255,8 +255,18 @@ function Get-MainWindowXaml {
                                    Margin="10,0,0,0" VerticalAlignment="Center"/>
                     </StackPanel>
 
-                    <TextBlock Text="Modules to deploy:" Foreground="#666" FontSize="11"
-                               Margin="6,0,0,6"/>
+                    <DockPanel Margin="6,0,0,6">
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                            <Button Name="BtnDeploySelectAll" Content="All" FontSize="10"
+                                    Background="Transparent" BorderThickness="0" Foreground="#0078D4"
+                                    Cursor="Hand" Padding="4,0"/>
+                            <TextBlock Text="|" Foreground="#CCC" FontSize="10" VerticalAlignment="Center"/>
+                            <Button Name="BtnDeployDeselectAll" Content="None" FontSize="10"
+                                    Background="Transparent" BorderThickness="0" Foreground="#0078D4"
+                                    Cursor="Hand" Padding="4,0"/>
+                        </StackPanel>
+                        <TextBlock Text="Modules to deploy:" Foreground="#666" FontSize="11"/>
+                    </DockPanel>
                     <StackPanel Margin="6,0,0,8">
                         <CheckBox Name="DeployHardening" Content="Hardening" FontSize="12" Margin="0,2"/>
                         <CheckBox Name="DeployTiering"   Content="Tiering"   FontSize="12" Margin="0,2"/>
