@@ -22,7 +22,7 @@
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [ValidateSet("Hardening", "GPO", "Tiering", "RBAC", "PSO", "All", "GUI")]
+    [ValidateSet("Hardening", "GPO", "Tiering", "RBAC", "PSO", "Silo", "All", "GUI")]
     [string[]]$Module
 )
 
@@ -45,7 +45,7 @@ function Show-Logo {
 }
 
 # ============================================================================
-# Deploy selected modules (safe order: Hardening > Tiering > RBAC > PSO > GPO)
+# Deploy selected modules (safe order: Hardening > Tiering > RBAC > PSO > Silo > GPO)
 # ============================================================================
 
 # Canonical execution order: infrastructure first, then OU-dependent modules
@@ -54,6 +54,7 @@ $script:SafeOrder = @(
     @{ Name = "Tiering";   Script = "Deploy-Tiering.ps1" }
     @{ Name = "RBAC";      Script = "Deploy-RBAC.ps1" }
     @{ Name = "PSO";       Script = "Deploy-PSO.ps1" }
+    @{ Name = "Silo";      Script = "Deploy-Silo.ps1" }
     @{ Name = "GPO";       Script = "Deploy-GPO.ps1" }
 )
 
@@ -89,7 +90,7 @@ if ($Module) {
         & "$PSScriptRoot\Launch-GUI.ps1"
         return
     }
-    $selected = @($Module | ForEach-Object { if ($_ -eq "All") { "Hardening","Tiering","RBAC","PSO","GPO" } else { $_ } }) | Select-Object -Unique
+    $selected = @($Module | ForEach-Object { if ($_ -eq "All") { "Hardening","Tiering","RBAC","PSO","Silo","GPO" } else { $_ } }) | Select-Object -Unique
     Start-SelectedDeployments $selected
     return
 }
@@ -102,8 +103,9 @@ $menuItems = @(
     @{ Label = "Hardening"; Desc = "AD remediation tasks";     Checked = $false }
     @{ Label = "Tiering";   Desc = "OU structure deployment";  Checked = $false }
     @{ Label = "RBAC";      Desc = "Role-based access control"; Checked = $false }
-    @{ Label = "PSO";       Desc = "Password policy objects";  Checked = $false }
-    @{ Label = "GPO";       Desc = "Security GPO deployment";  Checked = $false }
+    @{ Label = "PSO";       Desc = "Password policy objects";     Checked = $false }
+    @{ Label = "Silo";      Desc = "Authentication policy silos"; Checked = $false }
+    @{ Label = "GPO";       Desc = "Security GPO deployment";    Checked = $false }
 )
 $extraItems = @(
     @{ Label = "GUI";  Desc = "Launch graphical interface" }
@@ -117,7 +119,7 @@ $deployItems = $menuItems.Count
 
 Show-Logo
 Write-Host "  Select modules (Space to toggle, Enter to deploy):" -ForegroundColor White
-Write-Host "  Execution order: Hardening > Tiering > RBAC > PSO > GPO" -ForegroundColor DarkGray
+Write-Host "  Execution order: Hardening > Tiering > RBAC > PSO > Silo > GPO" -ForegroundColor DarkGray
 Write-Host ""
 
 function Get-MenuLine([int]$i, [int]$cur) {

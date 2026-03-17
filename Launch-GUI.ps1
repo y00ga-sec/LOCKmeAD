@@ -42,6 +42,7 @@ $script:ConfigPaths = @{
     Tiering   = Join-Path $scriptRoot "Config\Tiering-Config.json"
     RBAC      = Join-Path $scriptRoot "Config\RBAC-Config.json"
     PSO       = Join-Path $scriptRoot "Config\PSO-Config.json"
+    Silo      = Join-Path $scriptRoot "Config\Silo-Config.json"
 }
 $script:ScriptPaths = @{
     Hardening = Join-Path $scriptRoot "Scripts\Deploy-Hardening.ps1"
@@ -49,6 +50,7 @@ $script:ScriptPaths = @{
     Tiering   = Join-Path $scriptRoot "Scripts\Deploy-Tiering.ps1"
     RBAC      = Join-Path $scriptRoot "Scripts\Deploy-RBAC.ps1"
     PSO       = Join-Path $scriptRoot "Scripts\Deploy-PSO.ps1"
+    Silo      = Join-Path $scriptRoot "Scripts\Deploy-Silo.ps1"
 }
 
 # Runtime state
@@ -60,7 +62,11 @@ $script:GPOLinkControls = @{}
 $script:PSOToggles = @()
 $script:PSOParamControls = @{}
 $script:PSOAppliesToControls = @{}
-$script:UnsavedChanges = @{ Hardening = $false; GPO = $false; Tiering = $false; RBAC = $false; PSO = $false }
+$script:SiloToggles = @()
+$script:SiloParamControls = @{}
+$script:SiloComputerControls = @{}
+$script:SiloServiceAccountControls = @{}
+$script:UnsavedChanges = @{ Hardening = $false; GPO = $false; Tiering = $false; RBAC = $false; PSO = $false; Silo = $false }
 $script:isUpdatingSelection = $false
 $script:RemovedDLGroups = @()
 

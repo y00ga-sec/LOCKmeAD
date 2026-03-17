@@ -235,6 +235,13 @@ function Get-MainWindowXaml {
                             <TextBlock Text="Password Policy" VerticalAlignment="Center"/>
                         </StackPanel>
                     </Button>
+                    <Button Name="NavSilo" Style="{StaticResource NavBtn}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE81E;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                       VerticalAlignment="Center" Width="24"/>
+                            <TextBlock Text="Service Silos" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
                 </StackPanel>
 
                 <!-- Bottom controls -->
@@ -255,6 +262,7 @@ function Get-MainWindowXaml {
                         <CheckBox Name="DeployTiering"   Content="Tiering"   FontSize="12" Margin="0,2"/>
                         <CheckBox Name="DeployRBAC"      Content="RBAC"      FontSize="12" Margin="0,2"/>
                         <CheckBox Name="DeployPSO"       Content="PSO"       FontSize="12" Margin="0,2"/>
+                        <CheckBox Name="DeploySilo"      Content="Silo"      FontSize="12" Margin="0,2"/>
                         <CheckBox Name="DeployGPO"       Content="GPO"       FontSize="12" Margin="0,2"/>
                     </StackPanel>
                     <TextBlock Name="DeployOrderHint" Text="" FontSize="10" Foreground="#999"
@@ -342,7 +350,7 @@ function Get-MainWindowXaml {
                             </Border>
 
                             <!-- Module summaries -->
-                            <UniformGrid Columns="5" Margin="0,8,0,0">
+                            <UniformGrid Columns="6" Margin="0,8,0,0">
                                 <Border Style="{StaticResource Card}" Margin="0,0,6,0" Padding="20">
                                     <StackPanel>
                                         <TextBlock Text="&#xE72E;" FontFamily="Segoe MDL2 Assets" FontSize="22"
@@ -383,7 +391,7 @@ function Get-MainWindowXaml {
                                         <TextBlock Name="DashRBACDetail" Text="roles defined" FontSize="12" Foreground="#888"/>
                                     </StackPanel>
                                 </Border>
-                                <Border Style="{StaticResource Card}" Margin="6,0,0,0" Padding="20">
+                                <Border Style="{StaticResource Card}" Margin="3,0,3,0" Padding="20">
                                     <StackPanel>
                                         <TextBlock Text="&#xE8D7;" FontFamily="Segoe MDL2 Assets" FontSize="22"
                                                    Foreground="#0078D4" Margin="0,0,0,10"/>
@@ -391,6 +399,16 @@ function Get-MainWindowXaml {
                                         <TextBlock Name="DashPSOSummary" Text="..." FontSize="28"
                                                    FontWeight="Bold" Foreground="#0078D4" Margin="0,6,0,2"/>
                                         <TextBlock Name="DashPSODetail" Text="policies enabled" FontSize="12" Foreground="#888"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Style="{StaticResource Card}" Margin="6,0,0,0" Padding="20">
+                                    <StackPanel>
+                                        <TextBlock Text="&#xE81E;" FontFamily="Segoe MDL2 Assets" FontSize="22"
+                                                   Foreground="#0078D4" Margin="0,0,0,10"/>
+                                        <TextBlock Text="Silo" FontSize="14" FontWeight="SemiBold"/>
+                                        <TextBlock Name="DashSiloSummary" Text="..." FontSize="28"
+                                                   FontWeight="Bold" Foreground="#0078D4" Margin="0,6,0,2"/>
+                                        <TextBlock Name="DashSiloDetail" Text="silos enabled" FontSize="12" Foreground="#888"/>
                                     </StackPanel>
                                 </Border>
                             </UniformGrid>
@@ -586,6 +604,36 @@ function Get-MainWindowXaml {
                         </StackPanel>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
                             <StackPanel Name="PSOPolicyList"/>
+                        </ScrollViewer>
+                    </DockPanel>
+                </TabItem>
+
+                <!-- ======== SILO ======== -->
+                <TabItem>
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                <TextBlock Text="Service Silos" FontSize="22" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" Margin="0,0,20,0"/>
+                                <Button Name="BtnSiloSelectAll"   Content="Select All"   Style="{StaticResource ToolbarBtn}" Margin="0,0,6,0"/>
+                                <Button Name="BtnSiloDeselectAll" Content="Deselect All" Style="{StaticResource ToolbarBtn}" Margin="0,0,6,0"/>
+                                <Button Name="BtnAddSilo"         Content="+ Add Silo"   Style="{StaticResource ToolbarBtn}" Margin="0,0,6,0"/>
+                                <Button Name="BtnDeleteSilo"      Content="Delete"       Background="#FCE8E8" Foreground="#A93226"
+                                        BorderThickness="0" Padding="12,6" FontSize="12" Cursor="Hand"/>
+                            </StackPanel>
+                            <Border Background="#E8F4FD" CornerRadius="6" Padding="14,10" BorderBrush="#B8DAEF" BorderThickness="1">
+                                <StackPanel>
+                                    <TextBlock Text="&#xE946;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                               Foreground="#0078D4" VerticalAlignment="Top" Margin="0,0,0,6"/>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#333">
+                                        <Run FontWeight="SemiBold">Create per-service silos to prevent lateral movement in case a service account or T1 server running a service/scheduled task is compromised. This module is meant for restricting domain service accounts to the machine they run services on. It creates an authentication policy as well as a dedicated silo for each service account you need protection for.
+                                        Each silo prevents assigned service accounts from authenticating on systems that do not run said service. It limits blast radius for T1 lateral movement attempts. Supports both gMSAs and regular service accounts. Not meant for T0</Run>
+                                    </TextBlock>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
+                            <StackPanel Name="SiloTaskList"/>
                         </ScrollViewer>
                     </DockPanel>
                 </TabItem>

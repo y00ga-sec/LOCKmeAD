@@ -74,7 +74,7 @@ function Count-TieringOUs($nodes) {
 # ============================================================================
 
 function Load-AllConfigs {
-    foreach ($module in @('Hardening', 'GPO', 'Tiering', 'RBAC', 'PSO')) {
+    foreach ($module in @('Hardening', 'GPO', 'Tiering', 'RBAC', 'PSO', 'Silo')) {
         $path = $script:ConfigPaths[$module]
         if (Test-Path $path) {
             $script:Configs[$module] = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -150,6 +150,43 @@ function Save-AllConfigs {
         $script:Configs.PSO | ConvertTo-Json -Depth 10 | Set-Content $script:ConfigPaths.PSO -Encoding UTF8
     }
 
+    # Silo: read toggle states, parameters, and account lists back into config
+    if ($script:Configs.Silo) {
+        for ($i = 0; $i -lt $script:SiloToggles.Count; $i++) {
+            $script:Configs.Silo.Silos[$i].Enabled = [bool]$script:SiloToggles[$i].IsChecked
+        }
+        foreach ($key in $script:SiloParamControls.Keys) {
+            $parts = $key -split '\.'
+            $siloIdx = [int]$parts[0]
+            $paramName = $parts[1]
+            $control = $script:SiloParamControls[$key]
+            $value = if ($control -is [System.Windows.Controls.CheckBox]) {
+                [bool]$control.IsChecked
+            } elseif ($control -is [System.Windows.Controls.TextBox]) {
+                $text = $control.Text
+                if ($text -match '^\d+$') { [int]$text } else { $text }
+            } else { $control.Text }
+            $script:Configs.Silo.Silos[$siloIdx].$paramName = $value
+        }
+        foreach ($key in $script:SiloComputerControls.Keys) {
+            $idx = [int]$key
+            $text = $script:SiloComputerControls[$key].Text
+            $computers = if ([string]::IsNullOrWhiteSpace($text)) { @() } else {
+                @($text -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+            }
+            $script:Configs.Silo.Silos[$idx].Computers = $computers
+        }
+        foreach ($key in $script:SiloServiceAccountControls.Keys) {
+            $idx = [int]$key
+            $text = $script:SiloServiceAccountControls[$key].Text
+            $accounts = if ([string]::IsNullOrWhiteSpace($text)) { @() } else {
+                @($text -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+            }
+            $script:Configs.Silo.Silos[$idx].ServiceAccounts = $accounts
+        }
+        $script:Configs.Silo | ConvertTo-Json -Depth 10 | Set-Content $script:ConfigPaths.Silo -Encoding UTF8
+    }
+
     # Tiering: rebuild from TreeView
     if ($script:Configs.Tiering) {
         $script:Configs.Tiering.Settings.BaseDN = $UI.TieringBaseDN.Text
@@ -162,7 +199,7 @@ function Save-AllConfigs {
         $script:Configs.RBAC | ConvertTo-Json -Depth 20 | Set-Content $script:ConfigPaths.RBAC -Encoding UTF8
     }
 
-    $script:UnsavedChanges = @{ Hardening = $false; GPO = $false; Tiering = $false; RBAC = $false; PSO = $false }
+    $script:UnsavedChanges = @{ Hardening = $false; GPO = $false; Tiering = $false; RBAC = $false; PSO = $false; Silo = $false }
     Write-ConsoleUI "All configurations saved." "Success"
 }
 
@@ -233,6 +270,12 @@ function Populate-Dashboard {
         $psoTotal = $script:Configs.PSO.Policies.Count
         $UI.DashPSOSummary.Text = "$psoEnabled / $psoTotal"
         $UI.DashPSODetail.Text = "policies enabled"
+    }
+    if ($script:Configs.Silo) {
+        $siloEnabled = @($script:Configs.Silo.Silos | Where-Object { $_.Enabled }).Count
+        $siloTotal = $script:Configs.Silo.Silos.Count
+        $UI.DashSiloSummary.Text = "$siloEnabled / $siloTotal"
+        $UI.DashSiloDetail.Text = "silos enabled"
     }
 }
 
@@ -925,6 +968,395 @@ function Populate-PSOTab {
     }
 }
 
+function Populate-SiloTab {
+    $UI.SiloTaskList.Children.Clear()
+    $script:SiloToggles = @()
+    $script:SiloParamControls = @{}
+    $script:SiloComputerControls = @{}
+    $script:SiloServiceAccountControls = @{}
+
+    for ($i = 0; $i -lt $script:Configs.Silo.Silos.Count; $i++) {
+        $silo = $script:Configs.Silo.Silos[$i]
+        $idx = $i
+
+        # Card border
+        $card = New-Object System.Windows.Controls.Border
+        $card.Background = Get-WPFBrush "#FFFFFF"
+        $card.CornerRadius = [System.Windows.CornerRadius]::new(8)
+        $card.Padding = [System.Windows.Thickness]::new(16)
+        $card.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
+        $card.BorderBrush = Get-WPFBrush "#E5E5E5"
+        $card.BorderThickness = [System.Windows.Thickness]::new(1)
+
+        $outerStack = New-Object System.Windows.Controls.StackPanel
+
+        # Header row: toggle + text + badges
+        $headerDock = New-Object System.Windows.Controls.DockPanel
+
+        $toggle = New-Object System.Windows.Controls.CheckBox
+        $toggle.IsChecked = [bool]$silo.Enabled
+        $toggle.Style = $script:Window.FindResource("ToggleSwitch")
+        $toggle.VerticalAlignment = "Center"
+        [System.Windows.Controls.DockPanel]::SetDock($toggle, "Left")
+        $script:SiloToggles += $toggle
+
+        # Enforce/Audit badge
+        $enforceLabel = if ($silo.Enforce) { "Enforce" } else { "Audit" }
+        $enforceBadge = New-Object System.Windows.Controls.TextBlock
+        $enforceBadge.Text = $enforceLabel
+        $enforceBadge.FontSize = 10
+        $enforceBadge.Foreground = Get-WPFBrush $(if ($silo.Enforce) { "#922B21" } else { "#1E8449" })
+        $enforceBadge.Background = Get-WPFBrush $(if ($silo.Enforce) { "#FDEDEC" } else { "#E8F8F0" })
+        $enforceBadge.Padding = [System.Windows.Thickness]::new(6, 2, 6, 2)
+        $enforceBadge.VerticalAlignment = "Center"
+        [System.Windows.Controls.DockPanel]::SetDock($enforceBadge, "Right")
+
+        # Account count badge
+        $compCount = if ($silo.Computers) { $silo.Computers.Count } else { 0 }
+        $svcCount = if ($silo.ServiceAccounts) { $silo.ServiceAccounts.Count } else { 0 }
+        $totalAccounts = $compCount + $svcCount
+        $accountBadge = New-Object System.Windows.Controls.TextBlock
+        $accountBadge.Text = "$totalAccounts accounts"
+        $accountBadge.FontSize = 10
+        $accountBadge.Foreground = Get-WPFBrush "#6C3483"
+        $accountBadge.Background = Get-WPFBrush "#F3E8FC"
+        $accountBadge.Padding = [System.Windows.Thickness]::new(6, 2, 6, 2)
+        $accountBadge.Margin = [System.Windows.Thickness]::new(0, 0, 4, 0)
+        $accountBadge.VerticalAlignment = "Center"
+        $accountBadge.Visibility = if ($totalAccounts -gt 0) { "Visible" } else { "Collapsed" }
+        [System.Windows.Controls.DockPanel]::SetDock($accountBadge, "Right")
+        [void]$headerDock.Children.Add($accountBadge)
+
+        $textStack = New-Object System.Windows.Controls.StackPanel
+        $textStack.Margin = [System.Windows.Thickness]::new(14, 0, 10, 0)
+
+        $nameBlock = New-Object System.Windows.Controls.TextBlock
+        $nameBlock.Text = $silo.Name
+        $nameBlock.FontSize = 14
+        $nameBlock.FontWeight = "SemiBold"
+
+        $descBlock = New-Object System.Windows.Controls.TextBlock
+        $descBlock.Text = $silo.Description
+        $descBlock.FontSize = 12
+        $descBlock.Foreground = Get-WPFBrush "#666666"
+        $descBlock.TextWrapping = "Wrap"
+
+        [void]$textStack.Children.Add($nameBlock)
+        [void]$textStack.Children.Add($descBlock)
+
+        [void]$headerDock.Children.Add($toggle)
+        [void]$headerDock.Children.Add($enforceBadge)
+        [void]$headerDock.Children.Add($textStack)
+        [void]$outerStack.Children.Add($headerDock)
+
+        # Silo Settings expander
+        $expander = New-Object System.Windows.Controls.Expander
+        $expander.Header = "Silo Settings"
+        $expander.Margin = [System.Windows.Thickness]::new(58, 8, 0, 0)
+        $expander.FontSize = 12
+
+        $paramGrid = New-Object System.Windows.Controls.Grid
+        $paramGrid.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+        $col1 = New-Object System.Windows.Controls.ColumnDefinition
+        $col1.Width = [System.Windows.GridLength]::new(220)
+        $col2 = New-Object System.Windows.Controls.ColumnDefinition
+        $col2.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+        [void]$paramGrid.ColumnDefinitions.Add($col1)
+        [void]$paramGrid.ColumnDefinitions.Add($col2)
+
+        $paramDefs = @(
+            @{ Name = "TGTLifetimeMinutes"; Type = "int" }
+            @{ Name = "Enforce"; Type = "bool" }
+        )
+
+        $rowIdx = 0
+        foreach ($paramDef in $paramDefs) {
+            [void]$paramGrid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition))
+
+            $label = New-Object System.Windows.Controls.TextBlock
+            $label.Text = $paramDef.Name
+            $label.VerticalAlignment = "Center"
+            $label.Foreground = Get-WPFBrush "#555"
+            $label.Margin = [System.Windows.Thickness]::new(0, 4, 10, 4)
+            [System.Windows.Controls.Grid]::SetRow($label, $rowIdx)
+            [System.Windows.Controls.Grid]::SetColumn($label, 0)
+
+            $paramValue = $silo.($paramDef.Name)
+            if ($paramDef.Type -eq "bool") {
+                $ctrl = New-Object System.Windows.Controls.CheckBox
+                $ctrl.IsChecked = [bool]$paramValue
+                $ctrl.VerticalAlignment = "Center"
+            } else {
+                $ctrl = New-Object System.Windows.Controls.TextBox
+                $ctrl.Text = [string]$paramValue
+                $ctrl.Padding = [System.Windows.Thickness]::new(6, 4, 6, 4)
+                $ctrl.BorderBrush = Get-WPFBrush "#DDD"
+            }
+            $ctrl.Margin = [System.Windows.Thickness]::new(0, 4, 0, 4)
+            [System.Windows.Controls.Grid]::SetRow($ctrl, $rowIdx)
+            [System.Windows.Controls.Grid]::SetColumn($ctrl, 1)
+
+            [void]$paramGrid.Children.Add($label)
+            [void]$paramGrid.Children.Add($ctrl)
+            $script:SiloParamControls["$idx.$($paramDef.Name)"] = $ctrl
+            $rowIdx++
+        }
+
+        # Wire enforce badge to live-update
+        $enforceCtrl = $script:SiloParamControls["$idx.Enforce"]
+        $enforceCtrl.Tag = $enforceBadge
+        $enforceCtrl.Add_Checked({
+            $this.Tag.Text = "Enforce"
+            $this.Tag.Foreground = Get-WPFBrush "#922B21"
+            $this.Tag.Background = Get-WPFBrush "#FDEDEC"
+        })
+        $enforceCtrl.Add_Unchecked({
+            $this.Tag.Text = "Audit"
+            $this.Tag.Foreground = Get-WPFBrush "#1E8449"
+            $this.Tag.Background = Get-WPFBrush "#E8F8F0"
+        })
+
+        $expander.Content = $paramGrid
+        [void]$outerStack.Children.Add($expander)
+
+        # Computers expander
+        $computersExpander = New-Object System.Windows.Controls.Expander
+        $computersExpander.Header = "Computers"
+        $computersExpander.Margin = [System.Windows.Thickness]::new(58, 4, 0, 0)
+        $computersExpander.FontSize = 12
+
+        $computersStack = New-Object System.Windows.Controls.StackPanel
+        $computersStack.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+
+        $computersHint = New-Object System.Windows.Controls.TextBlock
+        $computersHint.Text = "One computer SAM name per line, with trailing $ (e.g. WEB01$)"
+        $computersHint.FontSize = 10
+        $computersHint.Foreground = Get-WPFBrush "#999"
+        $computersHint.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
+        [void]$computersStack.Children.Add($computersHint)
+
+        $computersTextBox = New-Object System.Windows.Controls.TextBox
+        $computersTextBox.AcceptsReturn = $true
+        $computersTextBox.TextWrapping = "Wrap"
+        $computersTextBox.MinLines = 2
+        $computersTextBox.MaxLines = 6
+        $computersTextBox.FontSize = 12
+        $computersTextBox.Padding = [System.Windows.Thickness]::new(6, 4, 6, 4)
+        $computersTextBox.BorderBrush = Get-WPFBrush "#DDD"
+        $computersTextBox.VerticalScrollBarVisibility = "Auto"
+        if ($silo.Computers -and $silo.Computers.Count -gt 0) {
+            $computersTextBox.Text = ($silo.Computers -join "`r`n")
+        }
+        $script:SiloComputerControls["$idx"] = $computersTextBox
+        [void]$computersStack.Children.Add($computersTextBox)
+
+        $computersExpander.Content = $computersStack
+        [void]$outerStack.Children.Add($computersExpander)
+
+        # Service Accounts expander
+        $svcExpander = New-Object System.Windows.Controls.Expander
+        $svcExpander.Header = "Service Accounts"
+        $svcExpander.Margin = [System.Windows.Thickness]::new(58, 4, 0, 0)
+        $svcExpander.FontSize = 12
+
+        $svcStack = New-Object System.Windows.Controls.StackPanel
+        $svcStack.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+
+        $svcHint = New-Object System.Windows.Controls.TextBlock
+        $svcHint.Text = "One service account SAM name per line (e.g. svc-monitoring-web)"
+        $svcHint.FontSize = 10
+        $svcHint.Foreground = Get-WPFBrush "#999"
+        $svcHint.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
+        [void]$svcStack.Children.Add($svcHint)
+
+        $svcTextBox = New-Object System.Windows.Controls.TextBox
+        $svcTextBox.AcceptsReturn = $true
+        $svcTextBox.TextWrapping = "Wrap"
+        $svcTextBox.MinLines = 2
+        $svcTextBox.MaxLines = 6
+        $svcTextBox.FontSize = 12
+        $svcTextBox.Padding = [System.Windows.Thickness]::new(6, 4, 6, 4)
+        $svcTextBox.BorderBrush = Get-WPFBrush "#DDD"
+        $svcTextBox.VerticalScrollBarVisibility = "Auto"
+        if ($silo.ServiceAccounts -and $silo.ServiceAccounts.Count -gt 0) {
+            $svcTextBox.Text = ($silo.ServiceAccounts -join "`r`n")
+        }
+        $script:SiloServiceAccountControls["$idx"] = $svcTextBox
+        [void]$svcStack.Children.Add($svcTextBox)
+
+        $svcExpander.Content = $svcStack
+        [void]$outerStack.Children.Add($svcExpander)
+
+        # Wire live account badge updates
+        $computersTextBox.Tag = $accountBadge
+        $svcTextBox.Tag = $accountBadge
+        # Store both textboxes in a shared tag for counting
+        $badgeState = @{ CompBox = $computersTextBox; SvcBox = $svcTextBox; Badge = $accountBadge }
+        $computersTextBox.Add_TextChanged({
+            $state = $this.Tag
+            if ($state -is [hashtable]) { $state = $state } else { return }
+        }.GetNewClosure())
+        # Use a simpler approach: each textbox updates the badge by recounting both
+        $updateBadge = {
+            param($compBox, $svcBox, $badge)
+            $compLines = @($compBox.Text -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+            $svcLines = @($svcBox.Text -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+            $total = $compLines.Count + $svcLines.Count
+            $badge.Text = "$total accounts"
+            $badge.Visibility = if ($total -gt 0) { "Visible" } else { "Collapsed" }
+        }
+
+        $computersTextBox.Tag = @{ CompBox = $computersTextBox; SvcBox = $svcTextBox; Badge = $accountBadge; Update = $updateBadge }
+        $computersTextBox.Add_TextChanged({
+            $s = $this.Tag
+            & $s.Update $s.CompBox $s.SvcBox $s.Badge
+        })
+        $svcTextBox.Tag = @{ CompBox = $computersTextBox; SvcBox = $svcTextBox; Badge = $accountBadge; Update = $updateBadge }
+        $svcTextBox.Add_TextChanged({
+            $s = $this.Tag
+            & $s.Update $s.CompBox $s.SvcBox $s.Badge
+        })
+
+        $card.Child = $outerStack
+        [void]$UI.SiloTaskList.Children.Add($card)
+    }
+}
+
+function Show-AddSiloDialog {
+    $dialogXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Add Authentication Policy Silo" Width="520" SizeToContent="Height" WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize" Background="#F3F3F3" FontFamily="Segoe UI">
+    <StackPanel Margin="24">
+        <TextBlock Text="New Authentication Policy Silo" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,20"/>
+
+        <TextBlock Text="Silo Name" FontSize="12" Foreground="#555" Margin="0,0,0,4"/>
+        <TextBox Name="SiloName" FontSize="13" Padding="6,4" Margin="0,0,0,12"/>
+
+        <TextBlock Text="Description" FontSize="12" Foreground="#555" Margin="0,0,0,4"/>
+        <TextBox Name="SiloDesc" FontSize="13" Padding="6,4" Margin="0,0,0,12"/>
+
+        <Border Background="#E8F4FD" CornerRadius="6" Padding="14" Margin="0,0,0,12">
+            <StackPanel>
+                <TextBlock Text="Policy Settings" FontSize="13" FontWeight="SemiBold" Foreground="#0078D4" Margin="0,0,0,8"/>
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                    <TextBlock Text="TGT Lifetime (minutes)" FontSize="12" Foreground="#555" Width="180" VerticalAlignment="Center"/>
+                    <TextBox Name="TGTLifetime" Text="240" FontSize="12" Padding="6,4" Width="100"/>
+                </StackPanel>
+                <CheckBox Name="EnforceCheck" Content="Enforce (uncheck for Audit mode)" FontSize="12" Margin="0,4,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <Border Background="#FEF9E7" CornerRadius="6" Padding="14" Margin="0,0,0,12">
+            <StackPanel>
+                <TextBlock Text="Computers" FontSize="13" FontWeight="SemiBold" Foreground="#7D6608" Margin="0,0,0,4"/>
+                <TextBlock Text="One computer SAM name per line, with trailing $ (e.g. WEB01$)" FontSize="10" Foreground="#999" Margin="0,0,0,4"/>
+                <TextBox Name="Computers" AcceptsReturn="True" TextWrapping="Wrap" MinLines="2" MaxLines="4"
+                         FontSize="12" Padding="6,4" VerticalScrollBarVisibility="Auto"/>
+            </StackPanel>
+        </Border>
+
+        <Border Background="#F5F5F5" CornerRadius="6" Padding="14" Margin="0,0,0,16">
+            <StackPanel>
+                <TextBlock Text="Service Accounts" FontSize="13" FontWeight="SemiBold" Foreground="#555" Margin="0,0,0,4"/>
+                <TextBlock Text="One service account SAM name per line (e.g. svc-monitoring-web)" FontSize="10" Foreground="#999" Margin="0,0,0,4"/>
+                <TextBox Name="ServiceAccounts" AcceptsReturn="True" TextWrapping="Wrap" MinLines="2" MaxLines="4"
+                         FontSize="12" Padding="6,4" VerticalScrollBarVisibility="Auto"/>
+            </StackPanel>
+        </Border>
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Name="BtnCancel" Content="Cancel" Padding="16,8" FontSize="13" Margin="0,0,8,0"
+                    Background="#E0E0E0" BorderThickness="0" Cursor="Hand"/>
+            <Button Name="BtnOK" Content="Add Silo" Padding="16,8" FontSize="13"
+                    Background="#0078D4" Foreground="White" BorderThickness="0" Cursor="Hand" FontWeight="SemiBold"/>
+        </StackPanel>
+    </StackPanel>
+</Window>
+"@
+    [xml]$xDoc = $dialogXaml
+    $xReader = [System.Xml.XmlNodeReader]::new($xDoc)
+    $dialog = [System.Windows.Markup.XamlReader]::Load($xReader)
+    $dialog.Owner = $script:Window
+
+    $dUI = @{}
+    foreach ($name in @('SiloName','SiloDesc','TGTLifetime','EnforceCheck','Computers','ServiceAccounts','BtnCancel','BtnOK')) {
+        $dUI[$name] = $dialog.FindName($name)
+    }
+
+    $script:dialogResult = $null
+    $dUI.BtnCancel.Add_Click({ $dialog.Close() })
+    $dUI.BtnOK.Add_Click({
+        $name = $dUI.SiloName.Text.Trim()
+        if ([string]::IsNullOrWhiteSpace($name)) {
+            [System.Windows.MessageBox]::Show("Silo name is required.", "Validation", "OK", "Warning")
+            return
+        }
+        $tgt = if ($dUI.TGTLifetime.Text -match '^\d+$') { [int]$dUI.TGTLifetime.Text } else { 240 }
+        if ($tgt -lt 45) {
+            [System.Windows.MessageBox]::Show("TGT lifetime must be >= 45 minutes.", "Validation", "OK", "Warning")
+            return
+        }
+        $computers = if ([string]::IsNullOrWhiteSpace($dUI.Computers.Text)) { @() } else {
+            @($dUI.Computers.Text -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+        }
+        $svcAccounts = if ([string]::IsNullOrWhiteSpace($dUI.ServiceAccounts.Text)) { @() } else {
+            @($dUI.ServiceAccounts.Text -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+        }
+        $script:dialogResult = [PSCustomObject]@{
+            Name               = $name
+            Description        = $dUI.SiloDesc.Text.Trim()
+            Enabled            = $true
+            Enforce            = [bool]$dUI.EnforceCheck.IsChecked
+            TGTLifetimeMinutes = $tgt
+            ServiceAccounts    = $svcAccounts
+            Computers          = $computers
+        }
+        $dialog.Close()
+    })
+
+    $dialog.ShowDialog() | Out-Null
+    return $script:dialogResult
+}
+
+function Show-DeleteSiloDialog([string[]]$names) {
+    $dialogXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Delete Silo" Width="400" SizeToContent="Height" WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize" Background="#F3F3F3" FontFamily="Segoe UI">
+    <StackPanel Margin="24">
+        <TextBlock Text="Select silo to delete:" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,12"/>
+        <ListBox Name="SiloList" FontSize="13" MaxHeight="200" Margin="0,0,0,16"/>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Name="BtnCancel" Content="Cancel" Padding="16,8" FontSize="13" Margin="0,0,8,0"
+                    Background="#E0E0E0" BorderThickness="0" Cursor="Hand"/>
+            <Button Name="BtnOK" Content="Delete" Padding="16,8" FontSize="13"
+                    Background="#E74C3C" Foreground="White" BorderThickness="0" Cursor="Hand" FontWeight="SemiBold"/>
+        </StackPanel>
+    </StackPanel>
+</Window>
+"@
+    [xml]$xDoc = $dialogXaml
+    $xReader = [System.Xml.XmlNodeReader]::new($xDoc)
+    $dialog = [System.Windows.Markup.XamlReader]::Load($xReader)
+    $dialog.Owner = $script:Window
+
+    $list = $dialog.FindName("SiloList")
+    foreach ($n in $names) { [void]$list.Items.Add($n) }
+
+    $script:dialogResult = $null
+    $dialog.FindName("BtnCancel").Add_Click({ $dialog.Close() })
+    $dialog.FindName("BtnOK").Add_Click({
+        if ($list.SelectedItem) {
+            $script:dialogResult = $list.SelectedItem.ToString()
+            $dialog.Close()
+        }
+    })
+
+    $dialog.ShowDialog() | Out-Null
+    return $script:dialogResult
+}
+
 function Show-RBACRoleDetail($role) {
     $UI.RBACDetailTitle.Text = $role.Name
     $UI.RBACDetailDesc.Text = $role.Description
@@ -1195,19 +1627,20 @@ function Show-RBACRoleDetail($role) {
 
 function Set-ActiveTab([int]$index) {
     $UI.MainTabs.SelectedIndex = $index
-    $navButtons = @($UI.NavDashboard, $UI.NavHardening, $UI.NavGPO, $UI.NavTiering, $UI.NavRBAC, $UI.NavPSO)
+    $navButtons = @($UI.NavDashboard, $UI.NavHardening, $UI.NavGPO, $UI.NavTiering, $UI.NavRBAC, $UI.NavPSO, $UI.NavSilo)
     $activeStyle = $script:Window.FindResource("NavBtnActive")
     $normalStyle = $script:Window.FindResource("NavBtn")
     for ($i = 0; $i -lt $navButtons.Count; $i++) {
         $navButtons[$i].Style = if ($i -eq $index) { $activeStyle } else { $normalStyle }
     }
-    # Search bar visible on Hardening and GPO tabs
-    $UI.SearchBarPanel.Visibility = if ($index -in @(1, 2, 5)) { "Visible" } else { "Collapsed" }
+    # Search bar visible on Hardening, GPO, PSO, and Silo tabs
+    $UI.SearchBarPanel.Visibility = if ($index -in @(1, 2, 5, 6)) { "Visible" } else { "Collapsed" }
     if ($index -eq 1) { $UI.SearchPlaceholder.Text = "Search hardening tasks..." }
     elseif ($index -eq 2) { $UI.SearchPlaceholder.Text = "Search GPO templates..." }
     elseif ($index -eq 5) { $UI.SearchPlaceholder.Text = "Search password policies..." }
+    elseif ($index -eq 6) { $UI.SearchPlaceholder.Text = "Search authentication silos..." }
     # Clear search when switching tabs
-    if ($index -in @(1, 2, 5)) { $UI.SearchBox.Text = "" }
+    if ($index -in @(1, 2, 5, 6)) { $UI.SearchBox.Text = "" }
 }
 
 # ============================================================================
@@ -1225,6 +1658,8 @@ function Invoke-Search([string]$query) {
             foreach ($child in $UI.GPOTaskList.Children) { $child.Visibility = "Visible" }
         } elseif ($activeTab -eq 5) {
             foreach ($child in $UI.PSOPolicyList.Children) { $child.Visibility = "Visible" }
+        } elseif ($activeTab -eq 6) {
+            foreach ($child in $UI.SiloTaskList.Children) { $child.Visibility = "Visible" }
         }
         return
     }
@@ -1250,6 +1685,12 @@ function Invoke-Search([string]$query) {
             $match = $policy.Name.ToLower().Contains($q) -or $policy.Description.ToLower().Contains($q)
             $UI.PSOPolicyList.Children[$i].Visibility = if ($match) { "Visible" } else { "Collapsed" }
         }
+    } elseif ($activeTab -eq 6) {
+        for ($i = 0; $i -lt $UI.SiloTaskList.Children.Count; $i++) {
+            $silo = $script:Configs.Silo.Silos[$i]
+            $match = $silo.Name.ToLower().Contains($q) -or $silo.Description.ToLower().Contains($q)
+            $UI.SiloTaskList.Children[$i].Visibility = if ($match) { "Visible" } else { "Collapsed" }
+        }
     }
 }
 
@@ -1258,7 +1699,7 @@ function Invoke-Search([string]$query) {
 # ============================================================================
 
 # Canonical safe execution order
-$script:DeploySafeOrder = @("Hardening", "Tiering", "RBAC", "PSO", "GPO")
+$script:DeploySafeOrder = @("Hardening", "Tiering", "RBAC", "PSO", "Silo", "GPO")
 
 function Start-SingleDeployment([string]$module) {
     $whatIf = [bool]$UI.WhatIfToggle.IsChecked
@@ -1295,6 +1736,7 @@ function Start-SelectedDeployments {
     if ($UI.DeployTiering.IsChecked)   { $selected += "Tiering" }
     if ($UI.DeployRBAC.IsChecked)      { $selected += "RBAC" }
     if ($UI.DeployPSO.IsChecked)       { $selected += "PSO" }
+    if ($UI.DeploySilo.IsChecked)      { $selected += "Silo" }
     if ($UI.DeployGPO.IsChecked)       { $selected += "GPO" }
 
     if ($selected.Count -eq 0) {
@@ -1322,6 +1764,7 @@ function Update-DeployOrderHint {
     if ($UI.DeployTiering.IsChecked)   { $selected += "Tiering" }
     if ($UI.DeployRBAC.IsChecked)      { $selected += "RBAC" }
     if ($UI.DeployPSO.IsChecked)       { $selected += "PSO" }
+    if ($UI.DeploySilo.IsChecked)      { $selected += "Silo" }
     if ($UI.DeployGPO.IsChecked)       { $selected += "GPO" }
 
     if ($selected.Count -le 1) {
@@ -2132,6 +2575,7 @@ function Initialize-GUI {
     if ($script:Configs.Tiering)   { Populate-TieringTab }
     if ($script:Configs.RBAC)      { Populate-RBACTab }
     if ($script:Configs.PSO)       { Populate-PSOTab }
+    if ($script:Configs.Silo)      { Populate-SiloTab }
 
     Write-ConsoleUI "GUI initialized. Ready." "Info"
 }
@@ -2144,6 +2588,7 @@ function Register-GUIEvents {
     $UI.NavTiering.Add_Click({ Set-ActiveTab 3 })
     $UI.NavRBAC.Add_Click({ Set-ActiveTab 4 })
     $UI.NavPSO.Add_Click({ Set-ActiveTab 5 })
+    $UI.NavSilo.Add_Click({ Set-ActiveTab 6 })
 
     # Search
     $UI.SearchBox.Add_TextChanged({ Invoke-Search $UI.SearchBox.Text })
@@ -2207,6 +2652,44 @@ function Register-GUIEvents {
                 $script:Configs.PSO.Policies = @($script:Configs.PSO.Policies | Where-Object { $_.Name -ne $picked })
                 Populate-PSOTab
                 Write-ConsoleUI "Policy '$picked' deleted." "Success"
+            }
+        }
+    })
+
+    # Silo toolbar
+    $UI.BtnSiloSelectAll.Add_Click({
+        foreach ($t in $script:SiloToggles) { $t.IsChecked = $true }
+    })
+    $UI.BtnSiloDeselectAll.Add_Click({
+        foreach ($t in $script:SiloToggles) { $t.IsChecked = $false }
+    })
+
+    # Silo add
+    $UI.BtnAddSilo.Add_Click({
+        $newSilo = Show-AddSiloDialog
+        if ($newSilo) {
+            $script:Configs.Silo.Silos = @($script:Configs.Silo.Silos) + @($newSilo)
+            Populate-SiloTab
+            Write-ConsoleUI "Silo '$($newSilo.Name)' added." "Success"
+        }
+    })
+
+    # Silo delete
+    $UI.BtnDeleteSilo.Add_Click({
+        if (-not $script:Configs.Silo -or $script:Configs.Silo.Silos.Count -eq 0) {
+            Write-ConsoleUI "No silos to delete." "Warning"
+            return
+        }
+        $names = @($script:Configs.Silo.Silos | ForEach-Object { $_.Name })
+        $picked = Show-DeleteSiloDialog $names
+        if ($picked) {
+            $result = [System.Windows.MessageBox]::Show(
+                "Delete silo '$picked'? This cannot be undone.", "Confirm Deletion",
+                [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning)
+            if ($result -eq "Yes") {
+                $script:Configs.Silo.Silos = @($script:Configs.Silo.Silos | Where-Object { $_.Name -ne $picked })
+                Populate-SiloTab
+                Write-ConsoleUI "Silo '$picked' deleted." "Success"
             }
         }
     })
@@ -2354,6 +2837,8 @@ function Register-GUIEvents {
     $UI.DeployRBAC.Add_Unchecked({ Update-DeployOrderHint })
     $UI.DeployPSO.Add_Checked({ Update-DeployOrderHint })
     $UI.DeployPSO.Add_Unchecked({ Update-DeployOrderHint })
+    $UI.DeploySilo.Add_Checked({ Update-DeployOrderHint })
+    $UI.DeploySilo.Add_Unchecked({ Update-DeployOrderHint })
     $UI.DeployGPO.Add_Checked({ Update-DeployOrderHint })
     $UI.DeployGPO.Add_Unchecked({ Update-DeployOrderHint })
 
@@ -2364,6 +2849,7 @@ function Register-GUIEvents {
         if ($UI.DeployTiering.IsChecked)   { $selected += "Tiering" }
         if ($UI.DeployRBAC.IsChecked)      { $selected += "RBAC" }
         if ($UI.DeployPSO.IsChecked)       { $selected += "PSO" }
+        if ($UI.DeploySilo.IsChecked)      { $selected += "Silo" }
         if ($UI.DeployGPO.IsChecked)       { $selected += "GPO" }
         if ($selected.Count -eq 0) {
             Write-ConsoleUI "No modules selected for deployment." "Warning"
