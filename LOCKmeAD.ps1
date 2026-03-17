@@ -108,9 +108,10 @@ $menuItems = @(
     @{ Label = "GPO";       Desc = "Security GPO deployment";    Checked = $false }
 )
 $extraItems = @(
-    @{ Label = "All";  Desc = "Select all modules" }
-    @{ Label = "GUI";  Desc = "Launch graphical interface" }
-    @{ Label = "Quit"; Desc = "" }
+    @{ Label = "Deploy"; Desc = "Deploy selected modules" }
+    @{ Label = "All";    Desc = "Select all and deploy" }
+    @{ Label = "GUI";    Desc = "Launch graphical interface" }
+    @{ Label = "Quit";   Desc = "" }
 )
 
 $cursor = 0
@@ -119,7 +120,7 @@ $totalLines = $menuItems.Count + 1 + $extraItems.Count  # +1 for separator
 $deployItems = $menuItems.Count
 
 Show-Logo
-Write-Host "  Select modules (Space to toggle, Enter to deploy, A = all, N = none):" -ForegroundColor White
+Write-Host "  Select modules (Space/Enter to toggle, A = all, N = none):" -ForegroundColor White
 Write-Host "  Execution order: Hardening > Tiering > RBAC > PSO > Silo > GPO" -ForegroundColor DarkGray
 Write-Host ""
 
@@ -198,23 +199,30 @@ while ($true) {
         }
         'Enter' {
             if ($cursor -lt $deployItems) {
-                # Enter on a deploy item = deploy selected
-                $action = "deploy"
+                # Enter on a module item = toggle (same as Space)
+                $menuItems[$cursor].Checked = -not $menuItems[$cursor].Checked
             }
             elseif ($cursor -eq ($deployItems + 1)) {
+                # Deploy selected
+                $action = "deploy"
+                break
+            }
+            elseif ($cursor -eq ($deployItems + 2)) {
                 # All: select all modules and deploy
                 foreach ($item in $menuItems) { $item.Checked = $true }
                 $action = "deploy"
-            }
-            elseif ($cursor -eq ($deployItems + 2)) {
-                # GUI
-                $action = "gui"
+                break
             }
             elseif ($cursor -eq ($deployItems + 3)) {
+                # GUI
+                $action = "gui"
+                break
+            }
+            elseif ($cursor -eq ($deployItems + 4)) {
                 # Quit
                 $action = "quit"
+                break
             }
-            break
         }
     }
     if ($action) { break }
