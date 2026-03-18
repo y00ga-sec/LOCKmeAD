@@ -2,25 +2,33 @@
   "Settings": {
     "LogDirectory": "./Logs"
   },
-
   "Silos": [
     {
-      "Name": "T1-Monitoring-WebServers",
-      "Description": "Auth silo restricting monitoring service accounts to T1 web servers",
+      "Name": "T1-Service1",
+      "Description": "",
       "Enabled": true,
       "Enforce": false,
       "TGTLifetimeMinutes": 240,
-      "ServiceAccounts": [],
-      "Computers": []
+      "ServiceAccounts": null,
+      "Computers": null
     },
     {
-      "Name": "T1-Monitoring-DBServers",
-      "Description": "Auth silo restricting monitoring service accounts to T1 database servers",
-      "Enabled": false,
+      "Name": "T1-Service2",
+      "Description": "",
+      "Enabled": true,
       "Enforce": false,
       "TGTLifetimeMinutes": 240,
-      "ServiceAccounts": [],
-      "Computers": []
+      "ServiceAccounts": null,
+      "Computers": null
+    },
+    {
+      "Name": "T1-Service3",
+      "Description": "",
+      "Enabled": true,
+      "Enforce": false,
+      "TGTLifetimeMinutes": 240,
+      "ServiceAccounts": null,
+      "Computers": null
     }
   ]
 }

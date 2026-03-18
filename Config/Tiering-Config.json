@@ -18,6 +18,10 @@
             {
               "Name": "Delegation",
               "Description": "Tier 0 Domain Local delegation groups"
+            },
+            {
+              "Name": "GPO",
+              "Description": ""
             }
           ]
         },
@@ -64,16 +68,22 @@
           "Description": "Tier 0 contacts"
         },
         {
-          "Name": "Users",
-          "Description": "Tier 0 users"
-        },
-        {
           "Name": "Servers",
-          "Description": "Tier 0 servers"
+          "Description": "Tier 0 servers",
+          "Children": [
+            {
+              "Name": "Disabled",
+              "Description": ""
+            }
+          ]
         },
         {
           "Name": "PAWs",
           "Description": "Tier 0 Privileged Access Workstations (PAW)"
+        },
+        {
+          "Name": "Services",
+          "Description": ""
         }
       ]
     },
@@ -86,12 +96,18 @@
           "Description": "Tier 1 contacts"
         },
         {
-          "Name": "Users",
-          "Description": "Tier 1 users"
+          "Name": "Servers",
+          "Description": "Tier 1 servers",
+          "Children": [
+            {
+              "Name": "Services",
+              "Description": ""
+            }
+          ]
         },
         {
-          "Name": "Servers",
-          "Description": "Tier 1 servers"
+          "Name": "Services",
+          "Description": ""
         }
       ]
     },
@@ -105,11 +121,27 @@
         },
         {
           "Name": "Users",
-          "Description": "Tier 2 users"
+          "Description": "Tier 2 users",
+          "Children": [
+            {
+              "Name": "Disabled",
+              "Description": ""
+            },
+            {
+              "Name": "EntraSync",
+              "Description": ""
+            }
+          ]
         },
         {
           "Name": "Workstations",
-          "Description": "Tier 2 workstations"
+          "Description": "Tier 2 workstations",
+          "Children": [
+            {
+              "Name": "Disabled",
+              "Description": ""
+            }
+          ]
         }
       ]
     }

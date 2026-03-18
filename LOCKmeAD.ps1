@@ -22,7 +22,7 @@
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [ValidateSet("Hardening", "GPO", "Tiering", "RBAC", "PSO", "Silo", "All", "GUI")]
+    [ValidateSet("Hardening", "GPO", "Tiering", "RBAC", "PSO", "Silo", "All", "GUI", "JIT")]
     [string[]]$Module
 )
 
@@ -45,7 +45,7 @@ function Show-Logo {
 }
 
 # ============================================================================
-# Deploy selected modules (safe order: Hardening > Tiering > RBAC > PSO > Silo > GPO)
+# Deploy selected modules (safe order: Hardening > Tiering > RBAC > PSO > Silo > GPO > JIT)
 # ============================================================================
 
 # Canonical execution order: infrastructure first, then OU-dependent modules
@@ -56,6 +56,7 @@ $script:SafeOrder = @(
     @{ Name = "PSO";       Script = "Deploy-PSO.ps1" }
     @{ Name = "Silo";      Script = "Deploy-Silo.ps1" }
     @{ Name = "GPO";       Script = "Deploy-GPO.ps1" }
+    @{ Name = "JIT";       Script = "Deploy-JIT.ps1" }
 )
 
 function Start-SelectedDeployments([string[]]$Selected) {
@@ -90,7 +91,7 @@ if ($Module) {
         & "$PSScriptRoot\Launch-GUI.ps1"
         return
     }
-    $selected = @($Module | ForEach-Object { if ($_ -eq "All") { "Hardening","Tiering","RBAC","PSO","Silo","GPO" } else { $_ } }) | Select-Object -Unique
+    $selected = @($Module | ForEach-Object { if ($_ -eq "All") { "Hardening","Tiering","RBAC","PSO","Silo","GPO","JIT" } else { $_ } }) | Select-Object -Unique
     Start-SelectedDeployments $selected
     return
 }
@@ -106,6 +107,7 @@ $menuItems = @(
     @{ Label = "PSO";       Desc = "Password policy objects";     Checked = $false }
     @{ Label = "Silo";      Desc = "Authentication policy silos"; Checked = $false }
     @{ Label = "GPO";       Desc = "Security GPO deployment";    Checked = $false }
+    @{ Label = "JIT";       Desc = "JIT tool deployment (GPO)";  Checked = $false }
 )
 $extraItems = @(
     @{ Label = "Deploy"; Desc = "Deploy selected modules" }
@@ -121,7 +123,7 @@ $deployItems = $menuItems.Count
 
 Show-Logo
 Write-Host "  Select modules (Space/Enter to toggle, A = all, N = none):" -ForegroundColor White
-Write-Host "  Execution order: Hardening > Tiering > RBAC > PSO > Silo > GPO" -ForegroundColor DarkGray
+Write-Host "  Execution order: Hardening > Tiering > RBAC > PSO > Silo > GPO > JIT" -ForegroundColor DarkGray
 Write-Host ""
 
 function Get-MenuLine([int]$i, [int]$cur) {

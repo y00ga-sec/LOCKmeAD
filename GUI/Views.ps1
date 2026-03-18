@@ -242,6 +242,13 @@ function Get-MainWindowXaml {
                             <TextBlock Text="Service Silos" VerticalAlignment="Center"/>
                         </StackPanel>
                     </Button>
+                    <Button Name="NavJIT" Style="{StaticResource NavBtn}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE823;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                       VerticalAlignment="Center" Width="24"/>
+                            <TextBlock Text="JIT Deploy" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
                 </StackPanel>
 
                 <!-- Bottom controls -->
@@ -274,6 +281,7 @@ function Get-MainWindowXaml {
                         <CheckBox Name="DeployPSO"       Content="PSO"       FontSize="12" Margin="0,2"/>
                         <CheckBox Name="DeploySilo"      Content="Silo"      FontSize="12" Margin="0,2"/>
                         <CheckBox Name="DeployGPO"       Content="GPO"       FontSize="12" Margin="0,2"/>
+                        <CheckBox Name="DeployJIT"       Content="JIT"       FontSize="12" Margin="0,2"/>
                     </StackPanel>
                     <TextBlock Name="DeployOrderHint" Text="" FontSize="10" Foreground="#999"
                                Margin="6,0,0,4" TextWrapping="Wrap" Visibility="Collapsed"/>
@@ -360,7 +368,7 @@ function Get-MainWindowXaml {
                             </Border>
 
                             <!-- Module summaries -->
-                            <UniformGrid Columns="6" Margin="0,8,0,0">
+                            <UniformGrid Columns="7" Margin="0,8,0,0">
                                 <Border Style="{StaticResource Card}" Margin="0,0,6,0" Padding="20">
                                     <StackPanel>
                                         <TextBlock Text="&#xE72E;" FontFamily="Segoe MDL2 Assets" FontSize="22"
@@ -411,7 +419,7 @@ function Get-MainWindowXaml {
                                         <TextBlock Name="DashPSODetail" Text="policies enabled" FontSize="12" Foreground="#888"/>
                                     </StackPanel>
                                 </Border>
-                                <Border Style="{StaticResource Card}" Margin="6,0,0,0" Padding="20">
+                                <Border Style="{StaticResource Card}" Margin="3,0,3,0" Padding="20">
                                     <StackPanel>
                                         <TextBlock Text="&#xE81E;" FontFamily="Segoe MDL2 Assets" FontSize="22"
                                                    Foreground="#0078D4" Margin="0,0,0,10"/>
@@ -419,6 +427,16 @@ function Get-MainWindowXaml {
                                         <TextBlock Name="DashSiloSummary" Text="..." FontSize="28"
                                                    FontWeight="Bold" Foreground="#0078D4" Margin="0,6,0,2"/>
                                         <TextBlock Name="DashSiloDetail" Text="silos enabled" FontSize="12" Foreground="#888"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Style="{StaticResource Card}" Margin="6,0,0,0" Padding="20">
+                                    <StackPanel>
+                                        <TextBlock Text="&#xE823;" FontFamily="Segoe MDL2 Assets" FontSize="22"
+                                                   Foreground="#0078D4" Margin="0,0,0,10"/>
+                                        <TextBlock Text="JIT" FontSize="14" FontWeight="SemiBold"/>
+                                        <TextBlock Name="DashJITSummary" Text="..." FontSize="28"
+                                                   FontWeight="Bold" Foreground="#0078D4" Margin="0,6,0,2"/>
+                                        <TextBlock Name="DashJITDetail" Text="configured" FontSize="12" Foreground="#888"/>
                                     </StackPanel>
                                 </Border>
                             </UniformGrid>
@@ -644,6 +662,62 @@ function Get-MainWindowXaml {
                         </StackPanel>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
                             <StackPanel Name="SiloTaskList"/>
+                        </ScrollViewer>
+                    </DockPanel>
+                </TabItem>
+
+                <!-- ======== JIT ======== -->
+                <TabItem>
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+                            <TextBlock Text="JIT Tool Deployment" FontSize="22" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" Margin="0,0,0,10"/>
+                            <Border Background="#E8F4FD" CornerRadius="6" Padding="14,10" BorderBrush="#B8DAEF" BorderThickness="1">
+                                <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#333">
+                                    <Run FontWeight="SemiBold">Deploy the JIT Access Manager tool to T0 admin workstations via GPO. The tool allows admins to temporarily add accounts to AD groups using PAM time-limited membership (auto-expiring TTL). A startup script copies the tool locally and creates a desktop shortcut. Only machines in the filtering group will receive the deployment.</Run>
+                                </TextBlock>
+                            </Border>
+                        </StackPanel>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
+                            <StackPanel>
+                                <Border Style="{StaticResource Card}" Padding="16" Margin="0,0,0,8">
+                                    <StackPanel>
+                                        <TextBlock Text="Distribution Settings" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,12"/>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="180"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Tools Share Path" FontSize="12" Foreground="#555" VerticalAlignment="Center" Margin="0,0,0,6"/>
+                                            <TextBox Name="JITToolsSharePath" Grid.Row="0" Grid.Column="1" FontSize="12" Padding="6,4" Margin="0,0,0,6"
+                                                     ToolTip="UNC path where the JIT tool will be published (e.g. \\DOMAIN\NETLOGON\JIT)"/>
+                                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Install Path (on target)" FontSize="12" Foreground="#555" VerticalAlignment="Center"/>
+                                            <TextBox Name="JITInstallPath" Grid.Row="1" Grid.Column="1" FontSize="12" Padding="6,4"
+                                                     ToolTip="Local path on target machines where the tool will be installed"/>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource Card}" Padding="16" Margin="0,0,0,8">
+                                    <StackPanel>
+                                        <TextBlock Text="GPO Settings" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,12"/>
+                                        <TextBlock Text="Filtering Groups OU" FontSize="12" Foreground="#555" Margin="0,0,0,4"/>
+                                        <TextBox Name="JITFilteringGroupsOU" FontSize="12" Padding="6,4" Margin="0,0,0,12"
+                                                 ToolTip="OU where the DL_JIT_Tool_Machines filtering group will be created"/>
+                                        <TextBlock Text="GPO Name" FontSize="12" Foreground="#555" Margin="0,0,0,4"/>
+                                        <TextBox Name="JITGPOName" FontSize="12" Padding="6,4" Margin="0,0,0,12"/>
+                                        <TextBlock Text="GPO Description" FontSize="12" Foreground="#555" Margin="0,0,0,4"/>
+                                        <TextBox Name="JITGPODescription" FontSize="12" Padding="6,4" Margin="0,0,0,12"/>
+                                        <TextBlock Text="Link Targets (one OU DN per line)" FontSize="12" Foreground="#555" Margin="0,0,0,4"/>
+                                        <TextBox Name="JITGPOLinkTargets" FontSize="12" Padding="6,4" AcceptsReturn="True" TextWrapping="Wrap" Height="80" VerticalScrollBarVisibility="Auto"
+                                                 ToolTip="Target OUs where the GPO will be linked (T0 admin workstation OUs)"/>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
                         </ScrollViewer>
                     </DockPanel>
                 </TabItem>

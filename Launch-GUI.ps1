@@ -43,6 +43,7 @@ $script:ConfigPaths = @{
     RBAC      = Join-Path $scriptRoot "Config\RBAC-Config.json"
     PSO       = Join-Path $scriptRoot "Config\PSO-Config.json"
     Silo      = Join-Path $scriptRoot "Config\Silo-Config.json"
+    JIT       = Join-Path $scriptRoot "Config\JIT-Config.json"
 }
 $script:ScriptPaths = @{
     Hardening = Join-Path $scriptRoot "Scripts\Deploy-Hardening.ps1"
@@ -51,6 +52,7 @@ $script:ScriptPaths = @{
     RBAC      = Join-Path $scriptRoot "Scripts\Deploy-RBAC.ps1"
     PSO       = Join-Path $scriptRoot "Scripts\Deploy-PSO.ps1"
     Silo      = Join-Path $scriptRoot "Scripts\Deploy-Silo.ps1"
+    JIT       = Join-Path $scriptRoot "Scripts\Deploy-JIT.ps1"
 }
 
 # Runtime state
@@ -66,7 +68,7 @@ $script:SiloToggles = @()
 $script:SiloParamControls = @{}
 $script:SiloComputerControls = @{}
 $script:SiloServiceAccountControls = @{}
-$script:UnsavedChanges = @{ Hardening = $false; GPO = $false; Tiering = $false; RBAC = $false; PSO = $false; Silo = $false }
+$script:UnsavedChanges = @{ Hardening = $false; GPO = $false; Tiering = $false; RBAC = $false; PSO = $false; Silo = $false; JIT = $false }
 $script:isUpdatingSelection = $false
 $script:RemovedDLGroups = @()
 

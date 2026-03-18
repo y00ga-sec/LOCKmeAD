@@ -2,41 +2,57 @@
   "Settings": {
     "LogDirectory": "./Logs"
   },
-
   "Policies": [
     {
-      "Name": "PSO-T1-ServiceAccounts",
-      "Description": "Enhanced password policy for Tier 1 service accounts",
+      "Name": "T0-Admins",
+      "Description": "",
       "Enabled": true,
-      "Precedence": 20,
+      "Precedence": 50,
       "ComplexityEnabled": true,
-      "MinPasswordLength": 20,
+      "MinPasswordLength": 16,
       "MinPasswordAgeDays": 1,
-      "MaxPasswordAgeDays": 180,
+      "MaxPasswordAgeDays": 365,
       "PasswordHistoryCount": 24,
-      "LockoutThreshold": 0,
-      "LockoutDurationMinutes": 0,
-      "LockoutObservationWindowMinutes": 0,
+      "LockoutThreshold": 5,
+      "LockoutDurationMinutes": 30,
+      "LockoutObservationWindowMinutes": 30,
       "ReversibleEncryptionEnabled": false,
       "ProtectedFromAccidentalDeletion": true,
-      "AppliesTo": []
+      "AppliesTo": null
     },
     {
-      "Name": "PSO-T2-StandardUsers",
-      "Description": "Standard password policy for Tier 2 user accounts",
-      "Enabled": false,
-      "Precedence": 30,
+      "Name": "T1-Admins",
+      "Description": "",
+      "Enabled": true,
+      "Precedence": 50,
       "ComplexityEnabled": true,
       "MinPasswordLength": 12,
       "MinPasswordAgeDays": 1,
       "MaxPasswordAgeDays": 365,
-      "PasswordHistoryCount": 12,
-      "LockoutThreshold": 10,
-      "LockoutDurationMinutes": 15,
-      "LockoutObservationWindowMinutes": 15,
+      "PasswordHistoryCount": 24,
+      "LockoutThreshold": 5,
+      "LockoutDurationMinutes": 30,
+      "LockoutObservationWindowMinutes": 30,
       "ReversibleEncryptionEnabled": false,
       "ProtectedFromAccidentalDeletion": true,
-      "AppliesTo": []
+      "AppliesTo": "DL_T1"
+    },
+    {
+      "Name": "T2-Admins",
+      "Description": "",
+      "Enabled": true,
+      "Precedence": 50,
+      "ComplexityEnabled": true,
+      "MinPasswordLength": 12,
+      "MinPasswordAgeDays": 1,
+      "MaxPasswordAgeDays": 90,
+      "PasswordHistoryCount": 24,
+      "LockoutThreshold": 5,
+      "LockoutDurationMinutes": 30,
+      "LockoutObservationWindowMinutes": 30,
+      "ReversibleEncryptionEnabled": false,
+      "ProtectedFromAccidentalDeletion": true,
+      "AppliesTo": "DL_T2"
     }
   ]
 }

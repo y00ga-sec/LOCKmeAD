@@ -1,15 +1,14 @@
 {
   "Settings": {
     "LogDirectory": "./Logs",
-    "FilteringGroupsOU": ""
+    "FilteringGroupsOU": "OU=GPO,OU=GroupsT0,OU=Admin,DC=forest,DC=lol"
   },
-
   "GPOs": [
     {
       "Name": "SEC-Disable-NTLMv1",
       "Description": "Enforce NTLMv2-only authentication, refuse LM and NTLMv1 responses",
       "Enabled": true,
-      "LinkTargets": [],
+      "LinkTargets": null,
       "RegistrySettings": [
         {
           "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa",
@@ -24,7 +23,7 @@
       "Name": "SEC-Disable-LMHash",
       "Description": "Prevent storage of LAN Manager password hashes on next password change",
       "Enabled": true,
-      "LinkTargets": [],
+      "LinkTargets": null,
       "RegistrySettings": [
         {
           "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa",
@@ -39,7 +38,7 @@
       "Name": "SEC-Disable-LLMNR",
       "Description": "Disable Link-Local Multicast Name Resolution to prevent LLMNR poisoning attacks",
       "Enabled": true,
-      "LinkTargets": [],
+      "LinkTargets": null,
       "RegistrySettings": [
         {
           "Key": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient",
@@ -54,7 +53,7 @@
       "Name": "SEC-Disable-mDNS",
       "Description": "Disable Multicast DNS to prevent mDNS poisoning attacks",
       "Enabled": true,
-      "LinkTargets": [],
+      "LinkTargets": null,
       "RegistrySettings": [
         {
           "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Dnscache\\Parameters",
@@ -69,7 +68,7 @@
       "Name": "SEC-Disable-NBT-NS",
       "Description": "Disable NetBIOS over TCP/IP name resolution to prevent NBT-NS poisoning attacks",
       "Enabled": true,
-      "LinkTargets": [],
+      "LinkTargets": null,
       "RegistrySettings": [
         {
           "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\NetBT\\Parameters",
@@ -84,7 +83,7 @@
       "Name": "SEC-Disable-Wdigest",
       "Description": "Disable WDigest authentication to prevent cleartext credential caching in memory",
       "Enabled": true,
-      "LinkTargets": [],
+      "LinkTargets": null,
       "RegistrySettings": [
         {
           "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\SecurityProviders\\WDigest",
@@ -99,7 +98,7 @@
       "Name": "SEC-Disable-SMBv1",
       "Description": "Disable SMBv1 protocol (server and client) to prevent EternalBlue-class attacks",
       "Enabled": true,
-      "LinkTargets": [],
+      "LinkTargets": null,
       "RegistrySettings": [
         {
           "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters",
@@ -121,7 +120,7 @@
       "Name": "SEC-Require-SMBSigning",
       "Description": "Require SMB packet signing on both server and client to prevent relay attacks",
       "Enabled": true,
-      "LinkTargets": [],
+      "LinkTargets": null,
       "RegistrySettings": [
         {
           "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters",
@@ -143,7 +142,7 @@
       "Name": "SEC-Disable-Autorun",
       "Description": "Disable AutoRun and AutoPlay to prevent automatic execution of removable media",
       "Enabled": true,
-      "LinkTargets": [],
+      "LinkTargets": null,
       "RegistrySettings": [
         {
           "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer",
@@ -172,7 +171,7 @@
       "Name": "SEC-Disable-WSH",
       "Description": "Disable Windows Script Host to block execution of VBS, JS, and WSF scripts",
       "Enabled": false,
-      "LinkTargets": [],
+      "LinkTargets": null,
       "RegistrySettings": [
         {
           "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows Script Host\\Settings",
@@ -187,32 +186,47 @@
       "Name": "SEC-Tiering-T0-DenyLogon",
       "Description": "Deny all logon types to Tier 0 assets for T1 and T2 accounts - link to T0-Prod OUs",
       "Enabled": true,
-      "LinkTargets": [],
+      "LinkTargets": "OU=T0-Prod,DC=forest,DC=lol",
       "UserRightsAssignments": [
         {
           "Right": "SeDenyInteractiveLogonRight",
           "Description": "Deny log on locally",
-          "Groups": ["DL_T1", "DL_T2"]
+          "Groups": [
+            "DL_T1",
+            "DL_T2"
+          ]
         },
         {
           "Right": "SeDenyRemoteInteractiveLogonRight",
           "Description": "Deny log on through Remote Desktop",
-          "Groups": ["DL_T1", "DL_T2"]
+          "Groups": [
+            "DL_T1",
+            "DL_T2"
+          ]
         },
         {
           "Right": "SeDenyNetworkLogonRight",
           "Description": "Deny access from the network",
-          "Groups": ["DL_T1", "DL_T2"]
+          "Groups": [
+            "DL_T1",
+            "DL_T2"
+          ]
         },
         {
           "Right": "SeDenyBatchLogonRight",
           "Description": "Deny log on as a batch job",
-          "Groups": ["DL_T1", "DL_T2"]
+          "Groups": [
+            "DL_T1",
+            "DL_T2"
+          ]
         },
         {
           "Right": "SeDenyServiceLogonRight",
           "Description": "Deny log on as a service",
-          "Groups": ["DL_T1", "DL_T2"]
+          "Groups": [
+            "DL_T1",
+            "DL_T2"
+          ]
         }
       ]
     },
@@ -220,32 +234,47 @@
       "Name": "SEC-Tiering-T1-DenyLogon",
       "Description": "Deny all logon types to Tier 1 assets for T0 and T2 accounts - link to T1-Prod OUs",
       "Enabled": true,
-      "LinkTargets": [],
+      "LinkTargets": "OU=Servers,OU=T1-Prod,DC=forest,DC=lol",
       "UserRightsAssignments": [
         {
           "Right": "SeDenyInteractiveLogonRight",
           "Description": "Deny log on locally",
-          "Groups": ["DL_T0", "DL_T2"]
+          "Groups": [
+            "DL_T0",
+            "DL_T2"
+          ]
         },
         {
           "Right": "SeDenyRemoteInteractiveLogonRight",
           "Description": "Deny log on through Remote Desktop",
-          "Groups": ["DL_T0", "DL_T2"]
+          "Groups": [
+            "DL_T0",
+            "DL_T2"
+          ]
         },
         {
           "Right": "SeDenyNetworkLogonRight",
           "Description": "Deny access from the network",
-          "Groups": ["DL_T0", "DL_T2"]
+          "Groups": [
+            "DL_T0",
+            "DL_T2"
+          ]
         },
         {
           "Right": "SeDenyBatchLogonRight",
           "Description": "Deny log on as a batch job",
-          "Groups": ["DL_T0", "DL_T2"]
+          "Groups": [
+            "DL_T0",
+            "DL_T2"
+          ]
         },
         {
           "Right": "SeDenyServiceLogonRight",
           "Description": "Deny log on as a service",
-          "Groups": ["DL_T0", "DL_T2"]
+          "Groups": [
+            "DL_T0",
+            "DL_T2"
+          ]
         }
       ]
     },
@@ -253,32 +282,47 @@
       "Name": "SEC-Tiering-T2-DenyLogon",
       "Description": "Deny all logon types to Tier 2 assets for T0 and T1 accounts - link to T2-Prod OUs",
       "Enabled": true,
-      "LinkTargets": [],
+      "LinkTargets": "OU=Workstations,OU=T2-Prod,DC=forest,DC=lol",
       "UserRightsAssignments": [
         {
           "Right": "SeDenyInteractiveLogonRight",
           "Description": "Deny log on locally",
-          "Groups": ["DL_T0", "DL_T1"]
+          "Groups": [
+            "DL_T0",
+            "DL_T1"
+          ]
         },
         {
           "Right": "SeDenyRemoteInteractiveLogonRight",
           "Description": "Deny log on through Remote Desktop",
-          "Groups": ["DL_T0", "DL_T1"]
+          "Groups": [
+            "DL_T0",
+            "DL_T1"
+          ]
         },
         {
           "Right": "SeDenyNetworkLogonRight",
           "Description": "Deny access from the network",
-          "Groups": ["DL_T0", "DL_T1"]
+          "Groups": [
+            "DL_T0",
+            "DL_T1"
+          ]
         },
         {
           "Right": "SeDenyBatchLogonRight",
           "Description": "Deny log on as a batch job",
-          "Groups": ["DL_T0", "DL_T1"]
+          "Groups": [
+            "DL_T0",
+            "DL_T1"
+          ]
         },
         {
           "Right": "SeDenyServiceLogonRight",
           "Description": "Deny log on as a service",
-          "Groups": ["DL_T0", "DL_T1"]
+          "Groups": [
+            "DL_T0",
+            "DL_T1"
+          ]
         }
       ]
     },
@@ -286,7 +330,7 @@
       "Name": "SEC-Harden-RDP",
       "Description": "Enforce Network Level Authentication and strong encryption for Remote Desktop connections",
       "Enabled": true,
-      "LinkTargets": [],
+      "LinkTargets": null,
       "RegistrySettings": [
         {
           "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp",

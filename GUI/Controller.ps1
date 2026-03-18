@@ -74,7 +74,7 @@ function Count-TieringOUs($nodes) {
 # ============================================================================
 
 function Load-AllConfigs {
-    foreach ($module in @('Hardening', 'GPO', 'Tiering', 'RBAC', 'PSO', 'Silo')) {
+    foreach ($module in @('Hardening', 'GPO', 'Tiering', 'RBAC', 'PSO', 'Silo', 'JIT')) {
         $path = $script:ConfigPaths[$module]
         if (Test-Path $path) {
             $script:Configs[$module] = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -187,6 +187,20 @@ function Save-AllConfigs {
         $script:Configs.Silo | ConvertTo-Json -Depth 10 | Set-Content $script:ConfigPaths.Silo -Encoding UTF8
     }
 
+    # JIT: read settings back into config
+    if ($script:Configs.JIT) {
+        $script:Configs.JIT.Settings.ToolsSharePath = $UI.JITToolsSharePath.Text.Trim()
+        $script:Configs.JIT.Settings.InstallPath = $UI.JITInstallPath.Text.Trim()
+        $script:Configs.JIT.Settings.FilteringGroupsOU = $UI.JITFilteringGroupsOU.Text.Trim()
+        $script:Configs.JIT.Settings.GPO.Name = $UI.JITGPOName.Text.Trim()
+        $script:Configs.JIT.Settings.GPO.Description = $UI.JITGPODescription.Text.Trim()
+        $linkText = $UI.JITGPOLinkTargets.Text
+        $script:Configs.JIT.Settings.GPO.LinkTargets = if ([string]::IsNullOrWhiteSpace($linkText)) { @() } else {
+            @($linkText -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+        }
+        $script:Configs.JIT | ConvertTo-Json -Depth 10 | Set-Content $script:ConfigPaths.JIT -Encoding UTF8
+    }
+
     # Tiering: rebuild from TreeView
     if ($script:Configs.Tiering) {
         $script:Configs.Tiering.Settings.BaseDN = $UI.TieringBaseDN.Text
@@ -199,7 +213,7 @@ function Save-AllConfigs {
         $script:Configs.RBAC | ConvertTo-Json -Depth 20 | Set-Content $script:ConfigPaths.RBAC -Encoding UTF8
     }
 
-    $script:UnsavedChanges = @{ Hardening = $false; GPO = $false; Tiering = $false; RBAC = $false; PSO = $false; Silo = $false }
+    $script:UnsavedChanges = @{ Hardening = $false; GPO = $false; Tiering = $false; RBAC = $false; PSO = $false; Silo = $false; JIT = $false }
     Write-ConsoleUI "All configurations saved." "Success"
 }
 
@@ -276,6 +290,12 @@ function Populate-Dashboard {
         $siloTotal = $script:Configs.Silo.Silos.Count
         $UI.DashSiloSummary.Text = "$siloEnabled / $siloTotal"
         $UI.DashSiloDetail.Text = "silos enabled"
+    }
+    if ($script:Configs.JIT) {
+        $gpoName = $script:Configs.JIT.Settings.GPO.Name
+        $linkCount = $script:Configs.JIT.Settings.GPO.LinkTargets.Count
+        $UI.DashJITSummary.Text = if ($gpoName) { "1 GPO" } else { "---" }
+        $UI.DashJITDetail.Text = "$linkCount link targets"
     }
 }
 
@@ -1222,6 +1242,17 @@ function Populate-SiloTab {
     }
 }
 
+function Populate-JITTab {
+    $cfg = $script:Configs.JIT
+    $s = $cfg.Settings
+    $UI.JITToolsSharePath.Text = $s.ToolsSharePath
+    $UI.JITInstallPath.Text = $s.InstallPath
+    $UI.JITFilteringGroupsOU.Text = $s.FilteringGroupsOU
+    $UI.JITGPOName.Text = $s.GPO.Name
+    $UI.JITGPODescription.Text = $s.GPO.Description
+    $UI.JITGPOLinkTargets.Text = ($s.GPO.LinkTargets -join "`n")
+}
+
 function Show-AddSiloDialog {
     $dialogXaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -1491,62 +1522,93 @@ function Show-RBACRoleDetail($role) {
         [void]$dlOUPanel.Children.Add($dlOUText)
         [void]$dlStack.Children.Add($dlOUPanel)
 
+        # Determine if this DL group is a reference (empty Permissions) with actual perms defined in another role
+        $isReference = (-not $dl.Permissions -or $dl.Permissions.Count -eq 0)
+        $resolvedPerms = $dl.Permissions
+        $sourceRoleName = $null
+        if ($isReference) {
+            foreach ($otherRole in $script:Configs.RBAC.Roles) {
+                if ($otherRole.Name -eq $role.Name) { continue }
+                foreach ($otherDL in $otherRole.DomainLocalGroups) {
+                    if ($otherDL.Name -eq $dl.Name -and $otherDL.Permissions -and $otherDL.Permissions.Count -gt 0) {
+                        $resolvedPerms = $otherDL.Permissions
+                        $sourceRoleName = $otherRole.Name
+                        break
+                    }
+                }
+                if ($sourceRoleName) { break }
+            }
+        }
+
+        # Show inherited label if permissions come from another role
+        if ($sourceRoleName) {
+            $inheritLabel = New-Object System.Windows.Controls.TextBlock
+            $inheritLabel.Text = "Permissions inherited from role $sourceRoleName (membership only)"
+            $inheritLabel.FontSize = 11
+            $inheritLabel.FontStyle = "Italic"
+            $inheritLabel.Foreground = Get-WPFBrush "#888"
+            $inheritLabel.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
+            [void]$dlStack.Children.Add($inheritLabel)
+        }
+
         # Permissions
-        for ($pIdx = 0; $pIdx -lt $dl.Permissions.Count; $pIdx++) {
-            $perm = $dl.Permissions[$pIdx]
+        for ($pIdx = 0; $pIdx -lt $resolvedPerms.Count; $pIdx++) {
+            $perm = $resolvedPerms[$pIdx]
 
             $permBorder = New-Object System.Windows.Controls.Border
-            $permBorder.Background = Get-WPFBrush "#FFFFFF"
+            $permBorder.Background = if ($sourceRoleName) { Get-WPFBrush "#FAFAFA" } else { Get-WPFBrush "#FFFFFF" }
             $permBorder.CornerRadius = [System.Windows.CornerRadius]::new(4)
             $permBorder.Padding = [System.Windows.Thickness]::new(10, 6, 10, 6)
             $permBorder.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
-            $permBorder.BorderBrush = Get-WPFBrush "#EEE"
+            $permBorder.BorderBrush = if ($sourceRoleName) { Get-WPFBrush "#E8E8E8" } else { Get-WPFBrush "#EEE" }
             $permBorder.BorderThickness = [System.Windows.Thickness]::new(1)
 
             $permDock = New-Object System.Windows.Controls.DockPanel
 
-            # Delete perm button
-            $delPermBtn = New-Object System.Windows.Controls.Button
-            $delPermBtn.Content = "X"
-            $delPermBtn.Background = Get-WPFBrush "Transparent"
-            $delPermBtn.Foreground = Get-WPFBrush "#CC0000"
-            $delPermBtn.BorderThickness = [System.Windows.Thickness]::new(0)
-            $delPermBtn.FontSize = 10
-            $delPermBtn.FontWeight = "Bold"
-            $delPermBtn.Cursor = "Hand"
-            $delPermBtn.Padding = [System.Windows.Thickness]::new(4, 0, 4, 0)
-            $delPermBtn.VerticalAlignment = "Center"
-            $delPermBtn.Tag = @{ Role = $role; DLIndex = $dlIdx; PermIndex = $pIdx }
-            [System.Windows.Controls.DockPanel]::SetDock($delPermBtn, "Right")
-            $delPermBtn.Add_Click({
-                $ctx = $this.Tag
-                $dlObj = $ctx.Role.DomainLocalGroups[$ctx.DLIndex]
-                $list = [System.Collections.ArrayList]@($dlObj.Permissions)
-                $list.RemoveAt($ctx.PermIndex)
-                $dlObj.Permissions = @($list)
-                Refresh-RBACRole $ctx.Role.Name
-            })
-
-            # Edit perm button
-            $editPermBtn = New-Object System.Windows.Controls.Button
-            $editPermBtn.Content = "Edit"
-            $editPermBtn.Background = Get-WPFBrush "Transparent"
-            $editPermBtn.Foreground = Get-WPFBrush "#0078D4"
-            $editPermBtn.BorderThickness = [System.Windows.Thickness]::new(0)
-            $editPermBtn.FontSize = 10
-            $editPermBtn.Cursor = "Hand"
-            $editPermBtn.Padding = [System.Windows.Thickness]::new(4, 0, 8, 0)
-            $editPermBtn.VerticalAlignment = "Center"
-            $editPermBtn.Tag = @{ Role = $role; DLIndex = $dlIdx; PermIndex = $pIdx; Perm = $perm }
-            [System.Windows.Controls.DockPanel]::SetDock($editPermBtn, "Right")
-            $editPermBtn.Add_Click({
-                $ctx = $this.Tag
-                $edited = Show-PermissionDialog $ctx.Perm
-                if ($edited) {
-                    $ctx.Role.DomainLocalGroups[$ctx.DLIndex].Permissions[$ctx.PermIndex] = $edited
+            if (-not $sourceRoleName) {
+                # Delete perm button (only for own permissions)
+                $delPermBtn = New-Object System.Windows.Controls.Button
+                $delPermBtn.Content = "X"
+                $delPermBtn.Background = Get-WPFBrush "Transparent"
+                $delPermBtn.Foreground = Get-WPFBrush "#CC0000"
+                $delPermBtn.BorderThickness = [System.Windows.Thickness]::new(0)
+                $delPermBtn.FontSize = 10
+                $delPermBtn.FontWeight = "Bold"
+                $delPermBtn.Cursor = "Hand"
+                $delPermBtn.Padding = [System.Windows.Thickness]::new(4, 0, 4, 0)
+                $delPermBtn.VerticalAlignment = "Center"
+                $delPermBtn.Tag = @{ Role = $role; DLIndex = $dlIdx; PermIndex = $pIdx }
+                [System.Windows.Controls.DockPanel]::SetDock($delPermBtn, "Right")
+                $delPermBtn.Add_Click({
+                    $ctx = $this.Tag
+                    $dlObj = $ctx.Role.DomainLocalGroups[$ctx.DLIndex]
+                    $list = [System.Collections.ArrayList]@($dlObj.Permissions)
+                    $list.RemoveAt($ctx.PermIndex)
+                    $dlObj.Permissions = @($list)
                     Refresh-RBACRole $ctx.Role.Name
-                }
-            })
+                })
+
+                # Edit perm button (only for own permissions)
+                $editPermBtn = New-Object System.Windows.Controls.Button
+                $editPermBtn.Content = "Edit"
+                $editPermBtn.Background = Get-WPFBrush "Transparent"
+                $editPermBtn.Foreground = Get-WPFBrush "#0078D4"
+                $editPermBtn.BorderThickness = [System.Windows.Thickness]::new(0)
+                $editPermBtn.FontSize = 10
+                $editPermBtn.Cursor = "Hand"
+                $editPermBtn.Padding = [System.Windows.Thickness]::new(4, 0, 8, 0)
+                $editPermBtn.VerticalAlignment = "Center"
+                $editPermBtn.Tag = @{ Role = $role; DLIndex = $dlIdx; PermIndex = $pIdx; Perm = $perm }
+                [System.Windows.Controls.DockPanel]::SetDock($editPermBtn, "Right")
+                $editPermBtn.Add_Click({
+                    $ctx = $this.Tag
+                    $edited = Show-PermissionDialog $ctx.Perm
+                    if ($edited) {
+                        $ctx.Role.DomainLocalGroups[$ctx.DLIndex].Permissions[$ctx.PermIndex] = $edited
+                        Refresh-RBACRole $ctx.Role.Name
+                    }
+                })
+            }
 
             # Type badge
             $typeBadge = New-Object System.Windows.Controls.TextBlock
@@ -1561,12 +1623,14 @@ function Show-RBACRoleDetail($role) {
                 "AD"   { $typeBadge.Foreground = Get-WPFBrush "#2E86C1"; $typeBadge.Background = Get-WPFBrush "#E8F2FC" }
                 "ADCS" { $typeBadge.Foreground = Get-WPFBrush "#A93226"; $typeBadge.Background = Get-WPFBrush "#FCE8E8" }
             }
+            if ($sourceRoleName) { $typeBadge.Opacity = 0.6 }
             [System.Windows.Controls.DockPanel]::SetDock($typeBadge, "Left")
 
             $permInfo = New-Object System.Windows.Controls.TextBlock
             $permInfo.FontSize = 11
             $permInfo.VerticalAlignment = "Center"
             $permInfo.TextWrapping = "Wrap"
+            if ($sourceRoleName) { $permInfo.Foreground = Get-WPFBrush "#888" }
             switch ($perm.Type) {
                 "NTFS" { $permInfo.Text = "$($perm.Rights) on $($perm.Path)" }
                 "AD"   { $permInfo.Text = "$($perm.ADRights) on $($perm.TargetOU)" }
@@ -1585,36 +1649,40 @@ function Show-RBACRoleDetail($role) {
                 [void]$permDock.Children.Add($permCopyBtn)
             }
 
-            [void]$permDock.Children.Add($delPermBtn)
-            [void]$permDock.Children.Add($editPermBtn)
+            if (-not $sourceRoleName) {
+                [void]$permDock.Children.Add($delPermBtn)
+                [void]$permDock.Children.Add($editPermBtn)
+            }
             [void]$permDock.Children.Add($typeBadge)
             [void]$permDock.Children.Add($permInfo)
             $permBorder.Child = $permDock
             [void]$dlStack.Children.Add($permBorder)
         }
 
-        # "+ Add Permission" button per DL group
-        $addPermBtn = New-Object System.Windows.Controls.Button
-        $addPermBtn.Content = "+ Add Permission"
-        $addPermBtn.Background = Get-WPFBrush "#E8F2FC"
-        $addPermBtn.Foreground = Get-WPFBrush "#0078D4"
-        $addPermBtn.BorderThickness = [System.Windows.Thickness]::new(0)
-        $addPermBtn.Padding = [System.Windows.Thickness]::new(10, 4, 10, 4)
-        $addPermBtn.FontSize = 11
-        $addPermBtn.Cursor = "Hand"
-        $addPermBtn.HorizontalAlignment = "Left"
-        $addPermBtn.Margin = [System.Windows.Thickness]::new(0, 4, 0, 0)
-        $addPermBtn.Tag = @{ Role = $role; DLIndex = $dlIdx }
-        $addPermBtn.Add_Click({
-            $ctx = $this.Tag
-            $newPerm = Show-PermissionDialog $null
-            if ($newPerm) {
-                $dlObj = $ctx.Role.DomainLocalGroups[$ctx.DLIndex]
-                $dlObj.Permissions = @($dlObj.Permissions) + @($newPerm)
-                Refresh-RBACRole $ctx.Role.Name
-            }
-        })
-        [void]$dlStack.Children.Add($addPermBtn)
+        # "+ Add Permission" button per DL group (only for own DL groups, not inherited references)
+        if (-not $sourceRoleName) {
+            $addPermBtn = New-Object System.Windows.Controls.Button
+            $addPermBtn.Content = "+ Add Permission"
+            $addPermBtn.Background = Get-WPFBrush "#E8F2FC"
+            $addPermBtn.Foreground = Get-WPFBrush "#0078D4"
+            $addPermBtn.BorderThickness = [System.Windows.Thickness]::new(0)
+            $addPermBtn.Padding = [System.Windows.Thickness]::new(10, 4, 10, 4)
+            $addPermBtn.FontSize = 11
+            $addPermBtn.Cursor = "Hand"
+            $addPermBtn.HorizontalAlignment = "Left"
+            $addPermBtn.Margin = [System.Windows.Thickness]::new(0, 4, 0, 0)
+            $addPermBtn.Tag = @{ Role = $role; DLIndex = $dlIdx }
+            $addPermBtn.Add_Click({
+                $ctx = $this.Tag
+                $newPerm = Show-PermissionDialog $null
+                if ($newPerm) {
+                    $dlObj = $ctx.Role.DomainLocalGroups[$ctx.DLIndex]
+                    $dlObj.Permissions = @($dlObj.Permissions) + @($newPerm)
+                    Refresh-RBACRole $ctx.Role.Name
+                }
+            })
+            [void]$dlStack.Children.Add($addPermBtn)
+        }
 
         $dlCard.Child = $dlStack
         [void]$UI.RBACDLList.Children.Add($dlCard)
@@ -1627,7 +1695,7 @@ function Show-RBACRoleDetail($role) {
 
 function Set-ActiveTab([int]$index) {
     $UI.MainTabs.SelectedIndex = $index
-    $navButtons = @($UI.NavDashboard, $UI.NavHardening, $UI.NavGPO, $UI.NavTiering, $UI.NavRBAC, $UI.NavPSO, $UI.NavSilo)
+    $navButtons = @($UI.NavDashboard, $UI.NavHardening, $UI.NavGPO, $UI.NavTiering, $UI.NavRBAC, $UI.NavPSO, $UI.NavSilo, $UI.NavJIT)
     $activeStyle = $script:Window.FindResource("NavBtnActive")
     $normalStyle = $script:Window.FindResource("NavBtn")
     for ($i = 0; $i -lt $navButtons.Count; $i++) {
@@ -1699,7 +1767,7 @@ function Invoke-Search([string]$query) {
 # ============================================================================
 
 # Canonical safe execution order
-$script:DeploySafeOrder = @("Hardening", "Tiering", "RBAC", "PSO", "Silo", "GPO")
+$script:DeploySafeOrder = @("Hardening", "Tiering", "RBAC", "PSO", "Silo", "GPO", "JIT")
 
 function Start-SingleDeployment([string]$module) {
     $whatIf = [bool]$UI.WhatIfToggle.IsChecked
@@ -1738,6 +1806,7 @@ function Start-SelectedDeployments {
     if ($UI.DeployPSO.IsChecked)       { $selected += "PSO" }
     if ($UI.DeploySilo.IsChecked)      { $selected += "Silo" }
     if ($UI.DeployGPO.IsChecked)       { $selected += "GPO" }
+    if ($UI.DeployJIT.IsChecked)       { $selected += "JIT" }
 
     if ($selected.Count -eq 0) {
         Write-ConsoleUI "No modules selected for deployment." "Warning"
@@ -1766,6 +1835,7 @@ function Update-DeployOrderHint {
     if ($UI.DeployPSO.IsChecked)       { $selected += "PSO" }
     if ($UI.DeploySilo.IsChecked)      { $selected += "Silo" }
     if ($UI.DeployGPO.IsChecked)       { $selected += "GPO" }
+    if ($UI.DeployJIT.IsChecked)       { $selected += "JIT" }
 
     if ($selected.Count -le 1) {
         $UI.DeployOrderHint.Visibility = "Collapsed"
@@ -1792,6 +1862,12 @@ function Get-TierOU([string]$tier) {
 
 function Refresh-RBACRole($roleName) {
     Populate-RBACTab
+    # Reapply the active tier filter
+    if ($script:RBACActiveFilter) {
+        foreach ($item in $UI.RBACRoleList.Items) {
+            $item.Visibility = if ($item.Tag.Name -like "$($script:RBACActiveFilter)*") { "Visible" } else { "Collapsed" }
+        }
+    }
     foreach ($item in $UI.RBACRoleList.Items) {
         if ($item.Tag.Name -eq $roleName) {
             $item.IsSelected = $true
@@ -2576,6 +2652,7 @@ function Initialize-GUI {
     if ($script:Configs.RBAC)      { Populate-RBACTab }
     if ($script:Configs.PSO)       { Populate-PSOTab }
     if ($script:Configs.Silo)      { Populate-SiloTab }
+    if ($script:Configs.JIT)       { Populate-JITTab }
 
     Write-ConsoleUI "GUI initialized. Ready." "Info"
 }
@@ -2589,6 +2666,7 @@ function Register-GUIEvents {
     $UI.NavRBAC.Add_Click({ Set-ActiveTab 4 })
     $UI.NavPSO.Add_Click({ Set-ActiveTab 5 })
     $UI.NavSilo.Add_Click({ Set-ActiveTab 6 })
+    $UI.NavJIT.Add_Click({ Set-ActiveTab 7 })
 
     # Search
     $UI.SearchBox.Add_TextChanged({ Invoke-Search $UI.SearchBox.Text })
@@ -2810,19 +2888,23 @@ function Register-GUIEvents {
 
     # RBAC tier filters
     $UI.RBACFilterAll.Add_Click({
+        $script:RBACActiveFilter = $null
         foreach ($item in $UI.RBACRoleList.Items) { $item.Visibility = "Visible" }
     })
     $UI.RBACFilterT0.Add_Click({
+        $script:RBACActiveFilter = "T0_"
         foreach ($item in $UI.RBACRoleList.Items) {
             $item.Visibility = if ($item.Tag.Name -like "T0_*") { "Visible" } else { "Collapsed" }
         }
     })
     $UI.RBACFilterT1.Add_Click({
+        $script:RBACActiveFilter = "T1_"
         foreach ($item in $UI.RBACRoleList.Items) {
             $item.Visibility = if ($item.Tag.Name -like "T1_*") { "Visible" } else { "Collapsed" }
         }
     })
     $UI.RBACFilterT2.Add_Click({
+        $script:RBACActiveFilter = "T2_"
         foreach ($item in $UI.RBACRoleList.Items) {
             $item.Visibility = if ($item.Tag.Name -like "T2_*") { "Visible" } else { "Collapsed" }
         }
@@ -2841,6 +2923,8 @@ function Register-GUIEvents {
     $UI.DeploySilo.Add_Unchecked({ Update-DeployOrderHint })
     $UI.DeployGPO.Add_Checked({ Update-DeployOrderHint })
     $UI.DeployGPO.Add_Unchecked({ Update-DeployOrderHint })
+    $UI.DeployJIT.Add_Checked({ Update-DeployOrderHint })
+    $UI.DeployJIT.Add_Unchecked({ Update-DeployOrderHint })
 
     # Deploy button -> confirm, save configs, then deploy selected modules in safe order
     $UI.BtnDeploy.Add_Click({
@@ -2851,6 +2935,7 @@ function Register-GUIEvents {
         if ($UI.DeployPSO.IsChecked)       { $selected += "PSO" }
         if ($UI.DeploySilo.IsChecked)      { $selected += "Silo" }
         if ($UI.DeployGPO.IsChecked)       { $selected += "GPO" }
+        if ($UI.DeployJIT.IsChecked)       { $selected += "JIT" }
         if ($selected.Count -eq 0) {
             Write-ConsoleUI "No modules selected for deployment." "Warning"
             return
@@ -2877,6 +2962,7 @@ function Register-GUIEvents {
         $UI.DeployPSO.IsChecked       = $true
         $UI.DeploySilo.IsChecked      = $true
         $UI.DeployGPO.IsChecked       = $true
+        $UI.DeployJIT.IsChecked       = $true
     })
     $UI.BtnDeployDeselectAll.Add_Click({
         $UI.DeployHardening.IsChecked = $false
@@ -2885,6 +2971,7 @@ function Register-GUIEvents {
         $UI.DeployPSO.IsChecked       = $false
         $UI.DeploySilo.IsChecked      = $false
         $UI.DeployGPO.IsChecked       = $false
+        $UI.DeployJIT.IsChecked       = $false
     })
 
     # Console clear
