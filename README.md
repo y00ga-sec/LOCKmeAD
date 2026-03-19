@@ -54,7 +54,7 @@ In order to avoid breaking your environnement when deploying, LOCKmeAD includes 
 .\LOCKmeAD.ps1 -Module All -WhatIf
 ```
 
-**Requirements:** PowerShell 5.1+, ActiveDirectory module, GroupPolicy module, domain-joined machine, administrator privileges.
+**Requirements:** PowerShell 7.5, ActiveDirectory module, GroupPolicy module, domain-joined machine, administrator privileges.
 
 ---
 
