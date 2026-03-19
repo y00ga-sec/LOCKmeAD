@@ -244,8 +244,7 @@
             "DL_T2",
             "Domain Admins",
             "Enterprise Admins",
-            "Schema Admins",
-            "DnsAdmins"
+            "Schema Admins"
           ]
         },
         {
@@ -256,8 +255,7 @@
             "DL_T2",
             "Domain Admins",
             "Enterprise Admins",
-            "Schema Admins",
-            "DnsAdmins"
+            "Schema Admins"
           ]
         },
         {
@@ -268,8 +266,7 @@
             "DL_T2",
             "Domain Admins",
             "Enterprise Admins",
-            "Schema Admins",
-            "DnsAdmins"
+            "Schema Admins"
           ]
         },
         {
@@ -280,8 +277,7 @@
             "DL_T2",
             "Domain Admins",
             "Enterprise Admins",
-            "Schema Admins",
-            "DnsAdmins"
+            "Schema Admins"
           ]
         },
         {
@@ -292,8 +288,7 @@
             "DL_T2",
             "Domain Admins",
             "Enterprise Admins",
-            "Schema Admins",
-            "DnsAdmins"
+            "Schema Admins"
           ]
         }
       ]
@@ -312,8 +307,7 @@
             "DL_T1",
             "Domain Admins",
             "Enterprise Admins",
-            "Schema Admins",
-            "DnsAdmins"
+            "Schema Admins"
           ]
         },
         {
@@ -324,8 +318,7 @@
             "DL_T1",
             "Domain Admins",
             "Enterprise Admins",
-            "Schema Admins",
-            "DnsAdmins"
+            "Schema Admins"
           ]
         },
         {
@@ -336,8 +329,7 @@
             "DL_T1",
             "Domain Admins",
             "Enterprise Admins",
-            "Schema Admins",
-            "DnsAdmins"
+            "Schema Admins"
           ]
         },
         {
@@ -348,8 +340,7 @@
             "DL_T1",
             "Domain Admins",
             "Enterprise Admins",
-            "Schema Admins",
-            "DnsAdmins"
+            "Schema Admins"
           ]
         },
         {
@@ -360,8 +351,7 @@
             "DL_T1",
             "Domain Admins",
             "Enterprise Admins",
-            "Schema Admins",
-            "DnsAdmins"
+            "Schema Admins"
           ]
         }
       ]

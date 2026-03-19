@@ -54,6 +54,8 @@ try {
     if (-not [System.IO.Path]::IsPathRooted($logDir)) {
         $logDir = Join-Path $rootDir $logDir
     }
+    $runFolder = if ($global:LOCKmeAD_RunFolder) { $global:LOCKmeAD_RunFolder } else { Get-Date -Format 'yyyy-MM-dd_HH-mm-ss' }
+    $logDir = Join-Path $logDir $runFolder
     Write-TieringLog -Message "Configuration loaded successfully from '$ConfigPath'." -Level Success -LogDirectory $logDir
 }
 catch {

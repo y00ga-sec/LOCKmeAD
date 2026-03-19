@@ -28,6 +28,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# --- Check required modules ---
+$requiredModules = @("ActiveDirectory", "GroupPolicy")
+$missingModules  = $requiredModules | Where-Object { -not (Get-Module -Name $_) -and -not (Get-Module -ListAvailable -Name $_) }
+if ($missingModules) {
+    Write-Host "`n[ERROR] The following required modules are not available: $($missingModules -join ', ')" -ForegroundColor Red
+    Write-Host "`nImport them in your current session and try again:" -ForegroundColor Yellow
+    Write-Host "  Import-Module $($missingModules -join ', ')`n" -ForegroundColor Cyan
+    exit 1
+}
+
 # ============================================================================
 # Display logo
 # ============================================================================
@@ -60,6 +70,9 @@ $script:SafeOrder = @(
 )
 
 function Start-SelectedDeployments([string[]]$Selected) {
+    # Create a shared run folder so all modules log into the same directory
+    $global:LOCKmeAD_RunFolder = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
+
     # Filter and keep safe order
     $toRun = $script:SafeOrder | Where-Object { $Selected -contains $_.Name }
     if ($toRun.Count -eq 0) {

@@ -1813,6 +1813,9 @@ function Start-SelectedDeployments {
         return
     }
 
+    # Create a shared run folder so all modules log into the same directory
+    $global:LOCKmeAD_RunFolder = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
+
     # Enforce safe order
     $ordered = $script:DeploySafeOrder | Where-Object { $selected -contains $_ }
 

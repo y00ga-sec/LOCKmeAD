@@ -10,6 +10,16 @@
 #>
 
 $ErrorActionPreference = "Stop"
+
+# --- Check required modules ---
+$requiredModules = @("ActiveDirectory", "GroupPolicy")
+$missingModules  = $requiredModules | Where-Object { -not (Get-Module -Name $_) -and -not (Get-Module -ListAvailable -Name $_) }
+if ($missingModules) {
+    Write-Host "`n[ERROR] The following required modules are not available: $($missingModules -join ', ')" -ForegroundColor Red
+    Write-Host "`nImport them in your current session and try again:" -ForegroundColor Yellow
+    Write-Host "  Import-Module $($missingModules -join ', ')`n" -ForegroundColor Cyan
+    exit 1
+}
 $scriptRoot = $PSScriptRoot
 
 # Load WPF assemblies
