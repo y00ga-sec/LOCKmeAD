@@ -381,14 +381,15 @@ function New-JITDeploymentGPO {
             Copy-Item -Path $deployScript -Destination $scriptsPath -Force
             Write-JITLog -Message "Copied '$deployScript' to '$scriptsPath'" -Level Info -LogDirectory $LogDirectory
 
-            # Write psscripts.ini (Unicode encoding required by Group Policy)
+            # Write psscripts.ini in Machine\Scripts\ (not in Startup\ subfolder)
+            $machineScriptsPath = "$sysvolBase\Machine\Scripts"
             $iniContent = @"
 [Startup]
 0CmdLine=Deploy-JITTool.ps1
 0Parameters=-SourcePath "$DistributionSharePath" -InstallPath "$InstallPath"
 "@
-            $iniContent | Set-Content -Path "$scriptsPath\psscripts.ini" -Encoding Unicode
-            Write-JITLog -Message "Created psscripts.ini in '$scriptsPath'" -Level Info -LogDirectory $LogDirectory
+            $iniContent | Set-Content -Path "$machineScriptsPath\psscripts.ini" -Encoding Unicode
+            Write-JITLog -Message "Created psscripts.ini in '$machineScriptsPath'" -Level Info -LogDirectory $LogDirectory
 
             # --- Step 6: Update GPT.INI version ---
             $gptIniPath = "$sysvolBase\GPT.INI"

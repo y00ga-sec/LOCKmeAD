@@ -232,7 +232,7 @@
     },
     {
       "Name": "SEC-Tiering-T1-DenyLogon",
-      "Description": "Deny all logon types to Tier 1 assets for T0 and T2 accounts - link to T1-Prod OUs",
+      "Description": "Deny all logon types to Tier 1 assets for T0, T2, and privileged AD groups - link to T1-Prod OUs",
       "Enabled": true,
       "LinkTargets": "OU=Servers,OU=T1-Prod,DC=forest,DC=lol",
       "UserRightsAssignments": [
@@ -241,7 +241,11 @@
           "Description": "Deny log on locally",
           "Groups": [
             "DL_T0",
-            "DL_T2"
+            "DL_T2",
+            "Domain Admins",
+            "Enterprise Admins",
+            "Schema Admins",
+            "DnsAdmins"
           ]
         },
         {
@@ -249,7 +253,11 @@
           "Description": "Deny log on through Remote Desktop",
           "Groups": [
             "DL_T0",
-            "DL_T2"
+            "DL_T2",
+            "Domain Admins",
+            "Enterprise Admins",
+            "Schema Admins",
+            "DnsAdmins"
           ]
         },
         {
@@ -257,7 +265,11 @@
           "Description": "Deny access from the network",
           "Groups": [
             "DL_T0",
-            "DL_T2"
+            "DL_T2",
+            "Domain Admins",
+            "Enterprise Admins",
+            "Schema Admins",
+            "DnsAdmins"
           ]
         },
         {
@@ -265,7 +277,11 @@
           "Description": "Deny log on as a batch job",
           "Groups": [
             "DL_T0",
-            "DL_T2"
+            "DL_T2",
+            "Domain Admins",
+            "Enterprise Admins",
+            "Schema Admins",
+            "DnsAdmins"
           ]
         },
         {
@@ -273,14 +289,18 @@
           "Description": "Deny log on as a service",
           "Groups": [
             "DL_T0",
-            "DL_T2"
+            "DL_T2",
+            "Domain Admins",
+            "Enterprise Admins",
+            "Schema Admins",
+            "DnsAdmins"
           ]
         }
       ]
     },
     {
       "Name": "SEC-Tiering-T2-DenyLogon",
-      "Description": "Deny all logon types to Tier 2 assets for T0 and T1 accounts - link to T2-Prod OUs",
+      "Description": "Deny all logon types to Tier 2 assets for T0, T1, and privileged AD groups - link to T2-Prod OUs",
       "Enabled": true,
       "LinkTargets": "OU=Workstations,OU=T2-Prod,DC=forest,DC=lol",
       "UserRightsAssignments": [
@@ -289,7 +309,11 @@
           "Description": "Deny log on locally",
           "Groups": [
             "DL_T0",
-            "DL_T1"
+            "DL_T1",
+            "Domain Admins",
+            "Enterprise Admins",
+            "Schema Admins",
+            "DnsAdmins"
           ]
         },
         {
@@ -297,7 +321,11 @@
           "Description": "Deny log on through Remote Desktop",
           "Groups": [
             "DL_T0",
-            "DL_T1"
+            "DL_T1",
+            "Domain Admins",
+            "Enterprise Admins",
+            "Schema Admins",
+            "DnsAdmins"
           ]
         },
         {
@@ -305,7 +333,11 @@
           "Description": "Deny access from the network",
           "Groups": [
             "DL_T0",
-            "DL_T1"
+            "DL_T1",
+            "Domain Admins",
+            "Enterprise Admins",
+            "Schema Admins",
+            "DnsAdmins"
           ]
         },
         {
@@ -313,7 +345,11 @@
           "Description": "Deny log on as a batch job",
           "Groups": [
             "DL_T0",
-            "DL_T1"
+            "DL_T1",
+            "Domain Admins",
+            "Enterprise Admins",
+            "Schema Admins",
+            "DnsAdmins"
           ]
         },
         {
@@ -321,7 +357,11 @@
           "Description": "Deny log on as a service",
           "Groups": [
             "DL_T0",
-            "DL_T1"
+            "DL_T1",
+            "Domain Admins",
+            "Enterprise Admins",
+            "Schema Admins",
+            "DnsAdmins"
           ]
         }
       ]
@@ -352,6 +392,59 @@
           "Value": 3,
           "Type": "DWord",
           "Description": "High encryption level for RDP connections"
+        }
+      ]
+    },
+
+    {
+      "Name": "SEC-Tiering-T0-LocalAdmins-Servers",
+      "Description": "Enforce local Administrators membership on T0 servers via Restricted Groups (replaces full membership - add any additional local admin groups to the Members array below)",
+      "Enabled": true,
+      "LinkTargets": "OU=Servers,OU=T0-Prod,DC=forest,DC=lol",
+      "RestrictedGroups": [
+        {
+          "Group": "Administrators",
+          "Members": ["Domain Admins", "DL_T0_Servers_LocalAdmin"],
+          "Description": "Enforce local Administrators on T0 servers"
+        }
+      ]
+    },
+    {
+      "Name": "SEC-Tiering-T0-LocalAdmins-PAWs",
+      "Description": "Enforce local Administrators membership on T0 PAWs via Restricted Groups (replaces full membership - add any additional local admin groups to the Members array below)",
+      "Enabled": true,
+      "LinkTargets": "OU=PAWs,OU=T0-Prod,DC=forest,DC=lol",
+      "RestrictedGroups": [
+        {
+          "Group": "Administrators",
+          "Members": ["Domain Admins", "DL_T0_PAWs_LocalAdmin"],
+          "Description": "Enforce local Administrators on T0 PAWs"
+        }
+      ]
+    },
+    {
+      "Name": "SEC-Tiering-T1-LocalAdmins-Servers",
+      "Description": "Enforce local Administrators membership on T1 servers via Restricted Groups (replaces full membership - add any additional local admin groups to the Members array below)",
+      "Enabled": true,
+      "LinkTargets": "OU=Servers,OU=T1-Prod,DC=forest,DC=lol",
+      "RestrictedGroups": [
+        {
+          "Group": "Administrators",
+          "Members": ["DL_T1_Servers_LocalAdmin"],
+          "Description": "Enforce local Administrators on T1 servers"
+        }
+      ]
+    },
+    {
+      "Name": "SEC-Tiering-T2-LocalAdmins-Workstations",
+      "Description": "Enforce local Administrators membership on T2 workstations via Restricted Groups (replaces full membership - add any additional local admin groups to the Members array below)",
+      "Enabled": true,
+      "LinkTargets": "OU=Workstations,OU=T2-Prod,DC=forest,DC=lol",
+      "RestrictedGroups": [
+        {
+          "Group": "Administrators",
+          "Members": ["DL_T2_Workstations_LocalAdmin"],
+          "Description": "Enforce local Administrators on T2 workstations"
         }
       ]
     }

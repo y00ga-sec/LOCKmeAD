@@ -143,11 +143,13 @@ Write-Host ""
 foreach ($gpo in $config.GPOs) {
     $regCount = if ($gpo.RegistrySettings) { $gpo.RegistrySettings.Count } else { 0 }
     $uraCount = if ($gpo.UserRightsAssignments) { $gpo.UserRightsAssignments.Count } else { 0 }
+    $rgCount = if ($gpo.RestrictedGroups) { $gpo.RestrictedGroups.Count } else { 0 }
     $linkCount = if ($gpo.LinkTargets) { $gpo.LinkTargets.Count } else { 0 }
 
     $parts = @()
     if ($regCount -gt 0) { $parts += "$regCount reg" }
     if ($uraCount -gt 0) { $parts += "$uraCount URA" }
+    if ($rgCount -gt 0) { $parts += "$rgCount RG" }
     $parts += "$linkCount links"
     $detail = $parts -join ', '
 
@@ -237,6 +239,21 @@ foreach ($gpo in $config.GPOs) {
         }
         catch {
             Write-GPOLog -Message "URA for '$($gpo.Name)' failed: $_" -Level Error -LogDirectory $logDir
+            $stats.Errors++
+        }
+    }
+
+    # Apply Restricted Groups
+    if ($gpo.RestrictedGroups -and $gpo.RestrictedGroups.Count -gt 0) {
+        try {
+            Set-GPORestrictedGroups -GPOName $gpo.Name `
+                                     -RestrictedGroups $gpo.RestrictedGroups `
+                                     -Server $targetServer `
+                                     -LogDirectory $logDir `
+                                     -WhatIf:$WhatIfPreference
+        }
+        catch {
+            Write-GPOLog -Message "Restricted Groups for '$($gpo.Name)' failed: $_" -Level Error -LogDirectory $logDir
             $stats.Errors++
         }
     }

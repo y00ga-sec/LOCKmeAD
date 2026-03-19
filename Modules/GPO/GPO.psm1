@@ -103,9 +103,10 @@ function Import-GPOConfiguration {
 
         $hasRegistry = $gpo.RegistrySettings -and $gpo.RegistrySettings.Count -gt 0
         $hasURA = $gpo.UserRightsAssignments -and $gpo.UserRightsAssignments.Count -gt 0
+        $hasRG = $gpo.RestrictedGroups -and $gpo.RestrictedGroups.Count -gt 0
 
-        if (-not $hasRegistry -and -not $hasURA) {
-            throw "GPO '$($gpo.Name)' has no 'RegistrySettings' or 'UserRightsAssignments' defined."
+        if (-not $hasRegistry -and -not $hasURA -and -not $hasRG) {
+            throw "GPO '$($gpo.Name)' has no 'RegistrySettings', 'UserRightsAssignments', or 'RestrictedGroups' defined."
         }
 
         # Validate registry settings
@@ -134,6 +135,18 @@ function Import-GPOConfiguration {
                 }
                 if (-not $assignment.Groups -or $assignment.Groups.Count -eq 0) {
                     throw "GPO '$($gpo.Name)': User Rights Assignment '$($assignment.Right)' has no 'Groups' defined."
+                }
+            }
+        }
+
+        # Validate Restricted Groups
+        if ($hasRG) {
+            foreach ($rg in $gpo.RestrictedGroups) {
+                if (-not $rg.Group) {
+                    throw "GPO '$($gpo.Name)': a RestrictedGroup entry is missing the 'Group' property."
+                }
+                if (-not $rg.Members -or $rg.Members.Count -eq 0) {
+                    throw "GPO '$($gpo.Name)': RestrictedGroup '$($rg.Group)' has no 'Members' defined."
                 }
             }
         }
@@ -510,6 +523,86 @@ function Set-GPOLink {
 }
 
 # ============================================================================
+# Security Template Helper (GptTmpl.inf section merge)
+# ============================================================================
+
+function Write-SecurityTemplateSection {
+    <#
+    .SYNOPSIS
+        Merges a section into a GptTmpl.inf file, preserving existing sections.
+    .DESCRIPTION
+        Reads the existing GptTmpl.inf (if any), parses it into sections, adds or
+        replaces the specified section, and writes the merged result. Creates the
+        file and directory if they do not exist. Uses UTF-16LE encoding as required
+        by the Windows Security CSE.
+    .PARAMETER InfPath
+        Full path to the GptTmpl.inf file.
+    .PARAMETER SectionName
+        Name of the section to write (e.g. "Privilege Rights", "Group Membership").
+    .PARAMETER SectionLines
+        Array of lines to place under the section header.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$InfPath,
+
+        [Parameter(Mandatory)]
+        [string]$SectionName,
+
+        [Parameter(Mandatory)]
+        [string[]]$SectionLines
+    )
+
+    $sections = [ordered]@{}
+
+    # Parse existing file if present
+    if (Test-Path $InfPath) {
+        $currentSection = $null
+        foreach ($line in [System.IO.File]::ReadAllLines($InfPath, [System.Text.Encoding]::Unicode)) {
+            if ($line -match '^\[(.+)\]$') {
+                $currentSection = $Matches[1]
+                if (-not $sections.Contains($currentSection)) {
+                    $sections[$currentSection] = [System.Collections.ArrayList]::new()
+                }
+            }
+            elseif ($currentSection -and $line.Trim() -ne '') {
+                [void]$sections[$currentSection].Add($line)
+            }
+        }
+    }
+
+    # Ensure standard headers exist
+    if (-not $sections.Contains("Unicode")) {
+        $sections.Insert(0, "Unicode", [System.Collections.ArrayList]@("Unicode=yes"))
+    }
+    if (-not $sections.Contains("Version")) {
+        $sections.Insert(1, "Version", [System.Collections.ArrayList]@('signature="$CHICAGO$"', "Revision=1"))
+    }
+
+    # Update or add the target section
+    $sections[$SectionName] = [System.Collections.ArrayList]@($SectionLines)
+
+    # Rebuild file content
+    $lines = [System.Collections.ArrayList]::new()
+    foreach ($key in $sections.Keys) {
+        [void]$lines.Add("[$key]")
+        foreach ($sLine in $sections[$key]) {
+            [void]$lines.Add($sLine)
+        }
+    }
+
+    $content = ($lines -join "`r`n") + "`r`n"
+
+    # Ensure directory exists
+    $dir = Split-Path $InfPath -Parent
+    if (-not (Test-Path $dir)) {
+        New-Item -Path $dir -ItemType Directory -Force | Out-Null
+    }
+
+    [System.IO.File]::WriteAllText($InfPath, $content, [System.Text.Encoding]::Unicode)
+}
+
+# ============================================================================
 # User Rights Assignments
 # ============================================================================
 
@@ -575,27 +668,10 @@ function Set-GPOUserRightsAssignment {
 
             # Build SYSVOL path
             $sysvolBase = "\\$domainDNS\SYSVOL\$domainDNS\Policies\$gpoGuid"
-            $secEditPath = "$sysvolBase\Machine\Microsoft\Windows NT\SecEdit"
-            $infPath = "$secEditPath\GptTmpl.inf"
+            $infPath = "$sysvolBase\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
 
-            if (-not (Test-Path $secEditPath)) {
-                New-Item -Path $secEditPath -ItemType Directory -Force | Out-Null
-            }
-
-            # Build GptTmpl.inf content
-            $infLines = @(
-                "[Unicode]"
-                "Unicode=yes"
-                "[Version]"
-                'signature="$CHICAGO$"'
-                "Revision=1"
-                "[Privilege Rights]"
-            )
-            $infLines += $privilegeLines
-            $infContent = ($infLines -join "`r`n") + "`r`n"
-
-            # Write GptTmpl.inf (UTF-16LE as Windows Security CSE expects)
-            [System.IO.File]::WriteAllText($infPath, $infContent, [System.Text.Encoding]::Unicode)
+            # Write [Privilege Rights] section (merges with existing sections)
+            Write-SecurityTemplateSection -InfPath $infPath -SectionName "Privilege Rights" -SectionLines $privilegeLines
 
             foreach ($assignment in $Assignments) {
                 $desc = if ($assignment.Description) { " ($($assignment.Description))" } else { "" }
@@ -645,6 +721,158 @@ function Set-GPOUserRightsAssignment {
     }
 }
 
+# ============================================================================
+# Restricted Groups
+# ============================================================================
+
+function Set-GPORestrictedGroups {
+    <#
+    .SYNOPSIS
+        Applies Restricted Groups settings to a GPO by writing the [Group Membership]
+        section to GptTmpl.inf in SYSVOL.
+    .DESCRIPTION
+        Resolves local group names to well-known SIDs and AD group names to domain SIDs,
+        then writes a [Group Membership] section to enforce local group membership via
+        Restricted Groups policy. Uses __Members to replace the full membership of the
+        target local group (excluding the built-in Administrator which Windows protects).
+    .PARAMETER GPOName
+        Name of an existing GPO to configure.
+    .PARAMETER RestrictedGroups
+        Array of objects with Group (local group name or SID) and Members (array of AD group names).
+    .PARAMETER Server
+        Target DC for all AD operations (avoids replication lag).
+    .PARAMETER LogDirectory
+        Log directory.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)]
+        [string]$GPOName,
+
+        [Parameter(Mandatory)]
+        [array]$RestrictedGroups,
+
+        [string]$Server,
+
+        [string]$LogDirectory
+    )
+
+    $serverParam = @{}
+    if ($Server) { $serverParam.Server = $Server }
+
+    # Well-known local group SID lookup
+    $wellKnownSIDs = @{
+        "Administrators"                  = "S-1-5-32-544"
+        "Users"                           = "S-1-5-32-545"
+        "Guests"                          = "S-1-5-32-546"
+        "Power Users"                     = "S-1-5-32-547"
+        "Backup Operators"                = "S-1-5-32-551"
+        "Remote Desktop Users"            = "S-1-5-32-555"
+        "Network Configuration Operators" = "S-1-5-32-556"
+        "Event Log Readers"               = "S-1-5-32-573"
+        "Hyper-V Administrators"          = "S-1-5-32-578"
+    }
+
+    # Resolve groups and build [Group Membership] lines
+    $membershipLines = @()
+    $logDetails = @()
+
+    foreach ($rg in $RestrictedGroups) {
+        # Resolve local group to well-known SID
+        $groupSID = $wellKnownSIDs[$rg.Group]
+        if (-not $groupSID) {
+            if ($rg.Group -match '^S-1-') {
+                $groupSID = $rg.Group
+            }
+            else {
+                Write-GPOLog -Message "Unknown local group '$($rg.Group)'. Use a well-known name (Administrators, Users, etc.) or a SID." -Level Error -LogDirectory $LogDirectory
+                throw "Unknown local group '$($rg.Group)'."
+            }
+        }
+
+        # Resolve AD group members to SIDs
+        $memberSIDs = @()
+        foreach ($memberName in $rg.Members) {
+            try {
+                $adGroup = Get-ADGroup -Identity $memberName @serverParam -ErrorAction Stop
+                $memberSIDs += "*$($adGroup.SID.Value)"
+            }
+            catch {
+                Write-GPOLog -Message "Group '$memberName' not found in AD. Ensure the group exists before deploying this GPO." -Level Error -LogDirectory $LogDirectory
+                throw "Group '$memberName' not found in Active Directory."
+            }
+        }
+
+        $membershipLines += "*$groupSID`__Members = $($memberSIDs -join ',')"
+        $membershipLines += "*$groupSID`__Memberof ="
+
+        $desc = if ($rg.Description) { " ($($rg.Description))" } else { "" }
+        $logDetails += @{ Group = $rg.Group; Members = $rg.Members; Desc = $desc }
+    }
+
+    $target = "$GPOName ($($RestrictedGroups.Count) restricted group(s))"
+
+    if ($PSCmdlet.ShouldProcess($target, "Set Restricted Groups via GptTmpl.inf")) {
+        try {
+            # Get GPO details
+            $gpo = Get-GPO -Name $GPOName @serverParam -ErrorAction Stop
+            $gpoGuid = "{$($gpo.Id.ToString().ToUpper())}"
+            $domainDNS = (Get-ADDomain @serverParam).DNSRoot
+            $domainDN = (Get-ADDomain @serverParam).DistinguishedName
+
+            # Build SYSVOL path
+            $sysvolBase = "\\$domainDNS\SYSVOL\$domainDNS\Policies\$gpoGuid"
+            $infPath = "$sysvolBase\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
+
+            # Write [Group Membership] section (merges with existing sections)
+            Write-SecurityTemplateSection -InfPath $infPath -SectionName "Group Membership" -SectionLines $membershipLines
+
+            foreach ($detail in $logDetails) {
+                Write-GPOLog -Message "  RG: $($detail.Group) -> $($detail.Members -join ', ')$($detail.Desc)" -Level Success -LogDirectory $LogDirectory
+            }
+
+            # Update gPCMachineExtensionNames to include Security CSE
+            $gpoDN = "CN=$gpoGuid,CN=Policies,CN=System,$domainDN"
+            $gpoAD = Get-ADObject -Identity $gpoDN -Properties gPCMachineExtensionNames, versionNumber @serverParam
+
+            $securityCSE = "[{827D319E-6EAC-11D2-A4EA-00C04F79F83A}{803E14A0-B4FB-11D0-A0D0-00A0C90F574B}]"
+            $currentExt = if ($gpoAD.gPCMachineExtensionNames) { $gpoAD.gPCMachineExtensionNames } else { "" }
+
+            if ($currentExt -notlike "*827D319E*") {
+                $newExt = $currentExt + $securityCSE
+                Set-ADObject -Identity $gpoDN -Replace @{ gPCMachineExtensionNames = $newExt } @serverParam
+            }
+
+            # Increment machine version (lower 16 bits)
+            $currentVersion = if ($gpoAD.versionNumber) { [int]$gpoAD.versionNumber } else { 0 }
+            $userVersion = ($currentVersion -shr 16) -band 0xFFFF
+            $machineVersion = ($currentVersion -band 0xFFFF) + 1
+            $newVersion = ($userVersion -shl 16) -bor $machineVersion
+            Set-ADObject -Identity $gpoDN -Replace @{ versionNumber = $newVersion } @serverParam
+
+            # Update GPT.INI version to match
+            $gptIniPath = "$sysvolBase\GPT.INI"
+            if (Test-Path $gptIniPath) {
+                $gptContent = Get-Content $gptIniPath -Raw
+                $gptContent = $gptContent -replace 'Version=\d+', "Version=$newVersion"
+                Set-Content -Path $gptIniPath -Value $gptContent -Encoding ASCII
+            }
+
+            Write-GPOLog -Message "Restricted Groups applied to GPO '$GPOName'." -Level Success -LogDirectory $LogDirectory
+        }
+        catch {
+            Write-GPOLog -Message "Error setting Restricted Groups on '$GPOName': $_" -Level Error -LogDirectory $LogDirectory
+            throw
+        }
+    }
+    else {
+        Write-GPOLog -Message "[WhatIf] Restricted Groups would be set on GPO '$GPOName':" -Level Info -LogDirectory $LogDirectory
+        foreach ($detail in $logDetails) {
+            Write-GPOLog -Message "  [WhatIf] $($detail.Group) -> $($detail.Members -join ', ')$($detail.Desc)" -Level Info -LogDirectory $LogDirectory
+        }
+    }
+}
+
 # Export module functions
 Export-ModuleMember -Function @(
     'Write-GPOLog',
@@ -654,5 +882,6 @@ Export-ModuleMember -Function @(
     'Set-GPOFilteringPermission',
     'New-GPOSecurityPolicy',
     'Set-GPOUserRightsAssignment',
+    'Set-GPORestrictedGroups',
     'Set-GPOLink'
 )
