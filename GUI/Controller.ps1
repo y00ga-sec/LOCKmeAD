@@ -469,28 +469,10 @@ function Populate-GPOTab {
         [System.Windows.Controls.DockPanel]::SetDock($badgePanel, "Right")
 
         $regCount = if ($gpo.RegistrySettings) { $gpo.RegistrySettings.Count } else { 0 }
+        $regPrefCount = if ($gpo.RegistryPreferences) { $gpo.RegistryPreferences.Count } else { 0 }
+        $secOptCount = if ($gpo.SecurityOptions) { $gpo.SecurityOptions.Count } else { 0 }
         $uraCount = if ($gpo.UserRightsAssignments) { $gpo.UserRightsAssignments.Count } else { 0 }
-
-        if ($regCount -gt 0) {
-            $regBadge = New-Object System.Windows.Controls.TextBlock
-            $regBadge.Text = "$regCount reg"
-            $regBadge.FontSize = 10
-            $regBadge.Foreground = Get-WPFBrush "#1E8449"
-            $regBadge.Background = Get-WPFBrush "#E8F8F0"
-            $regBadge.Padding = [System.Windows.Thickness]::new(6, 2, 6, 2)
-            $regBadge.Margin = [System.Windows.Thickness]::new(4, 0, 0, 0)
-            [void]$badgePanel.Children.Add($regBadge)
-        }
-        if ($uraCount -gt 0) {
-            $uraBadge = New-Object System.Windows.Controls.TextBlock
-            $uraBadge.Text = "$uraCount URA"
-            $uraBadge.FontSize = 10
-            $uraBadge.Foreground = Get-WPFBrush "#6C3483"
-            $uraBadge.Background = Get-WPFBrush "#F3E8FC"
-            $uraBadge.Padding = [System.Windows.Thickness]::new(6, 2, 6, 2)
-            $uraBadge.Margin = [System.Windows.Thickness]::new(4, 0, 0, 0)
-            [void]$badgePanel.Children.Add($uraBadge)
-        }
+        $svcCount = if ($gpo.SystemServices) { $gpo.SystemServices.Count } else { 0 }
 
         $textStack = New-Object System.Windows.Controls.StackPanel
         $textStack.Margin = [System.Windows.Thickness]::new(14, 0, 10, 0)
@@ -574,6 +556,169 @@ function Populate-GPOTab {
 
             $regExpander.Content = $regGrid
             [void]$outerStack.Children.Add($regExpander)
+        }
+
+        # Registry Preferences expander (read-only, only if registry preferences exist)
+        if ($regPrefCount -gt 0) {
+            $regPrefExpander = New-Object System.Windows.Controls.Expander
+            $regPrefExpander.Header = "Registry Preferences"
+            $regPrefExpander.Margin = [System.Windows.Thickness]::new(58, 8, 0, 0)
+            $regPrefExpander.FontSize = 12
+
+            $regPrefGrid = New-Object System.Windows.Controls.Grid
+            $regPrefGrid.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+
+            $colKey = New-Object System.Windows.Controls.ColumnDefinition
+            $colKey.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+            $colVal = New-Object System.Windows.Controls.ColumnDefinition
+            $colVal.Width = [System.Windows.GridLength]::new(80)
+            $colType = New-Object System.Windows.Controls.ColumnDefinition
+            $colType.Width = [System.Windows.GridLength]::new(60)
+            [void]$regPrefGrid.ColumnDefinitions.Add($colKey)
+            [void]$regPrefGrid.ColumnDefinitions.Add($colVal)
+            [void]$regPrefGrid.ColumnDefinitions.Add($colType)
+
+            $rowIdx = 0
+            foreach ($setting in $gpo.RegistryPreferences) {
+                [void]$regPrefGrid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition))
+
+                $keyLabel = New-Object System.Windows.Controls.TextBlock
+                $shortKey = $setting.Key -replace '^HKLM\\', ''
+                $keyLabel.Text = "$shortKey\$($setting.ValueName)"
+                $keyLabel.FontSize = 11
+                $keyLabel.Foreground = Get-WPFBrush "#555"
+                $keyLabel.TextTrimming = "CharacterEllipsis"
+                $keyLabel.ToolTip = if ($setting.Description) { $setting.Description } else { $setting.Key }
+                $keyLabel.Margin = [System.Windows.Thickness]::new(0, 3, 8, 3)
+                [System.Windows.Controls.Grid]::SetRow($keyLabel, $rowIdx)
+                [System.Windows.Controls.Grid]::SetColumn($keyLabel, 0)
+
+                $valLabel = New-Object System.Windows.Controls.TextBlock
+                $valLabel.Text = [string]$setting.Value
+                $valLabel.FontSize = 11
+                $valLabel.FontWeight = "SemiBold"
+                $valLabel.Foreground = Get-WPFBrush "#2471A3"
+                $valLabel.Margin = [System.Windows.Thickness]::new(0, 3, 8, 3)
+                [System.Windows.Controls.Grid]::SetRow($valLabel, $rowIdx)
+                [System.Windows.Controls.Grid]::SetColumn($valLabel, 1)
+
+                $typeLabel = New-Object System.Windows.Controls.TextBlock
+                $typeLabel.Text = $setting.Type
+                $typeLabel.FontSize = 10
+                $typeLabel.Foreground = Get-WPFBrush "#999"
+                $typeLabel.Margin = [System.Windows.Thickness]::new(0, 3, 0, 3)
+                [System.Windows.Controls.Grid]::SetRow($typeLabel, $rowIdx)
+                [System.Windows.Controls.Grid]::SetColumn($typeLabel, 2)
+
+                [void]$regPrefGrid.Children.Add($keyLabel)
+                [void]$regPrefGrid.Children.Add($valLabel)
+                [void]$regPrefGrid.Children.Add($typeLabel)
+                $rowIdx++
+            }
+
+            $regPrefExpander.Content = $regPrefGrid
+            [void]$outerStack.Children.Add($regPrefExpander)
+        }
+
+        # Security Options expander (read-only, only if security options exist)
+        if ($secOptCount -gt 0) {
+            $secOptExpander = New-Object System.Windows.Controls.Expander
+            $secOptExpander.Header = "Security Options"
+            $secOptExpander.Margin = [System.Windows.Thickness]::new(58, 8, 0, 0)
+            $secOptExpander.FontSize = 12
+
+            $secOptGrid = New-Object System.Windows.Controls.Grid
+            $secOptGrid.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+
+            $colKey = New-Object System.Windows.Controls.ColumnDefinition
+            $colKey.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+            $colVal = New-Object System.Windows.Controls.ColumnDefinition
+            $colVal.Width = [System.Windows.GridLength]::new(80)
+            $colType = New-Object System.Windows.Controls.ColumnDefinition
+            $colType.Width = [System.Windows.GridLength]::new(60)
+            [void]$secOptGrid.ColumnDefinitions.Add($colKey)
+            [void]$secOptGrid.ColumnDefinitions.Add($colVal)
+            [void]$secOptGrid.ColumnDefinitions.Add($colType)
+
+            $rowIdx = 0
+            foreach ($opt in $gpo.SecurityOptions) {
+                [void]$secOptGrid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition))
+
+                $keyLabel = New-Object System.Windows.Controls.TextBlock
+                $shortKey = $opt.Key -replace '^MACHINE\\', ''
+                $keyLabel.Text = "$shortKey\$($opt.ValueName)"
+                $keyLabel.FontSize = 11
+                $keyLabel.Foreground = Get-WPFBrush "#555"
+                $keyLabel.TextTrimming = "CharacterEllipsis"
+                $keyLabel.ToolTip = if ($opt.Description) { $opt.Description } else { $opt.Key }
+                $keyLabel.Margin = [System.Windows.Thickness]::new(0, 3, 8, 3)
+                [System.Windows.Controls.Grid]::SetRow($keyLabel, $rowIdx)
+                [System.Windows.Controls.Grid]::SetColumn($keyLabel, 0)
+
+                $valLabel = New-Object System.Windows.Controls.TextBlock
+                $valLabel.Text = [string]$opt.Value
+                $valLabel.FontSize = 11
+                $valLabel.FontWeight = "SemiBold"
+                $valLabel.Foreground = Get-WPFBrush "#B7950B"
+                $valLabel.Margin = [System.Windows.Thickness]::new(0, 3, 8, 3)
+                [System.Windows.Controls.Grid]::SetRow($valLabel, $rowIdx)
+                [System.Windows.Controls.Grid]::SetColumn($valLabel, 1)
+
+                $typeLabel = New-Object System.Windows.Controls.TextBlock
+                $typeLabel.Text = $opt.Type
+                $typeLabel.FontSize = 10
+                $typeLabel.Foreground = Get-WPFBrush "#999"
+                $typeLabel.Margin = [System.Windows.Thickness]::new(0, 3, 0, 3)
+                [System.Windows.Controls.Grid]::SetRow($typeLabel, $rowIdx)
+                [System.Windows.Controls.Grid]::SetColumn($typeLabel, 2)
+
+                [void]$secOptGrid.Children.Add($keyLabel)
+                [void]$secOptGrid.Children.Add($valLabel)
+                [void]$secOptGrid.Children.Add($typeLabel)
+                $rowIdx++
+            }
+
+            $secOptExpander.Content = $secOptGrid
+            [void]$outerStack.Children.Add($secOptExpander)
+        }
+
+        # System Services expander (read-only, only if system services exist)
+        if ($svcCount -gt 0) {
+            $svcExpander = New-Object System.Windows.Controls.Expander
+            $svcExpander.Header = "System Services"
+            $svcExpander.Margin = [System.Windows.Thickness]::new(58, 8, 0, 0)
+            $svcExpander.FontSize = 12
+
+            $svcStack = New-Object System.Windows.Controls.StackPanel
+            $svcStack.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+
+            $startupLabels = @{ 2 = 'Automatic'; 3 = 'Manual'; 4 = 'Disabled' }
+
+            foreach ($svc in $gpo.SystemServices) {
+                $svcRow = New-Object System.Windows.Controls.DockPanel
+                $svcRow.Margin = [System.Windows.Thickness]::new(0, 2, 0, 2)
+
+                $nameLabel = New-Object System.Windows.Controls.TextBlock
+                $nameLabel.Text = $svc.Name
+                $nameLabel.FontSize = 11
+                $nameLabel.FontWeight = "SemiBold"
+                $nameLabel.Foreground = Get-WPFBrush "#C0392B"
+                $nameLabel.MinWidth = 180
+                $nameLabel.ToolTip = if ($svc.Description) { $svc.Description } else { $svc.Name }
+                [System.Windows.Controls.DockPanel]::SetDock($nameLabel, "Left")
+
+                $typeLabel = New-Object System.Windows.Controls.TextBlock
+                $typeLabel.Text = $startupLabels[[int]$svc.StartupType]
+                $typeLabel.FontSize = 11
+                $typeLabel.Foreground = Get-WPFBrush "#555"
+
+                [void]$svcRow.Children.Add($nameLabel)
+                [void]$svcRow.Children.Add($typeLabel)
+                [void]$svcStack.Children.Add($svcRow)
+            }
+
+            $svcExpander.Content = $svcStack
+            [void]$outerStack.Children.Add($svcExpander)
         }
 
         # User Rights Assignments expander (read-only, only if URA exist)

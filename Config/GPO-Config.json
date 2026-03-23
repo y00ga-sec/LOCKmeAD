@@ -8,14 +8,15 @@
       "Name": "SEC-Disable-NTLMv1",
       "Description": "Enforce NTLMv2-only authentication, refuse LM and NTLMv1 responses",
       "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
-      "RegistrySettings": [
+      "SecurityOptions": [
         {
-          "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa",
+          "Key": "MACHINE\\System\\CurrentControlSet\\Control\\Lsa",
           "ValueName": "LmCompatibilityLevel",
           "Value": 5,
           "Type": "DWord",
-          "Description": "Send NTLMv2 response only, refuse LM and NTLM"
+          "Description": "Network security: LAN Manager authentication level - Send NTLMv2 response only, refuse LM and NTLM"
         }
       ]
     },
@@ -23,14 +24,15 @@
       "Name": "SEC-Disable-LMHash",
       "Description": "Prevent storage of LAN Manager password hashes on next password change",
       "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
-      "RegistrySettings": [
+      "SecurityOptions": [
         {
-          "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa",
+          "Key": "MACHINE\\System\\CurrentControlSet\\Control\\Lsa",
           "ValueName": "NoLMHash",
           "Value": 1,
           "Type": "DWord",
-          "Description": "Do not store LAN Manager hash value on next password change"
+          "Description": "Network security: Do not store LAN Manager hash value on next password change"
         }
       ]
     },
@@ -38,6 +40,7 @@
       "Name": "SEC-Disable-LLMNR",
       "Description": "Disable Link-Local Multicast Name Resolution to prevent LLMNR poisoning attacks",
       "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "RegistrySettings": [
         {
@@ -53,8 +56,9 @@
       "Name": "SEC-Disable-mDNS",
       "Description": "Disable Multicast DNS to prevent mDNS poisoning attacks",
       "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
-      "RegistrySettings": [
+      "RegistryPreferences": [
         {
           "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Dnscache\\Parameters",
           "ValueName": "EnableMDNS",
@@ -68,14 +72,15 @@
       "Name": "SEC-Disable-NBT-NS",
       "Description": "Disable NetBIOS over TCP/IP name resolution to prevent NBT-NS poisoning attacks",
       "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
-      "RegistrySettings": [
+      "RegistryPreferences": [
         {
-          "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\NetBT\\Parameters",
-          "ValueName": "NodeType",
-          "Value": 2,
+          "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Dnscache\\Parameters",
+          "ValueName": "EnableNetbios",
+          "Value": 0,
           "Type": "DWord",
-          "Description": "Set P-node (peer-to-peer) to disable NetBIOS broadcast name resolution"
+          "Description": "Disable NetBIOS name resolution via DNS client"
         }
       ]
     },
@@ -83,14 +88,15 @@
       "Name": "SEC-Disable-Wdigest",
       "Description": "Disable WDigest authentication to prevent cleartext credential caching in memory",
       "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
-      "RegistrySettings": [
+      "RegistryPreferences": [
         {
           "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\SecurityProviders\\WDigest",
           "ValueName": "UseLogonCredential",
           "Value": 0,
           "Type": "DWord",
-          "Description": "Disable WDigest credential caching"
+          "Description": "WDigest Authentication - Disabled"
         }
       ]
     },
@@ -98,8 +104,9 @@
       "Name": "SEC-Disable-SMBv1",
       "Description": "Disable SMBv1 protocol (server and client) to prevent EternalBlue-class attacks",
       "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
-      "RegistrySettings": [
+      "RegistryPreferences": [
         {
           "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters",
           "ValueName": "SMB1",
@@ -117,75 +124,10 @@
       ]
     },
     {
-      "Name": "SEC-Require-SMBSigning",
-      "Description": "Require SMB packet signing on both server and client to prevent relay attacks",
-      "Enabled": true,
-      "LinkTargets": null,
-      "RegistrySettings": [
-        {
-          "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters",
-          "ValueName": "RequireSecuritySignature",
-          "Value": 1,
-          "Type": "DWord",
-          "Description": "Require SMB signing on server"
-        },
-        {
-          "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters",
-          "ValueName": "RequireSecuritySignature",
-          "Value": 1,
-          "Type": "DWord",
-          "Description": "Require SMB signing on client"
-        }
-      ]
-    },
-    {
-      "Name": "SEC-Disable-Autorun",
-      "Description": "Disable AutoRun and AutoPlay to prevent automatic execution of removable media",
-      "Enabled": true,
-      "LinkTargets": null,
-      "RegistrySettings": [
-        {
-          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer",
-          "ValueName": "NoDriveTypeAutoRun",
-          "Value": 255,
-          "Type": "DWord",
-          "Description": "Disable autorun for all drive types"
-        },
-        {
-          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer",
-          "ValueName": "NoAutorun",
-          "Value": 1,
-          "Type": "DWord",
-          "Description": "Disable default autorun behavior"
-        },
-        {
-          "Key": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Explorer",
-          "ValueName": "NoAutoplayfornonVolume",
-          "Value": 1,
-          "Type": "DWord",
-          "Description": "Disable autoplay for non-volume devices"
-        }
-      ]
-    },
-    {
-      "Name": "SEC-Disable-WSH",
-      "Description": "Disable Windows Script Host to block execution of VBS, JS, and WSF scripts",
-      "Enabled": false,
-      "LinkTargets": null,
-      "RegistrySettings": [
-        {
-          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows Script Host\\Settings",
-          "ValueName": "Enabled",
-          "Value": 0,
-          "Type": "DWord",
-          "Description": "Disable Windows Script Host"
-        }
-      ]
-    },
-    {
       "Name": "SEC-Tiering-T0-DenyLogon",
       "Description": "Deny all logon types to Tier 0 assets for T1 and T2 accounts - link to T0-Prod OUs",
       "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": "OU=T0-Prod,DC=forest,DC=lol",
       "UserRightsAssignments": [
         {
@@ -234,6 +176,7 @@
       "Name": "SEC-Tiering-T1-DenyLogon",
       "Description": "Deny all logon types to Tier 1 assets for T0, T2, and privileged AD groups - link to T1-Prod OUs",
       "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": "OU=Servers,OU=T1-Prod,DC=forest,DC=lol",
       "UserRightsAssignments": [
         {
@@ -297,6 +240,7 @@
       "Name": "SEC-Tiering-T2-DenyLogon",
       "Description": "Deny all logon types to Tier 2 assets for T0, T1, and privileged AD groups - link to T2-Prod OUs",
       "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": "OU=Workstations,OU=T2-Prod,DC=forest,DC=lol",
       "UserRightsAssignments": [
         {
@@ -357,31 +301,238 @@
       ]
     },
     {
-      "Name": "SEC-Harden-RDP",
-      "Description": "Enforce Network Level Authentication and strong encryption for Remote Desktop connections",
+      "Name": "SEC-GPO-RefreshCycle-15min",
+      "Description": "Reduce Group Policy refresh interval to 15 minutes (default is 90 minutes) for faster policy application",
       "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "RegistrySettings": [
         {
-          "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp",
-          "ValueName": "UserAuthentication",
-          "Value": 1,
+          "Key": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+          "ValueName": "GroupPolicyRefreshTime",
+          "Value": 15,
           "Type": "DWord",
-          "Description": "Require Network Level Authentication (NLA)"
+          "Description": "Group Policy refresh interval in minutes"
         },
         {
-          "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp",
-          "ValueName": "SecurityLayer",
+          "Key": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+          "ValueName": "GroupPolicyRefreshTimeOffset",
+          "Value": 0,
+          "Type": "DWord",
+          "Description": "Random offset for Group Policy refresh (0 = no random delay)"
+        }
+      ]
+    },
+    {
+      "Name": "SEC-Disable-IPv6",
+      "Description": "Disable all IPv6 components to reduce attack surface and prevent IPv6-based attacks",
+      "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
+      "LinkTargets": null,
+      "RegistryPreferences": [
+        {
+          "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters",
+          "ValueName": "DisabledComponents",
+          "Value": 32,
+          "Type": "DWord",
+          "Description": "Disable IPv6 on all non-tunnel interfaces (0x20)"
+        }
+      ]
+    },
+    {
+      "Name": "SEC-Enable-LDAPAudit",
+      "Description": "Enable LDAP interface diagnostics logging to detect unsigned LDAP binds (Event ID 2889) on domain controllers",
+      "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
+      "LinkTargets": null,
+      "RegistryPreferences": [
+        {
+          "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\NTDS\\Diagnostics",
+          "ValueName": "16 LDAP Interface Events",
           "Value": 2,
           "Type": "DWord",
-          "Description": "Use TLS 1.0+ security layer"
+          "Description": "Enable LDAP interface event logging (level 2 = basic)"
+        }
+      ]
+    },
+    {
+      "Name": "SEC-Negotiate-LDAPSigning-Server",
+      "Description": "Negotiate LDAP signing on domain controllers (sign if client supports it)",
+      "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
+      "LinkTargets": null,
+      "SecurityOptions": [
+        {
+          "Key": "MACHINE\\System\\CurrentControlSet\\Services\\NTDS\\Parameters",
+          "ValueName": "LDAPServerIntegrity",
+          "Value": 1,
+          "Type": "DWord",
+          "Description": "Domain controller: LDAP server signing requirements - Negotiate signing"
+        }
+      ]
+    },
+    {
+      "Name": "SEC-Negotiate-LDAPSigning-Client",
+      "Description": "Negotiate LDAP signing on clients (sign if server supports it)",
+      "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
+      "LinkTargets": null,
+      "SecurityOptions": [
+        {
+          "Key": "MACHINE\\System\\CurrentControlSet\\Services\\LDAP",
+          "ValueName": "LDAPClientIntegrity",
+          "Value": 1,
+          "Type": "DWord",
+          "Description": "Network security: LDAP client signing requirements - Negotiate signing"
+        }
+      ]
+    },
+    {
+      "Name": "SEC-Require-LDAPSigning-Server",
+      "Description": "Require LDAP signing on domain controllers to prevent LDAP relay and man-in-the-middle attacks",
+      "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
+      "LinkTargets": null,
+      "SecurityOptions": [
+        {
+          "Key": "MACHINE\\System\\CurrentControlSet\\Services\\NTDS\\Parameters",
+          "ValueName": "LDAPServerIntegrity",
+          "Value": 2,
+          "Type": "DWord",
+          "Description": "Domain controller: LDAP server signing requirements - Require signing"
+        }
+      ]
+    },
+    {
+      "Name": "SEC-Require-LDAPSigning-Client",
+      "Description": "Require LDAP signing on clients to ensure all LDAP connections use signing",
+      "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
+      "LinkTargets": null,
+      "SecurityOptions": [
+        {
+          "Key": "MACHINE\\System\\CurrentControlSet\\Services\\LDAP",
+          "ValueName": "LDAPClientIntegrity",
+          "Value": 2,
+          "Type": "DWord",
+          "Description": "Network security: LDAP client signing requirements - Require signing"
+        }
+      ]
+    },
+    {
+      "Name": "SEC-Enable-LDAPChannelBinding",
+      "Description": "Enable LDAP channel binding on domain controllers with 'When Supported' mode to mitigate LDAP relay attacks",
+      "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
+      "LinkTargets": null,
+      "SecurityOptions": [
+        {
+          "Key": "MACHINE\\System\\CurrentControlSet\\Services\\NTDS\\Parameters",
+          "ValueName": "LdapEnforceChannelBinding",
+          "Value": 1,
+          "Type": "DWord",
+          "Description": "Domain controller: LDAP server channel binding token requirements - When Supported"
+        }
+      ]
+    },
+    {
+      "Name": "SEC-Disable-NTLM",
+      "Description": "Disable all NTLM authentication (incoming and outgoing) to force Kerberos-only authentication",
+      "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
+      "LinkTargets": null,
+      "SecurityOptions": [
+        {
+          "Key": "MACHINE\\System\\CurrentControlSet\\Control\\Lsa\\MSV1_0",
+          "ValueName": "RestrictSendingNTLMTraffic",
+          "Value": 2,
+          "Type": "DWord",
+          "Description": "Network security: Restrict NTLM - Outgoing NTLM traffic to remote servers - Deny all"
         },
         {
-          "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp",
-          "ValueName": "MinEncryptionLevel",
-          "Value": 3,
+          "Key": "MACHINE\\System\\CurrentControlSet\\Control\\Lsa\\MSV1_0",
+          "ValueName": "RestrictReceivingNTLMTraffic",
+          "Value": 2,
           "Type": "DWord",
-          "Description": "High encryption level for RDP connections"
+          "Description": "Network security: Restrict NTLM - Incoming NTLM traffic - Deny all"
+        }
+      ]
+    },
+    {
+      "Name": "SEC-Disable-PrintSpooler",
+      "Description": "Disable the Print Spooler service to prevent PrintNightmare and related print spooler exploitation",
+      "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
+      "LinkTargets": null,
+      "SystemServices": [
+        {
+          "Name": "Spooler",
+          "StartupType": 4,
+          "Description": "Print Spooler - Disabled"
+        }
+      ]
+    },
+    {
+      "Name": "SEC-Enable-SMBSigning-Client",
+      "Description": "Enable SMB signing on clients when server supports it (opportunistic signing)",
+      "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
+      "LinkTargets": null,
+      "SecurityOptions": [
+        {
+          "Key": "MACHINE\\System\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters",
+          "ValueName": "EnableSecuritySignature",
+          "Value": 1,
+          "Type": "DWord",
+          "Description": "Microsoft network client: Digitally sign communications (if server agrees)"
+        }
+      ]
+    },
+    {
+      "Name": "SEC-Require-SMBSigning-Client",
+      "Description": "Require SMB signing on clients for all connections to prevent SMB relay attacks",
+      "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
+      "LinkTargets": null,
+      "SecurityOptions": [
+        {
+          "Key": "MACHINE\\System\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters",
+          "ValueName": "RequireSecuritySignature",
+          "Value": 1,
+          "Type": "DWord",
+          "Description": "Microsoft network client: Digitally sign communications (always)"
+        }
+      ]
+    },
+    {
+      "Name": "SEC-Enable-SMBSigning-Server",
+      "Description": "Enable SMB signing on servers when client supports it (opportunistic signing)",
+      "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
+      "LinkTargets": null,
+      "SecurityOptions": [
+        {
+          "Key": "MACHINE\\System\\CurrentControlSet\\Services\\LanmanServer\\Parameters",
+          "ValueName": "EnableSecuritySignature",
+          "Value": 1,
+          "Type": "DWord",
+          "Description": "Microsoft network server: Digitally sign communications (if client agrees)"
+        }
+      ]
+    },
+    {
+      "Name": "SEC-Require-SMBSigning-Server",
+      "Description": "Require SMB signing on servers for all connections to prevent SMB relay attacks",
+      "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
+      "LinkTargets": null,
+      "SecurityOptions": [
+        {
+          "Key": "MACHINE\\System\\CurrentControlSet\\Services\\LanmanServer\\Parameters",
+          "ValueName": "RequireSecuritySignature",
+          "Value": 1,
+          "Type": "DWord",
+          "Description": "Microsoft network server: Digitally sign communications (always)"
         }
       ]
     },
@@ -390,6 +541,7 @@
       "Name": "SEC-Tiering-T0-LocalAdmins-Servers",
       "Description": "Enforce local Administrators membership on T0 servers via Restricted Groups (replaces full membership - add any additional local admin groups to the Members array below)",
       "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": "OU=Servers,OU=T0-Prod,DC=forest,DC=lol",
       "RestrictedGroups": [
         {
@@ -403,6 +555,7 @@
       "Name": "SEC-Tiering-T0-LocalAdmins-PAWs",
       "Description": "Enforce local Administrators membership on T0 PAWs via Restricted Groups (replaces full membership - add any additional local admin groups to the Members array below)",
       "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": "OU=PAWs,OU=T0-Prod,DC=forest,DC=lol",
       "RestrictedGroups": [
         {
@@ -416,6 +569,7 @@
       "Name": "SEC-Tiering-T1-LocalAdmins-Servers",
       "Description": "Enforce local Administrators membership on T1 servers via Restricted Groups (replaces full membership - add any additional local admin groups to the Members array below)",
       "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": "OU=Servers,OU=T1-Prod,DC=forest,DC=lol",
       "RestrictedGroups": [
         {
@@ -429,6 +583,7 @@
       "Name": "SEC-Tiering-T2-LocalAdmins-Workstations",
       "Description": "Enforce local Administrators membership on T2 workstations via Restricted Groups (replaces full membership - add any additional local admin groups to the Members array below)",
       "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": "OU=Workstations,OU=T2-Prod,DC=forest,DC=lol",
       "RestrictedGroups": [
         {

@@ -144,14 +144,20 @@ Write-Host ""
 
 foreach ($gpo in $config.GPOs) {
     $regCount = if ($gpo.RegistrySettings) { $gpo.RegistrySettings.Count } else { 0 }
+    $regPrefCount = if ($gpo.RegistryPreferences) { $gpo.RegistryPreferences.Count } else { 0 }
+    $secOptCount = if ($gpo.SecurityOptions) { $gpo.SecurityOptions.Count } else { 0 }
     $uraCount = if ($gpo.UserRightsAssignments) { $gpo.UserRightsAssignments.Count } else { 0 }
     $rgCount = if ($gpo.RestrictedGroups) { $gpo.RestrictedGroups.Count } else { 0 }
+    $svcCount = if ($gpo.SystemServices) { $gpo.SystemServices.Count } else { 0 }
     $linkCount = if ($gpo.LinkTargets) { $gpo.LinkTargets.Count } else { 0 }
 
     $parts = @()
     if ($regCount -gt 0) { $parts += "$regCount reg" }
+    if ($regPrefCount -gt 0) { $parts += "$regPrefCount pref" }
+    if ($secOptCount -gt 0) { $parts += "$secOptCount SO" }
     if ($uraCount -gt 0) { $parts += "$uraCount URA" }
     if ($rgCount -gt 0) { $parts += "$rgCount RG" }
+    if ($svcCount -gt 0) { $parts += "$svcCount SVC" }
     $parts += "$linkCount links"
     $detail = $parts -join ', '
 
@@ -216,9 +222,11 @@ foreach ($gpo in $config.GPOs) {
     # Create GPO and apply registry settings
     try {
         $regSettings = if ($gpo.RegistrySettings) { $gpo.RegistrySettings } else { @() }
+        $gpoStatus = if ($gpo.GpoStatus) { $gpo.GpoStatus } else { "AllSettingsEnabled" }
         New-GPOSecurityPolicy -Name $gpo.Name `
                                -Description $gpo.Description `
                                -RegistrySettings $regSettings `
+                               -GpoStatus $gpoStatus `
                                -Server $targetServer `
                                -LogDirectory $logDir `
                                -WhatIf:$WhatIfPreference
@@ -228,6 +236,21 @@ foreach ($gpo in $config.GPOs) {
         Write-GPOLog -Message "GPO '$($gpo.Name)' failed: $_" -Level Error -LogDirectory $logDir
         $stats.Errors++
         continue
+    }
+
+    # Apply Registry Preferences
+    if ($gpo.RegistryPreferences -and $gpo.RegistryPreferences.Count -gt 0) {
+        try {
+            Set-GPORegistryPreferences -GPOName $gpo.Name `
+                                         -RegistryPreferences $gpo.RegistryPreferences `
+                                         -Server $targetServer `
+                                         -LogDirectory $logDir `
+                                         -WhatIf:$WhatIfPreference
+        }
+        catch {
+            Write-GPOLog -Message "Registry Preferences for '$($gpo.Name)' failed: $_" -Level Error -LogDirectory $logDir
+            $stats.Errors++
+        }
     }
 
     # Apply User Rights Assignments
@@ -256,6 +279,36 @@ foreach ($gpo in $config.GPOs) {
         }
         catch {
             Write-GPOLog -Message "Restricted Groups for '$($gpo.Name)' failed: $_" -Level Error -LogDirectory $logDir
+            $stats.Errors++
+        }
+    }
+
+    # Apply Security Options
+    if ($gpo.SecurityOptions -and $gpo.SecurityOptions.Count -gt 0) {
+        try {
+            Set-GPOSecurityOptions -GPOName $gpo.Name `
+                                     -SecurityOptions $gpo.SecurityOptions `
+                                     -Server $targetServer `
+                                     -LogDirectory $logDir `
+                                     -WhatIf:$WhatIfPreference
+        }
+        catch {
+            Write-GPOLog -Message "Security Options for '$($gpo.Name)' failed: $_" -Level Error -LogDirectory $logDir
+            $stats.Errors++
+        }
+    }
+
+    # Apply System Services
+    if ($gpo.SystemServices -and $gpo.SystemServices.Count -gt 0) {
+        try {
+            Set-GPOSystemServices -GPOName $gpo.Name `
+                                    -SystemServices $gpo.SystemServices `
+                                    -Server $targetServer `
+                                    -LogDirectory $logDir `
+                                    -WhatIf:$WhatIfPreference
+        }
+        catch {
+            Write-GPOLog -Message "System Services for '$($gpo.Name)' failed: $_" -Level Error -LogDirectory $logDir
             $stats.Errors++
         }
     }

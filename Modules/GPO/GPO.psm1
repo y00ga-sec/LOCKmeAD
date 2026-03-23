@@ -101,12 +101,23 @@ function Import-GPOConfiguration {
             throw "GPO '$($gpo.Name)' is missing the 'Enabled' property."
         }
 
+        # Validate GpoStatus if provided
+        if ($gpo.GpoStatus) {
+            $validStatuses = @('AllSettingsEnabled', 'UserSettingsDisabled', 'ComputerSettingsDisabled', 'AllSettingsDisabled')
+            if ($gpo.GpoStatus -notin $validStatuses) {
+                throw "GPO '$($gpo.Name)': invalid 'GpoStatus' value '$($gpo.GpoStatus)'. Valid values: $($validStatuses -join ', ')"
+            }
+        }
+
         $hasRegistry = $gpo.RegistrySettings -and $gpo.RegistrySettings.Count -gt 0
+        $hasRegPref = $gpo.RegistryPreferences -and $gpo.RegistryPreferences.Count -gt 0
         $hasURA = $gpo.UserRightsAssignments -and $gpo.UserRightsAssignments.Count -gt 0
         $hasRG = $gpo.RestrictedGroups -and $gpo.RestrictedGroups.Count -gt 0
+        $hasSecOpt = $gpo.SecurityOptions -and $gpo.SecurityOptions.Count -gt 0
+        $hasSysSvc = $gpo.SystemServices -and $gpo.SystemServices.Count -gt 0
 
-        if (-not $hasRegistry -and -not $hasURA -and -not $hasRG) {
-            throw "GPO '$($gpo.Name)' has no 'RegistrySettings', 'UserRightsAssignments', or 'RestrictedGroups' defined."
+        if (-not $hasRegistry -and -not $hasRegPref -and -not $hasURA -and -not $hasRG -and -not $hasSecOpt -and -not $hasSysSvc) {
+            throw "GPO '$($gpo.Name)' has no 'RegistrySettings', 'RegistryPreferences', 'SecurityOptions', 'UserRightsAssignments', 'RestrictedGroups', or 'SystemServices' defined."
         }
 
         # Validate registry settings
@@ -127,6 +138,24 @@ function Import-GPOConfiguration {
             }
         }
 
+        # Validate Registry Preferences
+        if ($hasRegPref) {
+            foreach ($setting in $gpo.RegistryPreferences) {
+                if (-not $setting.Key) {
+                    throw "GPO '$($gpo.Name)': a registry preference is missing the 'Key' property."
+                }
+                if (-not $setting.ValueName) {
+                    throw "GPO '$($gpo.Name)': a registry preference is missing the 'ValueName' property."
+                }
+                if ($null -eq $setting.Value) {
+                    throw "GPO '$($gpo.Name)': registry preference '$($setting.ValueName)' is missing the 'Value' property."
+                }
+                if (-not $setting.Type -or $setting.Type -notin $validTypes) {
+                    throw "GPO '$($gpo.Name)': registry preference '$($setting.ValueName)' has an invalid 'Type'. Valid types: $($validTypes -join ', ')"
+                }
+            }
+        }
+
         # Validate User Rights Assignments
         if ($hasURA) {
             foreach ($assignment in $gpo.UserRightsAssignments) {
@@ -139,6 +168,27 @@ function Import-GPOConfiguration {
             }
         }
 
+        # Validate Security Options
+        if ($hasSecOpt) {
+            foreach ($secOpt in $gpo.SecurityOptions) {
+                if (-not $secOpt.Key) {
+                    throw "GPO '$($gpo.Name)': a Security Option is missing the 'Key' property."
+                }
+                if ($secOpt.Key -notmatch '^MACHINE\\') {
+                    throw "GPO '$($gpo.Name)': Security Option key '$($secOpt.Key)' must start with 'MACHINE\'. Use 'MACHINE\...' paths (not 'HKLM\...')."
+                }
+                if (-not $secOpt.ValueName) {
+                    throw "GPO '$($gpo.Name)': a Security Option is missing the 'ValueName' property."
+                }
+                if ($null -eq $secOpt.Value) {
+                    throw "GPO '$($gpo.Name)': Security Option '$($secOpt.ValueName)' is missing the 'Value' property."
+                }
+                if (-not $secOpt.Type -or $secOpt.Type -notin $validTypes) {
+                    throw "GPO '$($gpo.Name)': Security Option '$($secOpt.ValueName)' has an invalid 'Type'. Valid types: $($validTypes -join ', ')"
+                }
+            }
+        }
+
         # Validate Restricted Groups
         if ($hasRG) {
             foreach ($rg in $gpo.RestrictedGroups) {
@@ -147,6 +197,19 @@ function Import-GPOConfiguration {
                 }
                 if (-not $rg.Members -or $rg.Members.Count -eq 0) {
                     throw "GPO '$($gpo.Name)': RestrictedGroup '$($rg.Group)' has no 'Members' defined."
+                }
+            }
+        }
+
+        # Validate System Services
+        if ($hasSysSvc) {
+            $validStartupTypes = @(2, 3, 4)
+            foreach ($svc in $gpo.SystemServices) {
+                if (-not $svc.Name) {
+                    throw "GPO '$($gpo.Name)': a SystemService entry is missing the 'Name' property."
+                }
+                if ($null -eq $svc.StartupType -or $svc.StartupType -notin $validStartupTypes) {
+                    throw "GPO '$($gpo.Name)': SystemService '$($svc.Name)' has an invalid 'StartupType'. Valid values: 2 (Automatic), 3 (Manual), 4 (Disabled)"
                 }
             }
         }
@@ -396,6 +459,8 @@ function New-GPOSecurityPolicy {
         Description/comment for the GPO.
     .PARAMETER RegistrySettings
         Array of registry setting objects with Key, ValueName, Value, Type, and optional Description.
+    .PARAMETER GpoStatus
+        GPO status: AllSettingsEnabled, UserSettingsDisabled, ComputerSettingsDisabled, AllSettingsDisabled.
     .PARAMETER Server
         Target DC for all AD operations (avoids replication lag).
     .PARAMETER LogDirectory
@@ -409,6 +474,9 @@ function New-GPOSecurityPolicy {
         [string]$Description,
 
         [array]$RegistrySettings = @(),
+
+        [ValidateSet("AllSettingsEnabled", "UserSettingsDisabled", "ComputerSettingsDisabled", "AllSettingsDisabled")]
+        [string]$GpoStatus = "AllSettingsEnabled",
 
         [string]$Server,
 
@@ -434,6 +502,27 @@ function New-GPOSecurityPolicy {
                 Write-GPOLog -Message "GPO '$Name' created." -Level Success -LogDirectory $LogDirectory
             }
 
+            # Set GPO status via AD flags attribute
+            # 0 = AllSettingsEnabled, 1 = UserSettingsDisabled, 2 = ComputerSettingsDisabled, 3 = AllSettingsDisabled
+            if ($GpoStatus -ne "AllSettingsEnabled") {
+                $flagsMap = @{
+                    'AllSettingsEnabled'        = 0
+                    'UserSettingsDisabled'      = 1
+                    'ComputerSettingsDisabled'  = 2
+                    'AllSettingsDisabled'       = 3
+                }
+                $targetFlags = $flagsMap[$GpoStatus]
+                $gpoObj = Get-GPO -Name $Name @serverParam
+                $gpoGuid = "{$($gpoObj.Id.ToString().ToUpper())}"
+                $domainDN = (Get-ADDomain @serverParam).DistinguishedName
+                $gpoDN = "CN=$gpoGuid,CN=Policies,CN=System,$domainDN"
+                $currentFlags = (Get-ADObject -Identity $gpoDN -Properties flags @serverParam).flags
+                if ($currentFlags -ne $targetFlags) {
+                    Set-ADObject -Identity $gpoDN -Replace @{ flags = $targetFlags } @serverParam
+                    Write-GPOLog -Message "  GPO status set to '$GpoStatus' on '$Name'." -Level Success -LogDirectory $LogDirectory
+                }
+            }
+
             foreach ($setting in $RegistrySettings) {
                 Set-GPRegistryValue -Name $Name `
                                     -Key $setting.Key `
@@ -453,7 +542,84 @@ function New-GPOSecurityPolicy {
     }
     else {
         Write-GPOLog -Message "[WhatIf] GPO '$Name' would be $(if ($existingGPO) { 'updated' } else { 'created' }) ($settingLabel):" -Level Info -LogDirectory $LogDirectory
+        if ($GpoStatus -ne "AllSettingsEnabled") {
+            Write-GPOLog -Message "  [WhatIf] GPO status would be set to '$GpoStatus'." -Level Info -LogDirectory $LogDirectory
+        }
         foreach ($setting in $RegistrySettings) {
+            $desc = if ($setting.Description) { " - $($setting.Description)" } else { "" }
+            Write-GPOLog -Message "  [WhatIf] $($setting.Key)\$($setting.ValueName) = $($setting.Value)$desc" -Level Info -LogDirectory $LogDirectory
+        }
+    }
+}
+
+# ============================================================================
+# Registry Preferences (GPO Preferences > Windows Settings > Registry)
+# ============================================================================
+
+function Set-GPORegistryPreferences {
+    <#
+    .SYNOPSIS
+        Applies registry preference items to a GPO using Set-GPPrefRegistryValue.
+    .DESCRIPTION
+        Writes registry settings as GPO Preferences (Computer Configuration >
+        Preferences > Windows Settings > Registry) using the Replace action.
+        Unlike RegistrySettings (Administrative Templates), Preferences do not
+        tattoo the registry and are cleanly removed when the GPO is unlinked.
+        Use this for arbitrary registry keys outside the SOFTWARE\Policies namespace.
+    .PARAMETER GPOName
+        Name of an existing GPO to configure.
+    .PARAMETER RegistryPreferences
+        Array of objects with Key (HKLM\...), ValueName, Value, Type, and optional Description.
+    .PARAMETER Server
+        Target DC for all AD operations (avoids replication lag).
+    .PARAMETER LogDirectory
+        Log directory.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)]
+        [string]$GPOName,
+
+        [Parameter(Mandatory)]
+        [array]$RegistryPreferences,
+
+        [string]$Server,
+
+        [string]$LogDirectory
+    )
+
+    $serverParam = @{}
+    if ($Server) { $serverParam.Server = $Server }
+
+    $target = "$GPOName ($($RegistryPreferences.Count) registry preference(s))"
+
+    if ($PSCmdlet.ShouldProcess($target, "Set Registry Preferences via GPO Preferences")) {
+        try {
+            $order = 1
+            foreach ($setting in $RegistryPreferences) {
+                Set-GPPrefRegistryValue -Name $GPOName `
+                                         -Context Computer `
+                                         -Action Replace `
+                                         -Key $setting.Key `
+                                         -ValueName $setting.ValueName `
+                                         -Value $setting.Value `
+                                         -Type $setting.Type `
+                                         -Order $order `
+                                         @serverParam | Out-Null
+
+                $desc = if ($setting.Description) { " ($($setting.Description))" } else { "" }
+                Write-GPOLog -Message "  Pref: $($setting.ValueName) = $($setting.Value)$desc" -Level Success -LogDirectory $LogDirectory
+                $order++
+            }
+        }
+        catch {
+            Write-GPOLog -Message "Error setting Registry Preferences on '$GPOName': $_" -Level Error -LogDirectory $LogDirectory
+            throw
+        }
+    }
+    else {
+        Write-GPOLog -Message "[WhatIf] Registry Preferences would be set on GPO '$GPOName':" -Level Info -LogDirectory $LogDirectory
+        foreach ($setting in $RegistryPreferences) {
             $desc = if ($setting.Description) { " - $($setting.Description)" } else { "" }
             Write-GPOLog -Message "  [WhatIf] $($setting.Key)\$($setting.ValueName) = $($setting.Value)$desc" -Level Info -LogDirectory $LogDirectory
         }
@@ -873,6 +1039,254 @@ function Set-GPORestrictedGroups {
     }
 }
 
+# ============================================================================
+# Security Options ([Registry Values] in GptTmpl.inf)
+# ============================================================================
+
+function Set-GPOSecurityOptions {
+    <#
+    .SYNOPSIS
+        Applies Security Options to a GPO by writing the [Registry Values]
+        section to GptTmpl.inf in SYSVOL.
+    .DESCRIPTION
+        Builds [Registry Values] entries from the SecurityOptions array and
+        writes them to GptTmpl.inf using the Security CSE format. These
+        settings appear under Computer Configuration > Windows Settings >
+        Security Settings > Security Options in the Group Policy Editor.
+    .PARAMETER GPOName
+        Name of an existing GPO to configure.
+    .PARAMETER SecurityOptions
+        Array of objects with Key (MACHINE\...), ValueName, Value, Type, and optional Description.
+    .PARAMETER Server
+        Target DC for all AD operations (avoids replication lag).
+    .PARAMETER LogDirectory
+        Log directory.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)]
+        [string]$GPOName,
+
+        [Parameter(Mandatory)]
+        [array]$SecurityOptions,
+
+        [string]$Server,
+
+        [string]$LogDirectory
+    )
+
+    $serverParam = @{}
+    if ($Server) { $serverParam.Server = $Server }
+
+    # Map friendly type names to GptTmpl.inf numeric codes
+    $typeMap = @{
+        'String'       = 1
+        'ExpandString'  = 2
+        'Binary'       = 3
+        'DWord'        = 4
+        'MultiString'  = 7
+        'QWord'        = 11
+    }
+
+    # Build [Registry Values] lines
+    $registryValueLines = @()
+    foreach ($opt in $SecurityOptions) {
+        $typeCode = $typeMap[$opt.Type]
+        if (-not $typeCode) {
+            throw "Unsupported Security Option type '$($opt.Type)' for '$($opt.ValueName)'."
+        }
+
+        $formattedValue = switch ($opt.Type) {
+            'String'      { "$typeCode,`"$($opt.Value)`"" }
+            'ExpandString' { "$typeCode,`"$($opt.Value)`"" }
+            'MultiString' { "$typeCode,$($opt.Value -join ',')" }
+            default       { "$typeCode,$($opt.Value)" }
+        }
+
+        $registryValueLines += "$($opt.Key)\$($opt.ValueName)=$formattedValue"
+    }
+
+    $target = "$GPOName ($($SecurityOptions.Count) security option(s))"
+
+    if ($PSCmdlet.ShouldProcess($target, "Set Security Options via GptTmpl.inf")) {
+        try {
+            # Get GPO details
+            $gpo = Get-GPO -Name $GPOName @serverParam -ErrorAction Stop
+            $gpoGuid = "{$($gpo.Id.ToString().ToUpper())}"
+            $domainDNS = (Get-ADDomain @serverParam).DNSRoot
+            $domainDN = (Get-ADDomain @serverParam).DistinguishedName
+
+            # Build SYSVOL path
+            $sysvolBase = "\\$domainDNS\SYSVOL\$domainDNS\Policies\$gpoGuid"
+            $infPath = "$sysvolBase\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
+
+            # Write [Registry Values] section (merges with existing sections)
+            Write-SecurityTemplateSection -InfPath $infPath -SectionName "Registry Values" -SectionLines $registryValueLines
+
+            foreach ($opt in $SecurityOptions) {
+                $desc = if ($opt.Description) { " ($($opt.Description))" } else { "" }
+                Write-GPOLog -Message "  SO: $($opt.ValueName) = $($opt.Value)$desc" -Level Success -LogDirectory $LogDirectory
+            }
+
+            # Update gPCMachineExtensionNames to include Security CSE
+            $gpoDN = "CN=$gpoGuid,CN=Policies,CN=System,$domainDN"
+            $gpoAD = Get-ADObject -Identity $gpoDN -Properties gPCMachineExtensionNames, versionNumber @serverParam
+
+            $securityCSE = "[{827D319E-6EAC-11D2-A4EA-00C04F79F83A}{803E14A0-B4FB-11D0-A0D0-00A0C90F574B}]"
+            $currentExt = if ($gpoAD.gPCMachineExtensionNames) { $gpoAD.gPCMachineExtensionNames } else { "" }
+
+            if ($currentExt -notlike "*827D319E*") {
+                $newExt = $currentExt + $securityCSE
+                Set-ADObject -Identity $gpoDN -Replace @{ gPCMachineExtensionNames = $newExt } @serverParam
+            }
+
+            # Increment machine version (lower 16 bits)
+            $currentVersion = if ($gpoAD.versionNumber) { [int]$gpoAD.versionNumber } else { 0 }
+            $userVersion = ($currentVersion -shr 16) -band 0xFFFF
+            $machineVersion = ($currentVersion -band 0xFFFF) + 1
+            $newVersion = ($userVersion -shl 16) -bor $machineVersion
+            Set-ADObject -Identity $gpoDN -Replace @{ versionNumber = $newVersion } @serverParam
+
+            # Update GPT.INI version to match
+            $gptIniPath = "$sysvolBase\GPT.INI"
+            if (Test-Path $gptIniPath) {
+                $gptContent = Get-Content $gptIniPath -Raw
+                $gptContent = $gptContent -replace 'Version=\d+', "Version=$newVersion"
+                Set-Content -Path $gptIniPath -Value $gptContent -Encoding ASCII
+            }
+
+            Write-GPOLog -Message "Security Options applied to GPO '$GPOName'." -Level Success -LogDirectory $LogDirectory
+        }
+        catch {
+            Write-GPOLog -Message "Error setting Security Options on '$GPOName': $_" -Level Error -LogDirectory $LogDirectory
+            throw
+        }
+    }
+    else {
+        Write-GPOLog -Message "[WhatIf] Security Options would be set on GPO '$GPOName':" -Level Info -LogDirectory $LogDirectory
+        foreach ($opt in $SecurityOptions) {
+            $desc = if ($opt.Description) { " - $($opt.Description)" } else { "" }
+            Write-GPOLog -Message "  [WhatIf] $($opt.Key)\$($opt.ValueName) = $($opt.Value)$desc" -Level Info -LogDirectory $LogDirectory
+        }
+    }
+}
+
+# ============================================================================
+# System Services ([Service General Setting] in GptTmpl.inf)
+# ============================================================================
+
+function Set-GPOSystemServices {
+    <#
+    .SYNOPSIS
+        Applies System Service startup settings to a GPO by writing the
+        [Service General Setting] section to GptTmpl.inf in SYSVOL.
+    .DESCRIPTION
+        Builds [Service General Setting] entries and writes them to GptTmpl.inf
+        using the Security CSE format. These settings appear under Computer
+        Configuration > Windows Settings > Security Settings > System Services
+        in the Group Policy Editor.
+    .PARAMETER GPOName
+        Name of an existing GPO to configure.
+    .PARAMETER SystemServices
+        Array of objects with Name (service name), StartupType (2=Automatic, 3=Manual, 4=Disabled),
+        and optional Description.
+    .PARAMETER Server
+        Target DC for all AD operations (avoids replication lag).
+    .PARAMETER LogDirectory
+        Log directory.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)]
+        [string]$GPOName,
+
+        [Parameter(Mandatory)]
+        [array]$SystemServices,
+
+        [string]$Server,
+
+        [string]$LogDirectory
+    )
+
+    $serverParam = @{}
+    if ($Server) { $serverParam.Server = $Server }
+
+    $startupLabels = @{ 2 = 'Automatic'; 3 = 'Manual'; 4 = 'Disabled' }
+
+    # Build [Service General Setting] lines
+    # Format: "ServiceName",StartupType,""
+    $serviceLines = @()
+    foreach ($svc in $SystemServices) {
+        $serviceLines += "`"$($svc.Name)`",$($svc.StartupType),`"`""
+    }
+
+    $target = "$GPOName ($($SystemServices.Count) system service(s))"
+
+    if ($PSCmdlet.ShouldProcess($target, "Set System Services via GptTmpl.inf")) {
+        try {
+            # Get GPO details
+            $gpo = Get-GPO -Name $GPOName @serverParam -ErrorAction Stop
+            $gpoGuid = "{$($gpo.Id.ToString().ToUpper())}"
+            $domainDNS = (Get-ADDomain @serverParam).DNSRoot
+            $domainDN = (Get-ADDomain @serverParam).DistinguishedName
+
+            # Build SYSVOL path
+            $sysvolBase = "\\$domainDNS\SYSVOL\$domainDNS\Policies\$gpoGuid"
+            $infPath = "$sysvolBase\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
+
+            # Write [Service General Setting] section (merges with existing sections)
+            Write-SecurityTemplateSection -InfPath $infPath -SectionName "Service General Setting" -SectionLines $serviceLines
+
+            foreach ($svc in $SystemServices) {
+                $label = $startupLabels[[int]$svc.StartupType]
+                $desc = if ($svc.Description) { " ($($svc.Description))" } else { "" }
+                Write-GPOLog -Message "  SVC: $($svc.Name) = $label$desc" -Level Success -LogDirectory $LogDirectory
+            }
+
+            # Update gPCMachineExtensionNames to include Security CSE
+            $gpoDN = "CN=$gpoGuid,CN=Policies,CN=System,$domainDN"
+            $gpoAD = Get-ADObject -Identity $gpoDN -Properties gPCMachineExtensionNames, versionNumber @serverParam
+
+            $securityCSE = "[{827D319E-6EAC-11D2-A4EA-00C04F79F83A}{803E14A0-B4FB-11D0-A0D0-00A0C90F574B}]"
+            $currentExt = if ($gpoAD.gPCMachineExtensionNames) { $gpoAD.gPCMachineExtensionNames } else { "" }
+
+            if ($currentExt -notlike "*827D319E*") {
+                $newExt = $currentExt + $securityCSE
+                Set-ADObject -Identity $gpoDN -Replace @{ gPCMachineExtensionNames = $newExt } @serverParam
+            }
+
+            # Increment machine version (lower 16 bits)
+            $currentVersion = if ($gpoAD.versionNumber) { [int]$gpoAD.versionNumber } else { 0 }
+            $userVersion = ($currentVersion -shr 16) -band 0xFFFF
+            $machineVersion = ($currentVersion -band 0xFFFF) + 1
+            $newVersion = ($userVersion -shl 16) -bor $machineVersion
+            Set-ADObject -Identity $gpoDN -Replace @{ versionNumber = $newVersion } @serverParam
+
+            # Update GPT.INI version to match
+            $gptIniPath = "$sysvolBase\GPT.INI"
+            if (Test-Path $gptIniPath) {
+                $gptContent = Get-Content $gptIniPath -Raw
+                $gptContent = $gptContent -replace 'Version=\d+', "Version=$newVersion"
+                Set-Content -Path $gptIniPath -Value $gptContent -Encoding ASCII
+            }
+
+            Write-GPOLog -Message "System Services applied to GPO '$GPOName'." -Level Success -LogDirectory $LogDirectory
+        }
+        catch {
+            Write-GPOLog -Message "Error setting System Services on '$GPOName': $_" -Level Error -LogDirectory $LogDirectory
+            throw
+        }
+    }
+    else {
+        Write-GPOLog -Message "[WhatIf] System Services would be set on GPO '$GPOName':" -Level Info -LogDirectory $LogDirectory
+        foreach ($svc in $SystemServices) {
+            $label = $startupLabels[[int]$svc.StartupType]
+            $desc = if ($svc.Description) { " - $($svc.Description)" } else { "" }
+            Write-GPOLog -Message "  [WhatIf] $($svc.Name) = $label$desc" -Level Info -LogDirectory $LogDirectory
+        }
+    }
+}
+
 # Export module functions
 Export-ModuleMember -Function @(
     'Write-GPOLog',
@@ -881,7 +1295,10 @@ Export-ModuleMember -Function @(
     'New-GPOFilteringGroup',
     'Set-GPOFilteringPermission',
     'New-GPOSecurityPolicy',
+    'Set-GPORegistryPreferences',
     'Set-GPOUserRightsAssignment',
     'Set-GPORestrictedGroups',
+    'Set-GPOSecurityOptions',
+    'Set-GPOSystemServices',
     'Set-GPOLink'
 )
