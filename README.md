@@ -71,3 +71,9 @@ Safe deployment order is enforced automatically: Hardening > Tiering > RBAC > PS
 ## Documentation
 
 For detailed configuration guides, JSON schema references, and deployment walkthroughs, head to the **[Wiki](https://github.com/y00ga-sec/LOCKmeAD/wiki)**.
+
+---
+
+## TO DO :
+
+- [ ] Implement more security GPOs (RC4, SSL ? ...)
