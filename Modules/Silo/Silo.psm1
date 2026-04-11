@@ -107,6 +107,10 @@ function Import-SiloConfiguration {
         if (-not ($silo.PSObject.Properties.Name -contains 'Computers')) {
             throw "Silo '$($silo.Name)' is missing the 'Computers' property (use an empty array if none)."
         }
+        # Default Enforce to false (audit mode) if omitted from config
+        if ($null -eq $silo.Enforce) {
+            $silo | Add-Member -MemberType NoteProperty -Name 'Enforce' -Value $false -Force
+        }
     }
 
     return $config

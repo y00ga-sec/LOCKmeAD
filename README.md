@@ -19,7 +19,7 @@ LOCKmeAD hardens, structures, and locks down Active Directory environments throu
 In order to avoid breaking your environnement when deploying, LOCKmeAD includes by default :
 
 - GPOs with APPLY/DENY security filtering groups
-- Empty Silos
+- Silos deployed in **audit mode** (non-enforced) — monitor Kerberos logs before switching to enforce
 - PSOs based on LOCKmeAD groups
   
 ---
@@ -33,7 +33,7 @@ In order to avoid breaking your environnement when deploying, LOCKmeAD includes 
 | **Hardening** | Applies AD hardening tasks — MachineAccountQuota, functional levels, Recycle Bin, PAM, LAPS, Central Store, etc. |
 | **GPO** | Creates security GPOs from JSON templates — disables LLMNR, mDNS, NBT-NS, NTLMv1, Wdigest, SMBv1, and more |
 | **PSO** | Creates Fine-Grained Password Policies with full AD Admin Center parity |
-| **Silo** | Creates Authentication Policy Silos to restrict service account lateral movement |
+| **Silo** | Creates Authentication Policy Silos to restrict service account lateral movement — deployed in **audit mode** by default, switch to enforce after validating no auth failures |
 | **JIT** | Deploys the JIT Access Manager tool to T0 admin workstations via GPO |
 
 ---
