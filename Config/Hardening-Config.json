@@ -60,6 +60,11 @@
       "Name": "ExtendLAPSSchema",
       "Description": "Extend the Active Directory schema for Windows LAPS",
       "Enabled": true
+    },
+    {
+      "Name": "RestrictDNSDynamicUpdate",
+      "Description": "Remove CreateChild (dnsNode) from Authenticated Users on all AD-integrated DNS zones and grant it to Domain Computers only",
+      "Enabled": true
     }
   ]
 }

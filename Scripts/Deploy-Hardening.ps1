@@ -213,6 +213,10 @@ foreach ($task in $config.Tasks) {
                 Update-HardeningLAPSSchema -LogDirectory $logDir `
                                             -WhatIf:$WhatIfPreference
             }
+            'RestrictDNSDynamicUpdate' {
+                Set-HardeningDNSDynamicUpdate -LogDirectory $logDir `
+                                               -WhatIf:$WhatIfPreference
+            }
         }
         $stats.TasksExecuted++
     }

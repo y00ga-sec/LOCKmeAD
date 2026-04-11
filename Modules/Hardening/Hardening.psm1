@@ -100,7 +100,8 @@ function Import-HardeningConfiguration {
         'DeployT0AuthPolicy',
         'EnableReplicationNotify',
         'ConfigureCentralStore',
-        'ExtendLAPSSchema'
+        'ExtendLAPSSchema',
+        'RestrictDNSDynamicUpdate'
     )
 
     foreach ($task in $config.Tasks) {
@@ -646,6 +647,153 @@ function Update-HardeningLAPSSchema {
     }
 }
 
+# ============================================================================
+# Task: RestrictDNSDynamicUpdate
+# ============================================================================
+
+function Set-HardeningDNSDynamicUpdate {
+    <#
+    .SYNOPSIS
+        Restricts DNS dynamic update registration to Domain Computers only.
+    .DESCRIPTION
+        By default, Authenticated Users (S-1-5-11) can create dnsNode objects
+        inside AD-integrated DNS zones, which lets any domain user register
+        arbitrary DNS records. This function removes that CreateChild right
+        from Authenticated Users and grants it exclusively to Domain Computers,
+        so only computer accounts can perform dynamic DNS registration.
+        Targets all dnsZone objects under MicrosoftDNS in both
+        DomainDNSZones and ForestDNSZones application partitions.
+    .PARAMETER LogDirectory
+        Log directory.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [string]$LogDirectory
+    )
+
+    # Authenticated Users: well-known SID S-1-5-11 (no domain resolution needed)
+    $authenticatedUsersSid = [System.Security.Principal.SecurityIdentifier]::new("S-1-5-11")
+
+    $domain    = Get-ADDomain
+    $domainDN  = $domain.DistinguishedName
+
+    # Domain Computers: well-known RID 515, relative to the domain SID
+    $domainComputersSid = New-Object System.Security.Principal.SecurityIdentifier(
+        [System.Security.Principal.WellKnownSidType]::AccountComputersSid,
+        $domain.DomainSID
+    )
+
+    $containers = @(
+        "CN=MicrosoftDNS,DC=DomainDNSZones,$domainDN",
+        "CN=MicrosoftDNS,DC=ForestDNSZones,$domainDN"
+    )
+
+    foreach ($containerDN in $containers) {
+        if (-not (Test-Path "AD:\$containerDN")) {
+            Write-HardeningLog -Message "DNS container not found: '$containerDN'. Skipping." -Level Warning -LogDirectory $LogDirectory
+            continue
+        }
+
+        Write-HardeningLog -Message "Processing container '$containerDN'..." -Level Info -LogDirectory $LogDirectory
+
+        try {
+            $zones = Get-ADObject -SearchBase $containerDN `
+                                   -Filter { objectClass -eq 'dnsZone' } `
+                                   -SearchScope OneLevel `
+                                   -ErrorAction Stop
+        }
+        catch {
+            Write-HardeningLog -Message "Error enumerating DNS zones under '$containerDN': $_" -Level Error -LogDirectory $LogDirectory
+            continue
+        }
+
+        if (-not $zones) {
+            Write-HardeningLog -Message "No DNS zones found under '$containerDN'." -Level Warning -LogDirectory $LogDirectory
+            continue
+        }
+
+        foreach ($zone in $zones) {
+            $zonePath = "AD:\$($zone.DistinguishedName)"
+
+            try {
+                $acl = Get-Acl -Path $zonePath
+
+                # Resolve the SID of an ACE identity, returns $null on failure
+                $resolveSid = {
+                    param($ace)
+                    if ($ace.IdentityReference -is [System.Security.Principal.SecurityIdentifier]) {
+                        return $ace.IdentityReference
+                    }
+                    try { return $ace.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]) }
+                    catch { return $null }
+                }
+
+                # Find explicit Allow CreateChild ACEs belonging to Authenticated Users
+                $aceToRemove = @($acl.Access | Where-Object {
+                    if ($_.IsInherited) { return $false }
+                    if ($_.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { return $false }
+                    if (-not ($_.ActiveDirectoryRights -band [System.DirectoryServices.ActiveDirectoryRights]::CreateChild)) { return $false }
+                    $sid = & $resolveSid $_
+                    $sid -and $sid.Value -eq $authenticatedUsersSid.Value
+                })
+
+                # Find stale class-scoped CreateChild ACEs for Domain Computers (e.g. dnsNode-only from a previous run)
+                $staleAces = @($acl.Access | Where-Object {
+                    if ($_.IsInherited) { return $false }
+                    if ($_.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { return $false }
+                    if (-not ($_.ActiveDirectoryRights -band [System.DirectoryServices.ActiveDirectoryRights]::CreateChild)) { return $false }
+                    if ($_.ObjectType -eq [Guid]::Empty) { return $false }  # already correct scope, keep it
+                    $sid = & $resolveSid $_
+                    $sid -and $sid.Value -eq $domainComputersSid.Value
+                })
+
+                # Check if Domain Computers already has a CreateChild (all child objects) ACE
+                $domainComputersAceExists = [bool]($acl.Access | Where-Object {
+                    if ($_.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { return $false }
+                    if (-not ($_.ActiveDirectoryRights -band [System.DirectoryServices.ActiveDirectoryRights]::CreateChild)) { return $false }
+                    if ($_.ObjectType -ne [Guid]::Empty) { return $false }
+                    $sid = & $resolveSid $_
+                    $sid -and $sid.Value -eq $domainComputersSid.Value
+                })
+
+                if ($aceToRemove.Count -eq 0 -and $staleAces.Count -eq 0 -and $domainComputersAceExists) {
+                    Write-HardeningLog -Message "  Zone '$($zone.Name)': Already configured correctly." -Level Warning -LogDirectory $LogDirectory
+                    continue
+                }
+
+                if ($PSCmdlet.ShouldProcess($zone.DistinguishedName, "Restrict DNS dynamic update (remove Authenticated Users CreateChild, add Domain Computers CreateChild all child objects)")) {
+                    foreach ($ace in $aceToRemove) {
+                        $acl.RemoveAccessRule($ace) | Out-Null
+                    }
+                    foreach ($ace in $staleAces) {
+                        $acl.RemoveAccessRule($ace) | Out-Null
+                    }
+
+                    if (-not $domainComputersAceExists) {
+                        $newAce = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
+                            $domainComputersSid,
+                            [System.DirectoryServices.ActiveDirectoryRights]::CreateChild,
+                            [System.Security.AccessControl.AccessControlType]::Allow,
+                            [Guid]::Empty,
+                            [System.DirectoryServices.ActiveDirectorySecurityInheritance]::All
+                        )
+                        $acl.AddAccessRule($newAce)
+                    }
+
+                    Set-Acl -Path $zonePath -AclObject $acl
+                    Write-HardeningLog -Message "  Zone '$($zone.Name)': DNS dynamic update restricted to Domain Computers only." -Level Success -LogDirectory $LogDirectory
+                }
+                else {
+                    Write-HardeningLog -Message "  [WhatIf] Zone '$($zone.Name)': Authenticated Users CreateChild would be removed, Domain Computers CreateChild (all child objects) would be added." -Level Info -LogDirectory $LogDirectory
+                }
+            }
+            catch {
+                Write-HardeningLog -Message "  Error modifying ACL on zone '$($zone.Name)': $_" -Level Error -LogDirectory $LogDirectory
+            }
+        }
+    }
+}
+
 # Export module functions
 Export-ModuleMember -Function @(
     'Write-HardeningLog',
@@ -659,5 +807,6 @@ Export-ModuleMember -Function @(
     'New-HardeningT0AuthPolicy',
     'Set-HardeningReplicationNotify',
     'Set-HardeningCentralStore',
-    'Update-HardeningLAPSSchema'
+    'Update-HardeningLAPSSchema',
+    'Set-HardeningDNSDynamicUpdate'
 )
