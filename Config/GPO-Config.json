@@ -592,6 +592,39 @@
           "Description": "Enforce local Administrators on T2 workstations"
         }
       ]
+    },
+    {
+      "Name": "SEC-Kerberos-EnforceAES-DCs",
+      "Description": "Disables RC4 at the domain level on domain controllers by setting DefaultDomainSupportedEncTypes to 0x38 (AES128, AES256, Future). This prevents the KDC from issuing RC4 tickets even when an account's msDS-SupportedEncryptionTypes is blank. WARNING: May be too aggressive for most organizations - only apply after all service accounts have been remediated and no RC4-dependent devices remain.",
+      "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
+      "LinkTargets": null,
+      "RegistryPreferences": [
+        {
+          "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\KDC",
+          "ValueName": "DefaultDomainSupportedEncTypes",
+          "Value": 56,
+          "Type": "DWord",
+          "Action": "Update",
+          "Description": "KDC default encryption types - AES128 (0x8) + AES256 (0x10) + Future (0x20) = 0x38. Disables RC4 and DES fallback for accounts with no msDS-SupportedEncryptionTypes set."
+        }
+      ]
+    },
+    {
+      "Name": "SEC-Kerberos-EnforceAES-Clients",
+      "Description": "Restrict Kerberos encryption to AES128, AES256, and Future types only - disables RC4 and DES on clients. WARNING: Only apply to devices confirmed to have no RC4 dependencies (verify via Event ID 4768 Advertised Etypes). Devices with RC4-only keytabs, legacy NAS, or non-Windows appliances will break if targeted before remediation.",
+      "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
+      "LinkTargets": null,
+      "SecurityOptions": [
+        {
+          "Key": "MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\Kerberos\\Parameters",
+          "ValueName": "SupportedEncryptionTypes",
+          "Value": 2147483640,
+          "Type": "DWord",
+          "Description": "Network security: Configure encryption types allowed for Kerberos - AES128_HMAC_SHA1 (0x8) + AES256_HMAC_SHA1 (0x10) + Future (0x7FFFFFE0) = 0x7FFFFFF8. Disables DES and RC4."
+        }
+      ]
     }
   ]
 }

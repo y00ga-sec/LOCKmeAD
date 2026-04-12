@@ -562,14 +562,16 @@ function Set-GPORegistryPreferences {
         Applies registry preference items to a GPO using Set-GPPrefRegistryValue.
     .DESCRIPTION
         Writes registry settings as GPO Preferences (Computer Configuration >
-        Preferences > Windows Settings > Registry) using the Replace action.
-        Unlike RegistrySettings (Administrative Templates), Preferences do not
-        tattoo the registry and are cleanly removed when the GPO is unlinked.
-        Use this for arbitrary registry keys outside the SOFTWARE\Policies namespace.
+        Preferences > Windows Settings > Registry). Unlike RegistrySettings
+        (Administrative Templates), Preferences do not tattoo the registry and
+        are cleanly removed when the GPO is unlinked. Use this for arbitrary
+        registry keys outside the SOFTWARE\Policies namespace.
     .PARAMETER GPOName
         Name of an existing GPO to configure.
     .PARAMETER RegistryPreferences
-        Array of objects with Key (HKLM\...), ValueName, Value, Type, and optional Description.
+        Array of objects with Key (HKLM\...), ValueName, Value, Type, optional
+        Description, and optional Action (Create, Replace, Update, Delete).
+        Defaults to Replace when Action is omitted.
     .PARAMETER Server
         Target DC for all AD operations (avoids replication lag).
     .PARAMETER LogDirectory
@@ -597,9 +599,10 @@ function Set-GPORegistryPreferences {
         try {
             $order = 1
             foreach ($setting in $RegistryPreferences) {
+                $action = if ($setting.Action) { $setting.Action } else { "Replace" }
                 Set-GPPrefRegistryValue -Name $GPOName `
                                          -Context Computer `
-                                         -Action Replace `
+                                         -Action $action `
                                          -Key $setting.Key `
                                          -ValueName $setting.ValueName `
                                          -Value $setting.Value `
@@ -608,7 +611,7 @@ function Set-GPORegistryPreferences {
                                          @serverParam | Out-Null
 
                 $desc = if ($setting.Description) { " ($($setting.Description))" } else { "" }
-                Write-GPOLog -Message "  Pref: $($setting.ValueName) = $($setting.Value)$desc" -Level Success -LogDirectory $LogDirectory
+                Write-GPOLog -Message "  Pref [$action]: $($setting.ValueName) = $($setting.Value)$desc" -Level Success -LogDirectory $LogDirectory
                 $order++
             }
         }
@@ -620,8 +623,9 @@ function Set-GPORegistryPreferences {
     else {
         Write-GPOLog -Message "[WhatIf] Registry Preferences would be set on GPO '$GPOName':" -Level Info -LogDirectory $LogDirectory
         foreach ($setting in $RegistryPreferences) {
+            $action = if ($setting.Action) { $setting.Action } else { "Replace" }
             $desc = if ($setting.Description) { " - $($setting.Description)" } else { "" }
-            Write-GPOLog -Message "  [WhatIf] $($setting.Key)\$($setting.ValueName) = $($setting.Value)$desc" -Level Info -LogDirectory $LogDirectory
+            Write-GPOLog -Message "  [WhatIf] [$action] $($setting.Key)\$($setting.ValueName) = $($setting.Value)$desc" -Level Info -LogDirectory $LogDirectory
         }
     }
 }
