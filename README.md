@@ -76,5 +76,5 @@ For detailed configuration guides, JSON schema references, and deployment walkth
 
 ## TO DO :
 
-- [ ] Implement more security GPOs (RC4, SSL ? ...)
+- [ ] LAPS config GPO
 - [x] Create a new hardening task for securing DNS : Removing default DNS records creation for Domain Users and only keeping it for Domain Computers
