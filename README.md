@@ -18,9 +18,9 @@ LOCKmeAD hardens, structures, and locks down Active Directory environments throu
 
 In order to avoid breaking your environnement when deploying, LOCKmeAD includes by default :
 
-- GPOs with APPLY/DENY security filtering groups
+- GPOs with APPLY/DENY security filtering groups - after linking LOCKmeAD GPOs to its target OU, add machines/users to the APPLY group and exceptions to the DENY one for smooth and step-by-step pilot phases
 - Silos deployed in **audit mode** (non-enforced) — monitor Kerberos logs before switching to enforce
-- PSOs based on LOCKmeAD groups
+- PSOs based on LOCKmeAD groups - so that your current admin team does not have a surprise at next password renewal
   
 ---
 
