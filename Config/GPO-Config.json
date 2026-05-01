@@ -356,22 +356,6 @@
       ]
     },
     {
-      "Name": "SEC-Negotiate-LDAPSigning-Server",
-      "Description": "Negotiate LDAP signing on domain controllers (sign if client supports it)",
-      "Enabled": true,
-      "GpoStatus": "UserSettingsDisabled",
-      "LinkTargets": null,
-      "SecurityOptions": [
-        {
-          "Key": "MACHINE\\System\\CurrentControlSet\\Services\\NTDS\\Parameters",
-          "ValueName": "LDAPServerIntegrity",
-          "Value": 1,
-          "Type": "DWord",
-          "Description": "Domain controller: LDAP server signing requirements - Negotiate signing"
-        }
-      ]
-    },
-    {
       "Name": "SEC-Negotiate-LDAPSigning-Client",
       "Description": "Negotiate LDAP signing on clients (sign if server supports it)",
       "Enabled": true,
