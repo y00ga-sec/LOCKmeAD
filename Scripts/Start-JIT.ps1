@@ -858,10 +858,13 @@ $xaml = @"
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <TextBox Name="ViewGroupBox" Grid.Column="0" Padding="8,6"
                                      FontSize="13" BorderBrush="#D0D0D0" BorderThickness="1"/>
                             <Button Name="LoadGroupBtn" Grid.Column="1" Content="Load"
+                                    Style="{StaticResource ToolbarBtn}" Margin="6,0,0,0"/>
+                            <Button Name="LoadAllBtn" Grid.Column="2" Content="Load All"
                                     Style="{StaticResource ToolbarBtn}" Margin="6,0,0,0"/>
                         </Grid>
 
@@ -894,13 +897,15 @@ $xaml = @"
                                   BorderBrush="#E5E5E5" BorderThickness="1">
                             <ListView.View>
                                 <GridView>
-                                    <GridViewColumn Header="User" Width="130"
+                                    <GridViewColumn Header="User" Width="120"
                                                     DisplayMemberBinding="{Binding UserName}"/>
-                                    <GridViewColumn Header="Account" Width="120"
+                                    <GridViewColumn Header="Account" Width="110"
                                                     DisplayMemberBinding="{Binding SamAccountName}"/>
-                                    <GridViewColumn Header="Time Remaining" Width="110"
+                                    <GridViewColumn Header="Group" Width="120"
+                                                    DisplayMemberBinding="{Binding GroupName}"/>
+                                    <GridViewColumn Header="Time Remaining" Width="105"
                                                     DisplayMemberBinding="{Binding TTLFormatted}"/>
-                                    <GridViewColumn Header="Expires At" Width="130"
+                                    <GridViewColumn Header="Expires At" Width="120"
                                                     DisplayMemberBinding="{Binding ExpiresAtFormatted}"/>
                                     <GridViewColumn Header="" Width="36">
                                         <GridViewColumn.CellTemplate>
@@ -952,6 +957,8 @@ $xamlDoc.SelectNodes('//*[@Name]') | ForEach-Object {
 
 $script:TargetServer = $null
 $script:CurrentViewGroup = $null
+$script:ViewAllMode = $false
+$script:SessionGroups = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
 function Initialize-Environment {
     try {
@@ -1018,16 +1025,19 @@ function Load-GroupMembers {
 
     if ([string]::IsNullOrWhiteSpace($GroupName)) { return }
 
+    $script:ViewAllMode = $false
     $ui['MembersListView'].Items.Clear()
     $ui['NoMembersLabel'].Visibility = [System.Windows.Visibility]::Collapsed
 
     try {
         $members = Get-JITGroupTTLMembers -GroupName $GroupName -Server $script:TargetServer
         $script:CurrentViewGroup = $GroupName
+        $script:SessionGroups.Add($GroupName) | Out-Null
 
         if ($members -and $members.Count -gt 0) {
             foreach ($m in $members) {
                 $item = [PSCustomObject]@{
+                    GroupName         = $GroupName
                     UserName          = $m.UserName
                     SamAccountName    = $m.SamAccountName
                     TTLFormatted      = $m.TTLFormatted
@@ -1052,30 +1062,86 @@ function Load-GroupMembers {
 }
 
 # ============================================================================
-# Helper: Revoke a specific user from the current view group
+# Helper: Load all TTL members from all session-tracked groups
+# ============================================================================
+
+function Load-AllTTLMembers {
+    $script:ViewAllMode = $true
+    $script:CurrentViewGroup = $null
+    $ui['MembersListView'].Items.Clear()
+    $ui['NoMembersLabel'].Visibility = [System.Windows.Visibility]::Collapsed
+
+    if ($script:SessionGroups.Count -eq 0) {
+        $ui['MemberCountLabel'].Text = "0 active TTL members"
+        $ui['NoMembersLabel'].Visibility = [System.Windows.Visibility]::Visible
+        return
+    }
+
+    $total = 0
+    foreach ($groupName in $script:SessionGroups) {
+        try {
+            $members = Get-JITGroupTTLMembers -GroupName $groupName -Server $script:TargetServer
+            foreach ($m in $members) {
+                $item = [PSCustomObject]@{
+                    GroupName         = $groupName
+                    UserName          = $m.UserName
+                    SamAccountName    = $m.SamAccountName
+                    TTLFormatted      = $m.TTLFormatted
+                    ExpiresAtFormatted = $m.ExpiresAt.ToString("yyyy-MM-dd HH:mm")
+                }
+                $ui['MembersListView'].Items.Add($item) | Out-Null
+                $total++
+            }
+        }
+        catch {
+            Append-ActivityLog "ERROR loading members for '$groupName': $($_.Exception.Message)"
+        }
+    }
+
+    $groupCount = $script:SessionGroups.Count
+    if ($total -gt 0) {
+        $ui['MemberCountLabel'].Text = "$total active TTL member$(if($total -ne 1){'s'}) across $groupCount group$(if($groupCount -ne 1){'s'})"
+        $ui['NoMembersLabel'].Visibility = [System.Windows.Visibility]::Collapsed
+    }
+    else {
+        $ui['MemberCountLabel'].Text = "0 active TTL members"
+        $ui['NoMembersLabel'].Visibility = [System.Windows.Visibility]::Visible
+    }
+}
+
+# ============================================================================
+# Helper: Revoke a specific user from a group
 # ============================================================================
 
 function Revoke-MemberFromView {
-    param([string]$SamAccountName)
+    param(
+        [string]$SamAccountName,
+        [string]$GroupName
+    )
 
-    if ([string]::IsNullOrWhiteSpace($script:CurrentViewGroup) -or [string]::IsNullOrWhiteSpace($SamAccountName)) {
+    if ([string]::IsNullOrWhiteSpace($GroupName) -or [string]::IsNullOrWhiteSpace($SamAccountName)) {
         return
     }
 
     $confirm = [System.Windows.MessageBox]::Show(
-        "Remove '$SamAccountName' from '$($script:CurrentViewGroup)'?",
+        "Remove '$SamAccountName' from '$GroupName'?",
         "Confirm Revoke",
         [System.Windows.MessageBoxButton]::YesNo,
         [System.Windows.MessageBoxImage]::Warning
     )
 
     if ($confirm -eq [System.Windows.MessageBoxResult]::Yes) {
-        $result = Remove-JITGroupMember -GroupName $script:CurrentViewGroup `
+        $result = Remove-JITGroupMember -GroupName $GroupName `
                                          -UserName $SamAccountName `
                                          -Server $script:TargetServer `
                                          -LogDirectory $script:LogDirectory
         Append-ActivityLog $result
-        Load-GroupMembers -GroupName $script:CurrentViewGroup
+        if ($script:ViewAllMode) {
+            Load-AllTTLMembers
+        }
+        else {
+            Load-GroupMembers -GroupName $GroupName
+        }
     }
 }
 
@@ -1235,7 +1301,7 @@ $ui['AddMemberBtn'].Add_Click({
             return
         }
 
-        $targetDateTime = $selectedDate.Value.Date.AddHours($hour).AddMinutes($min)
+        $targetDateTime = $selectedDate.Date.AddHours($hour).AddMinutes($min)
         $diff = $targetDateTime - (Get-Date)
 
         if ($diff.TotalSeconds -le 0) {
@@ -1245,7 +1311,7 @@ $ui['AddMemberBtn'].Add_Click({
             return
         }
 
-        $timeSpan = $diff
+        $timeSpan = [TimeSpan]::FromSeconds([Math]::Floor($diff.TotalSeconds))
     }
 
     # Perform the add
@@ -1255,9 +1321,12 @@ $ui['AddMemberBtn'].Add_Click({
                                       -TimeSpan $timeSpan -Server $script:TargetServer `
                                       -LogDirectory $script:LogDirectory
         Append-ActivityLog $result
+        $script:SessionGroups.Add($groupName) | Out-Null
 
-        # Auto-refresh if the right panel is showing the same group
-        if ($script:CurrentViewGroup -eq $groupName) {
+        if ($script:ViewAllMode) {
+            Load-AllTTLMembers
+        }
+        elseif ($script:CurrentViewGroup -eq $groupName) {
             Load-GroupMembers -GroupName $groupName
         }
     }
@@ -1314,8 +1383,10 @@ $ui['RevokeBtn'].Add_Click({
                                              -LogDirectory $script:LogDirectory
             Append-ActivityLog $result
 
-            # Auto-refresh if the right panel is showing the same group
-            if ($script:CurrentViewGroup -eq $groupName) {
+            if ($script:ViewAllMode) {
+                Load-AllTTLMembers
+            }
+            elseif ($script:CurrentViewGroup -eq $groupName) {
                 Load-GroupMembers -GroupName $groupName
             }
         }
@@ -1354,6 +1425,21 @@ $ui['LoadGroupBtn'].Add_Click({
     }
 })
 
+# Load All button: loads TTL members from all session-tracked groups
+$ui['LoadAllBtn'].Add_Click({
+    $window.Cursor = [System.Windows.Input.Cursors]::Wait
+    try {
+        Load-AllTTLMembers
+        Append-ActivityLog "Loaded TTL members for all session groups ($($script:SessionGroups.Count) group$(if($script:SessionGroups.Count -ne 1){'s'}))."
+    }
+    catch {
+        Append-ActivityLog "ERROR loading all groups: $($_.Exception.Message)"
+    }
+    finally {
+        $window.Cursor = [System.Windows.Input.Cursors]::Arrow
+    }
+})
+
 # Enter key in ViewGroupBox triggers load
 $ui['ViewGroupBox'].Add_KeyDown({
     param($sender, $e)
@@ -1370,14 +1456,17 @@ $ui['ViewGroupBox'].Add_KeyDown({
 # ============================================================================
 
 $ui['RefreshBtn'].Add_Click({
-    if (-not [string]::IsNullOrWhiteSpace($script:CurrentViewGroup)) {
-        $window.Cursor = [System.Windows.Input.Cursors]::Wait
-        try {
+    $window.Cursor = [System.Windows.Input.Cursors]::Wait
+    try {
+        if ($script:ViewAllMode) {
+            Load-AllTTLMembers
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($script:CurrentViewGroup)) {
             Load-GroupMembers -GroupName $script:CurrentViewGroup
         }
-        finally {
-            $window.Cursor = [System.Windows.Input.Cursors]::Arrow
-        }
+    }
+    finally {
+        $window.Cursor = [System.Windows.Input.Cursors]::Arrow
     }
 })
 
@@ -1392,14 +1481,22 @@ $ui['MembersListView'].AddHandler(
     [System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,
     [System.Windows.RoutedEventHandler]{
         param($sender, $e)
-        $button = $e.OriginalSource
         # Walk up to find a Button with a Tag (the row revoke button)
         $current = $e.OriginalSource
         while ($current -ne $null -and $current -ne $sender) {
             if ($current -is [System.Windows.Controls.Button] -and $current.Tag) {
                 $samAccount = $current.Tag.ToString()
                 if (-not [string]::IsNullOrWhiteSpace($samAccount)) {
-                    Revoke-MemberFromView -SamAccountName $samAccount
+                    # Resolve group from DataContext by walking up to the ListViewItem
+                    $groupName = $script:CurrentViewGroup
+                    $lvi = $current
+                    while ($lvi -ne $null -and $lvi -isnot [System.Windows.Controls.ListViewItem]) {
+                        $lvi = [System.Windows.Media.VisualTreeHelper]::GetParent($lvi)
+                    }
+                    if ($lvi -and $lvi.DataContext -and $lvi.DataContext.GroupName) {
+                        $groupName = $lvi.DataContext.GroupName
+                    }
+                    Revoke-MemberFromView -SamAccountName $samAccount -GroupName $groupName
                 }
                 break
             }
@@ -1423,13 +1520,16 @@ $ui['MembersListView'].AddHandler(
 $script:RefreshTimer = [System.Windows.Threading.DispatcherTimer]::new()
 $script:RefreshTimer.Interval = [TimeSpan]::FromSeconds(30)
 $script:RefreshTimer.Add_Tick({
-    if (-not [string]::IsNullOrWhiteSpace($script:CurrentViewGroup)) {
-        try {
+    try {
+        if ($script:ViewAllMode) {
+            Load-AllTTLMembers
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($script:CurrentViewGroup)) {
             Load-GroupMembers -GroupName $script:CurrentViewGroup
         }
-        catch {
-            # Silently handle refresh errors
-        }
+    }
+    catch {
+        # Silently handle refresh errors
     }
 })
 
