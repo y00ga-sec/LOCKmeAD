@@ -609,6 +609,141 @@
           "Description": "Network security: Configure encryption types allowed for Kerberos - AES128_HMAC_SHA1 (0x8) + AES256_HMAC_SHA1 (0x10) + Future (0x7FFFFFE0) = 0x7FFFFFF8. Disables DES and RC4."
         }
       ]
+    },
+    {
+      "Name": "SEC-Configure-LAPS",
+      "Description": "Configure Windows LAPS to manage the built-in local administrator password and back it up to Active Directory. Enforces strong password complexity, 30-day rotation, and post-authentication password reset with session termination.",
+      "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
+      "LinkTargets": null,
+      "RegistrySettings": [
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS",
+          "ValueName": "BackupDirectory",
+          "Value": 2,
+          "Type": "DWord",
+          "Description": "Directory for password backup: 0=Disabled, 1=Microsoft Entra ID only, 2=Active Directory only"
+        },
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS",
+          "ValueName": "AdministratorAccountName",
+          "Value": "",
+          "Type": "String",
+          "Description": "Name of the managed local administrator account - empty means built-in administrator (identified by well-known RID)"
+        },
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS",
+          "ValueName": "PasswordAgeDays",
+          "Value": 30,
+          "Type": "DWord",
+          "Description": "Maximum password age in days before forced rotation (min: 1, max: 365; default: 30)"
+        },
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS",
+          "ValueName": "PasswordLength",
+          "Value": 16,
+          "Type": "DWord",
+          "Description": "Password length in characters (min: 8, max: 64; default: 14). Ignored when PasswordComplexity is a passphrase option (6-8)."
+        },
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS",
+          "ValueName": "PassphraseLength",
+          "Value": 6,
+          "Type": "DWord",
+          "Description": "Number of words in passphrase (min: 3, max: 10; default: 6). Only applies when PasswordComplexity is 6, 7, or 8. Requires Windows 11 24H2 / Server 2025."
+        },
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS",
+          "ValueName": "PasswordComplexity",
+          "Value": 4,
+          "Type": "DWord",
+          "Description": "Password complexity: 1=Large letters, 2=Large+small, 3=Large+small+digits, 4=Large+small+digits+special (default), 5=Same as 4 with improved readability, 6=Passphrase long words, 7=Passphrase short words, 8=Passphrase short words with unique prefixes. Values 5-8 require Windows 11 24H2 / Server 2025."
+        },
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS",
+          "ValueName": "PasswordExpirationProtectionEnabled",
+          "Value": 1,
+          "Type": "DWord",
+          "Description": "Enforce maximum password age - prevent password expiry from exceeding the policy maximum (default: 1=True)"
+        },
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS",
+          "ValueName": "PostAuthenticationResetDelay",
+          "Value": 24,
+          "Type": "DWord",
+          "Description": "Hours to wait after a managed account authentication before executing PostAuthenticationActions (0=disabled, min: 0, max: 24; default: 24)"
+        },
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS",
+          "ValueName": "PostAuthenticationActions",
+          "Value": 3,
+          "Type": "DWord",
+          "Description": "Actions on grace period expiry: 1=Reset password, 3=Reset password + sign out interactive sessions + delete SMB sessions (default), 5=Reset password + reboot, 11=Reset password + sign out + terminate remaining processes (requires Windows 11 24H2 / Server 2025)"
+        },
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS",
+          "ValueName": "ADPasswordEncryptionEnabled",
+          "Value": 1,
+          "Type": "DWord",
+          "Description": "Enable password encryption in Active Directory (default: 1=True). Requires AD Domain Functional Level 2016 or later."
+        },
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS",
+          "ValueName": "ADPasswordEncryptionPrincipal",
+          "Value": "",
+          "Type": "String",
+          "Description": "SID or fully-qualified name of the user or group authorized to decrypt the AD password (e.g. contoso\\LAPSAdmins). Empty = Domain Admins only. Ignored unless ADPasswordEncryptionEnabled=True."
+        },
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS",
+          "ValueName": "ADEncryptedPasswordHistorySize",
+          "Value": 1,
+          "Type": "DWord",
+          "Description": "Number of previous encrypted passwords to retain in AD (min: 0, max: 12; default: 0=disabled). Ignored unless ADPasswordEncryptionEnabled=True."
+        },
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS",
+          "ValueName": "ADBackupDSRMPassword",
+          "Value": 0,
+          "Type": "DWord",
+          "Description": "Back up the DSRM account password on domain controllers (default: 0=False). Ignored unless ADPasswordEncryptionEnabled=True."
+        },
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS",
+          "ValueName": "AutomaticAccountManagementEnabled",
+          "Value": 0,
+          "Type": "DWord",
+          "Description": "Enable automatic management of a local administrator account (default: 0=False). Requires Windows 11 24H2 / Server 2025. When enabled, overrides AdministratorAccountName."
+        },
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS",
+          "ValueName": "AutomaticAccountManagementTarget",
+          "Value": 1,
+          "Type": "DWord",
+          "Description": "Account to automatically manage: 0=Built-in Administrator, 1=New custom account (default). Ignored unless AutomaticAccountManagementEnabled=True. Requires Windows 11 24H2 / Server 2025."
+        },
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS",
+          "ValueName": "AutomaticAccountManagementNameOrPrefix",
+          "Value": "WLapsAdmin",
+          "Type": "String",
+          "Description": "Name or prefix of the automatically managed account (default: WLapsAdmin). Used as name if RandomizeName=False, as prefix if True. Max 14 chars when RandomizeName=True. Requires Windows 11 24H2 / Server 2025."
+        },
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS",
+          "ValueName": "AutomaticAccountManagementEnableAccount",
+          "Value": 0,
+          "Type": "DWord",
+          "Description": "Enable or disable the automatically managed account: 0=Disabled (default), 1=Enabled. Requires Windows 11 24H2 / Server 2025."
+        },
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS",
+          "ValueName": "AutomaticAccountManagementRandomizeName",
+          "Value": 0,
+          "Type": "DWord",
+          "Description": "Append a random 6-digit suffix to the account name on each rotation: 0=No (default), 1=Yes. Requires Windows 11 24H2 / Server 2025."
+        }
+      ]
     }
   ]
 }

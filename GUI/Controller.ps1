@@ -96,8 +96,14 @@ function Save-AllConfigs {
             $value = if ($control -is [System.Windows.Controls.CheckBox]) {
                 [bool]$control.IsChecked
             } elseif ($control -is [System.Windows.Controls.TextBox]) {
-                $text = $control.Text
-                if ($text -match '^\d+$') { [int]$text } else { $text }
+                if ($control.Tag -eq "array") {
+                    $t = $control.Text
+                    if ([string]::IsNullOrWhiteSpace($t)) { ,@() }
+                    else { ,@($t -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) }
+                } else {
+                    $text = $control.Text
+                    if ($text -match '^\d+$') { [int]$text } else { $text }
+                }
             } else { $control.Text }
             $script:Configs.Hardening.Tasks[$taskIdx].Parameters.$paramName = $value
         }
@@ -118,6 +124,57 @@ function Save-AllConfigs {
             $script:Configs.GPO.GPOs[$idx].LinkTargets = $links
         }
         $script:Configs.GPO.Settings.FilteringGroupsOU = $UI.GPOFilteringGroupsOU.Text.Trim()
+
+        # LAPS GPO: read dedicated editable controls and update RegistrySettings
+        if ($script:GPOLAPSControls -and $script:GPOLAPSControls.Count -gt 0) {
+            $lapsGPO = $script:Configs.GPO.GPOs | Where-Object { $_.Name -eq "SEC-Configure-LAPS" }
+            if ($lapsGPO) {
+                $lapsTypeMap = @{
+                    "BackupDirectory"                          = "DWord"
+                    "AdministratorAccountName"                 = "String"
+                    "PasswordAgeDays"                          = "DWord"
+                    "PasswordLength"                           = "DWord"
+                    "PassphraseLength"                         = "DWord"
+                    "PasswordComplexity"                       = "DWord"
+                    "PasswordExpirationProtectionEnabled"      = "DWord"
+                    "PostAuthenticationResetDelay"             = "DWord"
+                    "PostAuthenticationActions"                = "DWord"
+                    "ADPasswordEncryptionEnabled"              = "DWord"
+                    "ADPasswordEncryptionPrincipal"            = "String"
+                    "ADEncryptedPasswordHistorySize"           = "DWord"
+                    "ADBackupDSRMPassword"                     = "DWord"
+                    "AutomaticAccountManagementEnabled"        = "DWord"
+                    "AutomaticAccountManagementTarget"         = "DWord"
+                    "AutomaticAccountManagementNameOrPrefix"   = "String"
+                    "AutomaticAccountManagementEnableAccount"  = "DWord"
+                    "AutomaticAccountManagementRandomizeName"  = "DWord"
+                }
+                foreach ($vn in $script:GPOLAPSControls.Keys) {
+                    $lapsCtrl = $script:GPOLAPSControls[$vn]
+                    $lapsValue = if ($lapsCtrl -is [System.Windows.Controls.ComboBox]) {
+                        [int]([object[]]$lapsCtrl.Tag)[$lapsCtrl.SelectedIndex]
+                    } elseif ($lapsCtrl -is [System.Windows.Controls.CheckBox]) {
+                        if ($lapsCtrl.IsChecked) { 1 } else { 0 }
+                    } else {
+                        $t = $lapsCtrl.Text
+                        if ($lapsTypeMap[$vn] -eq "DWord" -and $t -match '^\d+$') { [int]$t } else { $t }
+                    }
+                    $existingEntry = $lapsGPO.RegistrySettings | Where-Object { $_.ValueName -eq $vn }
+                    if ($existingEntry) {
+                        $existingEntry.Value = $lapsValue
+                    } else {
+                        $lapsGPO.RegistrySettings = @($lapsGPO.RegistrySettings) + @([PSCustomObject]@{
+                            Key         = "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS"
+                            ValueName   = $vn
+                            Value       = $lapsValue
+                            Type        = $lapsTypeMap[$vn]
+                            Description = ""
+                        })
+                    }
+                }
+            }
+        }
+
         $script:Configs.GPO | ConvertTo-Json -Depth 10 | Set-Content $script:ConfigPaths.GPO -Encoding UTF8
     }
 
@@ -385,6 +442,17 @@ function Populate-HardeningTab {
                     $ctrl = New-Object System.Windows.Controls.CheckBox
                     $ctrl.IsChecked = $paramValue
                     $ctrl.VerticalAlignment = "Center"
+                } elseif ($paramValue -is [System.Array]) {
+                    $ctrl = New-Object System.Windows.Controls.TextBox
+                    $ctrl.AcceptsReturn = $true
+                    $ctrl.TextWrapping = "Wrap"
+                    $ctrl.MinLines = 2
+                    $ctrl.MaxLines = 8
+                    $ctrl.VerticalScrollBarVisibility = "Auto"
+                    $ctrl.Text = ($paramValue -join "`r`n")
+                    $ctrl.Tag = "array"
+                    $ctrl.Padding = [System.Windows.Thickness]::new(6, 4, 6, 4)
+                    $ctrl.BorderBrush = Get-WPFBrush "#DDD"
                 } else {
                     $ctrl = New-Object System.Windows.Controls.TextBox
                     $ctrl.Text = [string]$paramValue
@@ -403,6 +471,36 @@ function Populate-HardeningTab {
 
             $expander.Content = $paramGrid
             [void]$outerStack.Children.Add($expander)
+        }
+
+        # Prerequisites check button — for RaiseDomainFunctionalLevel and RaiseForestFunctionalLevel
+        $prereqScope    = $null
+        $prereqParamKey = $null
+        if ($task.Name -eq 'RaiseDomainFunctionalLevel')  { $prereqScope = 'Domain'; $prereqParamKey = 'TargetDomainLevel' }
+        elseif ($task.Name -eq 'RaiseForestFunctionalLevel') { $prereqScope = 'Forest'; $prereqParamKey = 'TargetForestLevel' }
+
+        if ($prereqScope) {
+            $prereqBtn = New-Object System.Windows.Controls.Button
+            $prereqBtn.Content         = "Check Prerequisites"
+            $prereqBtn.Margin          = [System.Windows.Thickness]::new(58, 8, 0, 0)
+            $prereqBtn.HorizontalAlignment = "Left"
+            $prereqBtn.Padding         = [System.Windows.Thickness]::new(12, 6, 12, 6)
+            $prereqBtn.FontSize        = 12
+            $prereqBtn.Background      = Get-WPFBrush "#EBF5FB"
+            $prereqBtn.Foreground      = Get-WPFBrush "#0078D4"
+            $prereqBtn.BorderBrush     = Get-WPFBrush "#AED6F1"
+            $prereqBtn.BorderThickness = [System.Windows.Thickness]::new(1)
+            $prereqBtn.Cursor          = "Hand"
+            $prereqBtn.Tag             = @{ Idx = $idx; Scope = $prereqScope; ParamKey = $prereqParamKey }
+            $prereqBtn.Add_Click({
+                $tag      = $this.Tag
+                $paramKey = $tag.ParamKey
+                $levelCtrl = $script:HardeningParamControls["$($tag.Idx).$paramKey"]
+                $default  = if ($tag.Scope -eq 'Domain') { 'Windows2016Domain' } else { 'Windows2016Forest' }
+                $level    = if ($levelCtrl) { $levelCtrl.Text } else { $default }
+                Show-FunctionalLevelPrereqDialog -Scope $tag.Scope -TargetLevel $level
+            })
+            [void]$outerStack.Children.Add($prereqBtn)
         }
 
         $card.Child = $outerStack
@@ -431,6 +529,7 @@ function Populate-GPOTab {
     $UI.GPOTaskList.Children.Clear()
     $script:GPOToggles = @()
     $script:GPOLinkControls = @{}
+    $script:GPOLAPSControls = @{}
 
     # Populate Filtering Groups OU
     $filterOU = $script:Configs.GPO.Settings.FilteringGroupsOU
@@ -473,6 +572,7 @@ function Populate-GPOTab {
         $secOptCount = if ($gpo.SecurityOptions) { $gpo.SecurityOptions.Count } else { 0 }
         $uraCount = if ($gpo.UserRightsAssignments) { $gpo.UserRightsAssignments.Count } else { 0 }
         $svcCount = if ($gpo.SystemServices) { $gpo.SystemServices.Count } else { 0 }
+        $isLapsGPO = $gpo.Name -eq "SEC-Configure-LAPS"
 
         $textStack = New-Object System.Windows.Controls.StackPanel
         $textStack.Margin = [System.Windows.Thickness]::new(14, 0, 10, 0)
@@ -496,8 +596,8 @@ function Populate-GPOTab {
         [void]$headerDock.Children.Add($textStack)
         [void]$outerStack.Children.Add($headerDock)
 
-        # Registry Settings expander (read-only, only if registry settings exist)
-        if ($regCount -gt 0) {
+        # Registry Settings expander (read-only, only if registry settings exist and not the LAPS GPO which has a dedicated UI)
+        if ($regCount -gt 0 -and -not $isLapsGPO) {
             $regExpander = New-Object System.Windows.Controls.Expander
             $regExpander.Header = "Registry Settings"
             $regExpander.Margin = [System.Windows.Thickness]::new(58, 8, 0, 0)
@@ -761,6 +861,121 @@ function Populate-GPOTab {
 
             $uraExpander.Content = $uraStack
             [void]$outerStack.Children.Add($uraExpander)
+        }
+
+        # Windows LAPS dedicated configuration panel
+        if ($isLapsGPO) {
+            $lapsExpander = New-Object System.Windows.Controls.Expander
+            $lapsExpander.Header = "Configuration Windows LAPS"
+            $lapsExpander.Margin = [System.Windows.Thickness]::new(58, 8, 0, 0)
+            $lapsExpander.FontSize = 12
+
+            $lapsGrid = New-Object System.Windows.Controls.Grid
+            $lapsGrid.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+            $colLbl = New-Object System.Windows.Controls.ColumnDefinition
+            $colLbl.Width = [System.Windows.GridLength]::new(250)
+            $colCtrl = New-Object System.Windows.Controls.ColumnDefinition
+            $colCtrl.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+            [void]$lapsGrid.ColumnDefinitions.Add($colLbl)
+            [void]$lapsGrid.ColumnDefinitions.Add($colCtrl)
+
+            $lapsParamDefs = @(
+                @{ VN = "BackupDirectory";                       Label = "Répertoire de sauvegarde";                         Type = "combo";  Options = @("0 - Désactivé","1 - Microsoft Entra ID uniquement","2 - Active Directory uniquement"); Values = @(0,1,2) }
+                @{ VN = "AdministratorAccountName";              Label = "Nom du compte administrateur";                     Type = "string"; Hint = "Vide = compte Administrateur intégré (identifié par son RID)" }
+                @{ VN = "PasswordAgeDays";                       Label = "Durée max. du mot de passe (jours, 1-365)";        Type = "int" }
+                @{ VN = "PasswordLength";                        Label = "Longueur du mot de passe (8-64)";                  Type = "int" }
+                @{ VN = "PassphraseLength";                      Label = "Longueur de la phrase de passe (mots, 3-10)";      Type = "int" }
+                @{ VN = "PasswordComplexity";                    Label = "Complexité du mot de passe";                       Type = "combo";  Options = @("1 - Majuscules uniquement","2 - Maj. + minuscules","3 - Maj. + min. + chiffres","4 - Maj. + min. + chiffres + spéciaux (défaut)","5 - Maj. + min. + chiffres + spéciaux (lisibilité améliorée) *","6 - Phrase de passe (longs mots) *","7 - Phrase de passe (courts mots) *","8 - Phrase de passe (courts mots, préfixes uniques) *"); Values = @(1,2,3,4,5,6,7,8) }
+                @{ VN = "PasswordExpirationProtectionEnabled";   Label = "Protéger l'expiration du mot de passe";            Type = "bool" }
+                @{ VN = "PostAuthenticationResetDelay";          Label = "Délai post-authentification (heures, 0-24)";       Type = "int" }
+                @{ VN = "PostAuthenticationActions";             Label = "Actions post-authentification";                    Type = "combo";  Options = @("1 - Réinitialiser le mot de passe","3 - Réinitialiser + déconnecter les sessions (défaut)","5 - Réinitialiser + redémarrer","11 - Réinitialiser + déconnecter + terminer les processus *"); Values = @(1,3,5,11) }
+                @{ VN = "ADPasswordEncryptionEnabled";           Label = "Chiffrement du mot de passe dans l'AD";            Type = "bool" }
+                @{ VN = "ADPasswordEncryptionPrincipal";         Label = "Principal de déchiffrement autorisé";              Type = "string"; Hint = "Formats acceptés : DOMAINE\Groupe  •  utilisateur@domaine.com  •  S-1-5-21-...  (ex : forest\GDL-LAPS-Pwd-Read)" }
+                @{ VN = "ADEncryptedPasswordHistorySize";        Label = "Historique des mots de passe chiffrés (0-12)";    Type = "int" }
+                @{ VN = "ADBackupDSRMPassword";                  Label = "Sauvegarde du mot de passe DSRM (DCs uniquement)"; Type = "bool" }
+                @{ VN = "AutomaticAccountManagementEnabled";     Label = "Gestion automatique du compte (Win 11 24H2+) *";  Type = "bool" }
+                @{ VN = "AutomaticAccountManagementTarget";      Label = "Compte cible de la gestion automatique *";        Type = "combo";  Options = @("0 - Compte administrateur intégré","1 - Nouveau compte personnalisé (défaut)"); Values = @(0,1) }
+                @{ VN = "AutomaticAccountManagementNameOrPrefix"; Label = "Nom ou préfixe du compte automatique *";         Type = "string"; Hint = "Max 14 caractères si RandomizeName est activé (défaut : WLapsAdmin)" }
+                @{ VN = "AutomaticAccountManagementEnableAccount"; Label = "Activer le compte automatique *";               Type = "bool" }
+                @{ VN = "AutomaticAccountManagementRandomizeName"; Label = "Randomiser le nom du compte automatique *";     Type = "bool" }
+            )
+
+            $lapsRowIdx = 0
+            foreach ($pd in $lapsParamDefs) {
+                [void]$lapsGrid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition))
+
+                $existingSetting = $gpo.RegistrySettings | Where-Object { $_.ValueName -eq $pd.VN }
+                $currentValue = if ($null -ne $existingSetting) { $existingSetting.Value } else { $null }
+
+                $lapsLabel = New-Object System.Windows.Controls.TextBlock
+                $lapsLabel.Text = $pd.Label
+                $lapsLabel.VerticalAlignment = "Center"
+                $lapsLabel.Foreground = Get-WPFBrush "#555"
+                $lapsLabel.Margin = [System.Windows.Thickness]::new(0, 4, 10, 4)
+                [System.Windows.Controls.Grid]::SetRow($lapsLabel, $lapsRowIdx)
+                [System.Windows.Controls.Grid]::SetColumn($lapsLabel, 0)
+
+                if ($pd.Type -eq "combo") {
+                    $lapsCtrl = New-Object System.Windows.Controls.ComboBox
+                    $lapsCtrl.FontSize = 12
+                    $lapsCtrl.Padding = [System.Windows.Thickness]::new(6, 4, 6, 4)
+                    $lapsCtrl.Tag = $pd.Values
+                    foreach ($opt in $pd.Options) {
+                        $cbItem = New-Object System.Windows.Controls.ComboBoxItem
+                        $cbItem.Content = $opt
+                        [void]$lapsCtrl.Items.Add($cbItem)
+                    }
+                    $selIdx = 0
+                    if ($null -ne $currentValue) {
+                        $fi = [Array]::IndexOf([int[]]$pd.Values, [int]$currentValue)
+                        if ($fi -ge 0) { $selIdx = $fi }
+                    }
+                    $lapsCtrl.SelectedIndex = $selIdx
+                } elseif ($pd.Type -eq "bool") {
+                    $lapsCtrl = New-Object System.Windows.Controls.CheckBox
+                    $lapsCtrl.IsChecked = if ($null -ne $currentValue) { [int]$currentValue -ne 0 } else { $false }
+                    $lapsCtrl.VerticalAlignment = "Center"
+                } elseif ($pd.Type -eq "string") {
+                    $lapsCtrl = New-Object System.Windows.Controls.TextBox
+                    $lapsCtrl.Text = if ($null -ne $currentValue) { [string]$currentValue } else { "" }
+                    $lapsCtrl.Padding = [System.Windows.Thickness]::new(6, 4, 6, 4)
+                    $lapsCtrl.BorderBrush = Get-WPFBrush "#DDD"
+                    $lapsCtrl.FontSize = 12
+                } else {
+                    $lapsCtrl = New-Object System.Windows.Controls.TextBox
+                    $lapsCtrl.Text = if ($null -ne $currentValue) { [string][int]$currentValue } else { "0" }
+                    $lapsCtrl.Padding = [System.Windows.Thickness]::new(6, 4, 6, 4)
+                    $lapsCtrl.BorderBrush = Get-WPFBrush "#DDD"
+                    $lapsCtrl.FontSize = 12
+                }
+                # Wrap control + optional hint TextBlock in a StackPanel when a hint is defined
+                if ($pd.ContainsKey('Hint')) {
+                    $lapsCtrl.Margin = [System.Windows.Thickness]::new(0, 4, 0, 2)
+                    $lapsHintBlock = New-Object System.Windows.Controls.TextBlock
+                    $lapsHintBlock.Text = $pd.Hint
+                    $lapsHintBlock.FontSize = 10
+                    $lapsHintBlock.Foreground = Get-WPFBrush "#999"
+                    $lapsHintBlock.TextWrapping = "Wrap"
+                    $lapsHintBlock.Margin = [System.Windows.Thickness]::new(1, 0, 0, 4)
+                    $lapsWrapper = New-Object System.Windows.Controls.StackPanel
+                    [void]$lapsWrapper.Children.Add($lapsCtrl)
+                    [void]$lapsWrapper.Children.Add($lapsHintBlock)
+                    $lapsGridChild = $lapsWrapper
+                } else {
+                    $lapsCtrl.Margin = [System.Windows.Thickness]::new(0, 4, 0, 4)
+                    $lapsGridChild = $lapsCtrl
+                }
+                [System.Windows.Controls.Grid]::SetRow($lapsGridChild, $lapsRowIdx)
+                [System.Windows.Controls.Grid]::SetColumn($lapsGridChild, 1)
+
+                [void]$lapsGrid.Children.Add($lapsLabel)
+                [void]$lapsGrid.Children.Add($lapsGridChild)
+                $script:GPOLAPSControls[$pd.VN] = $lapsCtrl
+                $lapsRowIdx++
+            }
+
+            $lapsExpander.Content = $lapsGrid
+            [void]$outerStack.Children.Add($lapsExpander)
         }
 
         # Link Targets expander
@@ -1396,6 +1611,126 @@ function Populate-JITTab {
     $UI.JITGPOName.Text = $s.GPO.Name
     $UI.JITGPODescription.Text = $s.GPO.Description
     $UI.JITGPOLinkTargets.Text = ($s.GPO.LinkTargets -join "`n")
+}
+
+function Show-FunctionalLevelPrereqDialog {
+    param(
+        [ValidateSet('Domain', 'Forest')]
+        [string]$Scope,
+        [string]$TargetLevel
+    )
+
+    # Import the module to access the prerequisite check functions
+    $appRoot    = Split-Path (Split-Path $script:ScriptPaths.Hardening)
+    $modulePath = Join-Path $appRoot "Modules\Hardening\Hardening.psm1"
+    $checks  = @()
+    $subtitle = "$Scope`: $TargetLevel"
+    try {
+        Import-Module $modulePath -Force -ErrorAction Stop
+        if ($Scope -eq 'Domain') {
+            $checks = @(Test-HardeningDomainFunctionalLevelPrerequisites -TargetDomainLevel $TargetLevel)
+        }
+        else {
+            $checks = @(Test-HardeningForestFunctionalLevelPrerequisites -TargetForestLevel $TargetLevel)
+        }
+    }
+    catch {
+        $checks = @([PSCustomObject]@{
+            Name    = "Module initialization"
+            Passed  = $false
+            Message = "Failed to load or run prerequisite checks: $_"
+        })
+    }
+
+    $dialogXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Prerequisite Check — Raise Functional Level" Width="600" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        Background="#F3F3F3" FontFamily="Segoe UI">
+    <StackPanel Margin="24">
+        <TextBlock Text="Prerequisite Check" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,4"/>
+        <TextBlock Name="SubTitle" FontSize="12" Foreground="#666666" Margin="0,0,0,16" TextWrapping="Wrap"/>
+        <StackPanel Name="ResultsList" Margin="0,0,0,8"/>
+        <Border Name="SummaryBorder" CornerRadius="6" Padding="12,10" Margin="0,8,0,16" BorderThickness="1">
+            <TextBlock Name="SummaryText" FontSize="13" FontWeight="SemiBold" TextWrapping="Wrap"/>
+        </Border>
+        <Button Name="BtnClose" Content="Close" HorizontalAlignment="Right"
+                Padding="16,8" FontSize="13" Background="#E0E0E0" BorderThickness="0" Cursor="Hand"/>
+    </StackPanel>
+</Window>
+"@
+    [xml]$xDoc = $dialogXaml
+    $xReader  = [System.Xml.XmlNodeReader]::new($xDoc)
+    $dialog   = [System.Windows.Markup.XamlReader]::Load($xReader)
+    $dialog.Owner = $script:Window
+
+    $dSubTitle  = $dialog.FindName("SubTitle")
+    $dResults   = $dialog.FindName("ResultsList")
+    $dSumBorder = $dialog.FindName("SummaryBorder")
+    $dSummary   = $dialog.FindName("SummaryText")
+    $dBtnClose  = $dialog.FindName("BtnClose")
+
+    $dSubTitle.Text = $subtitle
+
+    foreach ($check in $checks) {
+        $row = New-Object System.Windows.Controls.Border
+        $row.Margin           = [System.Windows.Thickness]::new(0, 0, 0, 4)
+        $row.Padding          = [System.Windows.Thickness]::new(10, 8, 10, 8)
+        $row.CornerRadius     = [System.Windows.CornerRadius]::new(4)
+        $row.BorderThickness  = [System.Windows.Thickness]::new(1)
+        $row.Background       = if ($check.Passed) { Get-WPFBrush "#F0FFF4" } else { Get-WPFBrush "#FFF5F5" }
+        $row.BorderBrush      = if ($check.Passed) { Get-WPFBrush "#B2DFDB" } else { Get-WPFBrush "#FFCDD2" }
+
+        $rowDock = New-Object System.Windows.Controls.DockPanel
+
+        $icon = New-Object System.Windows.Controls.TextBlock
+        $icon.Text             = if ($check.Passed) { [char]0x2714 } else { [char]0x2718 }
+        $icon.FontSize         = 14
+        $icon.FontWeight       = "Bold"
+        $icon.Foreground       = if ($check.Passed) { Get-WPFBrush "#27AE60" } else { Get-WPFBrush "#E53935" }
+        $icon.VerticalAlignment = "Top"
+        $icon.Margin           = [System.Windows.Thickness]::new(0, 1, 10, 0)
+        [System.Windows.Controls.DockPanel]::SetDock($icon, "Left")
+
+        $textStack = New-Object System.Windows.Controls.StackPanel
+
+        $nameBlock = New-Object System.Windows.Controls.TextBlock
+        $nameBlock.Text       = $check.Name
+        $nameBlock.FontSize   = 13
+        $nameBlock.FontWeight = "SemiBold"
+        $nameBlock.Foreground = if ($check.Passed) { Get-WPFBrush "#1B4F72" } else { Get-WPFBrush "#922B21" }
+
+        $msgBlock = New-Object System.Windows.Controls.TextBlock
+        $msgBlock.Text        = $check.Message
+        $msgBlock.FontSize    = 11
+        $msgBlock.Foreground  = Get-WPFBrush "#555555"
+        $msgBlock.TextWrapping = "Wrap"
+        $msgBlock.Margin      = [System.Windows.Thickness]::new(0, 2, 0, 0)
+
+        [void]$textStack.Children.Add($nameBlock)
+        [void]$textStack.Children.Add($msgBlock)
+        [void]$rowDock.Children.Add($icon)
+        [void]$rowDock.Children.Add($textStack)
+        $row.Child = $rowDock
+        [void]$dResults.Children.Add($row)
+    }
+
+    $failCount = @($checks | Where-Object { -not $_.Passed }).Count
+    if ($failCount -eq 0) {
+        $dSumBorder.Background  = Get-WPFBrush "#E8F5E9"
+        $dSumBorder.BorderBrush = Get-WPFBrush "#A5D6A7"
+        $dSummary.Foreground    = Get-WPFBrush "#1B5E20"
+        $dSummary.Text          = "All prerequisites are met. The task is ready to deploy."
+    }
+    else {
+        $dSumBorder.Background  = Get-WPFBrush "#FFEBEE"
+        $dSumBorder.BorderBrush = Get-WPFBrush "#EF9A9A"
+        $dSummary.Foreground    = Get-WPFBrush "#B71C1C"
+        $dSummary.Text          = "$failCount prerequisite check(s) failed. The task will be aborted at deployment time."
+    }
+
+    $dBtnClose.Add_Click({ $dialog.Close() })
+    $dialog.ShowDialog() | Out-Null
 }
 
 function Show-AddSiloDialog {

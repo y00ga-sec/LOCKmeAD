@@ -12,11 +12,18 @@
       }
     },
     {
-      "Name": "RaiseFunctionalLevel",
-      "Description": "Raise domain and forest functional levels to the target version",
+      "Name": "RaiseDomainFunctionalLevel",
+      "Description": "Raise the domain functional level to the target version",
       "Enabled": true,
       "Parameters": {
-        "TargetDomainLevel": "Windows2016Domain",
+        "TargetDomainLevel": "Windows2016Domain"
+      }
+    },
+    {
+      "Name": "RaiseForestFunctionalLevel",
+      "Description": "Raise the forest functional level to the target version",
+      "Enabled": true,
+      "Parameters": {
         "TargetForestLevel": "Windows2016Forest"
       }
     },
@@ -65,6 +72,48 @@
       "Name": "RestrictDNSDynamicUpdate",
       "Description": "Remove CreateChild (dnsNode) from Authenticated Users on all AD-integrated DNS zones and grant it to Domain Computers only",
       "Enabled": true
+    },
+    {
+      "Name": "AddDNSSecurityRecords",
+      "Description": "Add a WPAD sinkhole A record and a wildcard (*) TXT record to a DNS zone",
+      "Enabled": true,
+      "Parameters": {
+        "ZoneName": "",
+        "WpadIPAddress": "0.0.0.0",
+        "WildcardTXTValue": "."
+      }
+    },
+    {
+      "Name": "FixDNSRecordOwnership",
+      "Description": "Set the owner of each DNS node to the matching domain computer account (e.g. SRV01 -> SRV01$)",
+      "Enabled": true
+    },
+    {
+      "Name": "ResetADObjectOwnership",
+      "Description": "Reset the owner of all user and computer objects in AD to Domain Admins",
+      "Enabled": true
+    },
+    {
+      "Name": "ConfigureLAPSADPermissions",
+      "Description": "Configure LAPS AD permissions: grants computer objects self-update rights on their LAPS attributes (Set-LapsADComputerSelfPermission), then delegates read and reset access to the specified principals on the target OUs",
+      "Enabled": true,
+      "Parameters": {
+        "SelfPermissionOUs": [
+          "OU=Workstations,OU=T2-Prod,DC=forest,DC=lol"
+        ],
+        "ReadPasswordOUs": [
+          "OU=Workstations,OU=T2-Prod,DC=forest,DC=lol"
+        ],
+        "ReadPasswordPrincipals": [
+          "forest\\GDL-LAPS-Pwd-Read"
+        ],
+        "ResetPasswordOUs": [
+          "OU=Workstations,OU=T2-Prod,DC=forest,DC=lol"
+        ],
+        "ResetPasswordPrincipals": [
+          "forest\\GDL-LAPS-Pwd-Reset"
+        ]
+      }
     }
   ]
 }

@@ -172,11 +172,15 @@ foreach ($task in $config.Tasks) {
                                                   -LogDirectory $logDir `
                                                   -WhatIf:$WhatIfPreference
             }
-            'RaiseFunctionalLevel' {
-                Set-HardeningFunctionalLevel -TargetDomainLevel $task.Parameters.TargetDomainLevel `
-                                              -TargetForestLevel $task.Parameters.TargetForestLevel `
-                                              -LogDirectory $logDir `
-                                              -WhatIf:$WhatIfPreference
+            'RaiseDomainFunctionalLevel' {
+                Set-HardeningDomainFunctionalLevel -TargetDomainLevel $task.Parameters.TargetDomainLevel `
+                                                    -LogDirectory $logDir `
+                                                    -WhatIf:$WhatIfPreference
+            }
+            'RaiseForestFunctionalLevel' {
+                Set-HardeningForestFunctionalLevel -TargetForestLevel $task.Parameters.TargetForestLevel `
+                                                    -LogDirectory $logDir `
+                                                    -WhatIf:$WhatIfPreference
             }
             'EnableRecycleBin' {
                 Enable-HardeningRecycleBin -LogDirectory $logDir `
@@ -213,8 +217,33 @@ foreach ($task in $config.Tasks) {
                 Update-HardeningLAPSSchema -LogDirectory $logDir `
                                             -WhatIf:$WhatIfPreference
             }
+            'ConfigureLAPSADPermissions' {
+                Set-HardeningLAPSADPermissions `
+                    -SelfPermissionOUs       @($task.Parameters.SelfPermissionOUs) `
+                    -ReadPasswordOUs         @($task.Parameters.ReadPasswordOUs) `
+                    -ReadPasswordPrincipals  @($task.Parameters.ReadPasswordPrincipals) `
+                    -ResetPasswordOUs        @($task.Parameters.ResetPasswordOUs) `
+                    -ResetPasswordPrincipals @($task.Parameters.ResetPasswordPrincipals) `
+                    -LogDirectory $logDir `
+                    -WhatIf:$WhatIfPreference
+            }
             'RestrictDNSDynamicUpdate' {
                 Set-HardeningDNSDynamicUpdate -LogDirectory $logDir `
+                                               -WhatIf:$WhatIfPreference
+            }
+            'AddDNSSecurityRecords' {
+                Set-HardeningDNSSecurityRecords -ZoneName $task.Parameters.ZoneName `
+                                                -WpadIPAddress $task.Parameters.WpadIPAddress `
+                                                -WildcardTXTValue $task.Parameters.WildcardTXTValue `
+                                                -LogDirectory $logDir `
+                                                -WhatIf:$WhatIfPreference
+            }
+            'FixDNSRecordOwnership' {
+                Set-HardeningDNSRecordOwnership -LogDirectory $logDir `
+                                                -WhatIf:$WhatIfPreference
+            }
+            'ResetADObjectOwnership' {
+                Set-HardeningADObjectOwnership -LogDirectory $logDir `
                                                -WhatIf:$WhatIfPreference
             }
         }
