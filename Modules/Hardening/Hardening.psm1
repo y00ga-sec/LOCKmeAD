@@ -122,11 +122,6 @@ function Import-HardeningConfiguration {
 
         # Validate required parameters per task
         switch ($task.Name) {
-            'SetMachineAccountQuota' {
-                if (-not $task.Parameters -or $null -eq $task.Parameters.Quota) {
-                    throw "Task '$($task.Name)' requires Parameters.Quota."
-                }
-            }
             'RaiseFunctionalLevel' {
                 if (-not $task.Parameters -or -not $task.Parameters.TargetDomainLevel -or -not $task.Parameters.TargetForestLevel) {
                     throw "Task '$($task.Name)' requires Parameters.TargetDomainLevel and Parameters.TargetForestLevel."
@@ -682,33 +677,28 @@ function Test-HardeningForestFunctionalLevelPrerequisites {
 function Set-HardeningMachineAccountQuota {
     <#
     .SYNOPSIS
-        Sets ms-DS-MachineAccountQuota to the specified value.
-    .PARAMETER Quota
-        The quota value to set (typically 0).
+        Sets ms-DS-MachineAccountQuota to 0.
     .PARAMETER LogDirectory
         Log directory.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [Parameter(Mandatory)]
-        [int]$Quota,
-
         [string]$LogDirectory
     )
 
+    $Quota = 0
     $domainDN = (Get-ADDomain).DistinguishedName
 
-    # Check current value
     $currentQuota = (Get-ADObject -Identity $domainDN -Properties "ms-DS-MachineAccountQuota")."ms-DS-MachineAccountQuota"
     if ($currentQuota -eq $Quota) {
-        Write-HardeningLog -Message "ms-DS-MachineAccountQuota is already set to $Quota." -Level Warning -LogDirectory $LogDirectory
+        Write-HardeningLog -Message "ms-DS-MachineAccountQuota is already set to 0." -Level Warning -LogDirectory $LogDirectory
         return
     }
 
-    if ($PSCmdlet.ShouldProcess($domainDN, "Set ms-DS-MachineAccountQuota to $Quota (current: $currentQuota)")) {
+    if ($PSCmdlet.ShouldProcess($domainDN, "Set ms-DS-MachineAccountQuota to 0 (current: $currentQuota)")) {
         try {
             Set-ADDomain -Identity $domainDN -Replace @{ "ms-DS-MachineAccountQuota" = $Quota }
-            Write-HardeningLog -Message "ms-DS-MachineAccountQuota set to $Quota (was $currentQuota)." -Level Success -LogDirectory $LogDirectory
+            Write-HardeningLog -Message "ms-DS-MachineAccountQuota set to 0 (was $currentQuota)." -Level Success -LogDirectory $LogDirectory
         }
         catch {
             Write-HardeningLog -Message "Error setting ms-DS-MachineAccountQuota: $_" -Level Error -LogDirectory $LogDirectory
@@ -716,7 +706,7 @@ function Set-HardeningMachineAccountQuota {
         }
     }
     else {
-        Write-HardeningLog -Message "[WhatIf] ms-DS-MachineAccountQuota would be set to $Quota (current: $currentQuota)." -Level Info -LogDirectory $LogDirectory
+        Write-HardeningLog -Message "[WhatIf] ms-DS-MachineAccountQuota would be set to 0 (current: $currentQuota)." -Level Info -LogDirectory $LogDirectory
     }
 }
 
@@ -1907,6 +1897,377 @@ public class LOCKmeAD_Priv {
         -Level $level -LogDirectory $LogDirectory
 }
 
+# ============================================================================
+# Hardening verification functions
+# ============================================================================
+
+function New-HardeningCheckResult {
+    param([string]$Status, [string]$Message = '')
+    [PSCustomObject]@{ Status = $Status; Message = $Message }
+}
+
+function Test-HardeningTask {
+    param(
+        [Parameter(Mandatory)][string]$TaskName,
+        [object]$TaskParameters
+    )
+    switch ($TaskName) {
+        'SetMachineAccountQuota'     { Test-HardeningMachineAccountQuota }
+        'RaiseDomainFunctionalLevel' { Test-HardeningDomainFunctionalLevel }
+        'RaiseForestFunctionalLevel' { Test-HardeningForestFunctionalLevel }
+        'EnableRecycleBin'           { Test-HardeningRecycleBin }
+        'EnablePAMFeature'           { Test-HardeningPAMFeature }
+        'DisableAnonymousAccess'     { Test-HardeningAnonymousAccess }
+        'DeployT0AuthPolicy'         { Test-HardeningT0AuthPolicy }
+        'EnableReplicationNotify'    { Test-HardeningReplicationNotify }
+        'ConfigureCentralStore'      { Test-HardeningCentralStore }
+        'ExtendLAPSSchema'           { Test-HardeningLAPSSchema }
+        'ConfigureLAPSADPermissions' {
+            Test-HardeningLAPSADPermissions `
+                -SelfPermissionOUs      @($TaskParameters.SelfPermissionOUs) `
+                -ReadPasswordOUs        @($TaskParameters.ReadPasswordOUs) `
+                -ReadPasswordPrincipals @($TaskParameters.ReadPasswordPrincipals) `
+                -ResetPasswordOUs       @($TaskParameters.ResetPasswordOUs) `
+                -ResetPasswordPrincipals @($TaskParameters.ResetPasswordPrincipals)
+        }
+        'RestrictDNSDynamicUpdate'   { Test-HardeningDNSDynamicUpdate }
+        'AddDNSSecurityRecords'      {
+            Test-HardeningDNSSecurityRecords `
+                -ZoneName         $TaskParameters.ZoneName `
+                -WpadIPAddress    $TaskParameters.WpadIPAddress `
+                -WildcardTXTValue $TaskParameters.WildcardTXTValue
+        }
+        'FixDNSRecordOwnership'      { Test-HardeningDNSRecordOwnership }
+        'ResetADObjectOwnership'     { Test-HardeningADObjectOwnership }
+        default { New-HardeningCheckResult -Status 'Error' -Message "Unknown task: $TaskName" }
+    }
+}
+
+function Test-HardeningMachineAccountQuota {
+    try {
+        $domain = Get-ADDomain
+        $quota = (Get-ADObject $domain.DistinguishedName -Properties 'ms-DS-MachineAccountQuota').'ms-DS-MachineAccountQuota'
+        if ($quota -eq 0) {
+            New-HardeningCheckResult -Status 'OK' -Message "ms-DS-MachineAccountQuota = 0"
+        } else {
+            New-HardeningCheckResult -Status 'NotOK' -Message "ms-DS-MachineAccountQuota = $quota (expected 0)"
+        }
+    } catch { New-HardeningCheckResult -Status 'Error' -Message $_.Exception.Message }
+}
+
+function Test-HardeningDomainFunctionalLevel {
+    try {
+        $current = (Get-ADDomain).DomainMode.ToString()
+        New-HardeningCheckResult -Status 'Info' -Message "Domain functional level: $current"
+    } catch { New-HardeningCheckResult -Status 'Error' -Message $_.Exception.Message }
+}
+
+function Test-HardeningForestFunctionalLevel {
+    try {
+        $current = (Get-ADForest).ForestMode.ToString()
+        New-HardeningCheckResult -Status 'Info' -Message "Forest functional level: $current"
+    } catch { New-HardeningCheckResult -Status 'Error' -Message $_.Exception.Message }
+}
+
+function Test-HardeningRecycleBin {
+    try {
+        $feature = Get-ADOptionalFeature -Filter { Name -eq 'Recycle Bin Feature' }
+        if ($feature -and $feature.EnabledScopes.Count -gt 0) {
+            New-HardeningCheckResult -Status 'OK' -Message "Recycle Bin is enabled"
+        } else {
+            New-HardeningCheckResult -Status 'NotOK' -Message "Recycle Bin is not enabled"
+        }
+    } catch { New-HardeningCheckResult -Status 'Error' -Message $_.Exception.Message }
+}
+
+function Test-HardeningPAMFeature {
+    try {
+        $feature = Get-ADOptionalFeature -Filter { Name -eq 'Privileged Access Management Feature' }
+        if ($feature -and $feature.EnabledScopes.Count -gt 0) {
+            New-HardeningCheckResult -Status 'OK' -Message "PAM feature is enabled"
+        } else {
+            New-HardeningCheckResult -Status 'NotOK' -Message "PAM feature is not enabled"
+        }
+    } catch { New-HardeningCheckResult -Status 'Error' -Message $_.Exception.Message }
+}
+
+function Test-HardeningAnonymousAccess {
+    try {
+        $members = @(Get-ADGroupMember 'Pre-Windows 2000 Compatible Access' -ErrorAction Stop)
+        $hasAnon = $members | Where-Object { $_.Name -eq 'ANONYMOUS LOGON' -or $_.SamAccountName -eq 'ANONYMOUS LOGON' }
+        if (-not $hasAnon) {
+            New-HardeningCheckResult -Status 'OK' -Message "ANONYMOUS LOGON not in Pre-Windows 2000 Compatible Access"
+        } else {
+            New-HardeningCheckResult -Status 'NotOK' -Message "ANONYMOUS LOGON is still a member of Pre-Windows 2000 Compatible Access"
+        }
+    } catch { New-HardeningCheckResult -Status 'Error' -Message $_.Exception.Message }
+}
+
+function Test-HardeningT0AuthPolicy {
+    try {
+        $t0Pattern = 'T[-_]?0|Tier[-_]?0'
+        $allSilos = @(Get-ADAuthenticationPolicySilo -Filter * -ErrorAction SilentlyContinue)
+        $t0Silos  = @($allSilos | Where-Object { $_.Name -match $t0Pattern })
+        if ($t0Silos.Count -gt 0) {
+            $names = $t0Silos.Name -join ', '
+            New-HardeningCheckResult -Status 'Info' -Message "Tier 0 silo(s) found: $names"
+        } else {
+            New-HardeningCheckResult -Status 'NotOK' -Message "No authentication policy silo matching T0/Tier0 found"
+        }
+    } catch { New-HardeningCheckResult -Status 'Error' -Message $_.Exception.Message }
+}
+
+function Test-HardeningReplicationNotify {
+    try {
+        $configNC = (Get-ADRootDSE).configurationNamingContext
+        $siteLinks = @(Get-ADObject -Filter { objectClass -eq 'siteLink' } -SearchBase "CN=Sites,$configNC" -Properties Options)
+        if ($siteLinks.Count -eq 0) {
+            return New-HardeningCheckResult -Status 'OK' -Message "No site links found"
+        }
+        $missing = @($siteLinks | Where-Object { ($_.Options -band 1) -eq 0 })
+        if ($missing.Count -eq 0) {
+            New-HardeningCheckResult -Status 'OK' -Message "USE_NOTIFY enabled on all $($siteLinks.Count) site link(s)"
+        } elseif ($missing.Count -lt $siteLinks.Count) {
+            New-HardeningCheckResult -Status 'Partial' -Message "$($missing.Count)/$($siteLinks.Count) site link(s) missing USE_NOTIFY"
+        } else {
+            New-HardeningCheckResult -Status 'NotOK' -Message "USE_NOTIFY not enabled on any site link"
+        }
+    } catch { New-HardeningCheckResult -Status 'Error' -Message $_.Exception.Message }
+}
+
+function Test-HardeningCentralStore {
+    try {
+        $domain = Get-ADDomain
+        $sysvol = "\\$($domain.PDCEmulator)\SYSVOL\$($domain.DNSRoot)\Policies\PolicyDefinitions"
+        if (Test-Path $sysvol) {
+            New-HardeningCheckResult -Status 'OK' -Message "Central Store exists"
+        } else {
+            New-HardeningCheckResult -Status 'NotOK' -Message "Central Store not found at $sysvol"
+        }
+    } catch { New-HardeningCheckResult -Status 'Error' -Message $_.Exception.Message }
+}
+
+function Test-HardeningLAPSSchema {
+    try {
+        $schema = (Get-ADRootDSE).schemaNamingContext
+
+        # Attributes added by Update-LapsADSchema per MS official documentation
+        # (msLAPS-CurrentPasswordVersion is WS2025+ only and excluded from this check)
+        $expected = @(
+            'msLAPS-Password',
+            'msLAPS-PasswordExpirationTime',
+            'msLAPS-EncryptedPassword',
+            'msLAPS-EncryptedPasswordHistory',
+            'msLAPS-EncryptedDSRMPassword',
+            'msLAPS-EncryptedDSRMPasswordHistory'
+        )
+
+        $missing = @()
+        foreach ($attr in $expected) {
+            $obj = Get-ADObject -LDAPFilter "(lDAPDisplayName=$attr)" -SearchBase $schema -ErrorAction SilentlyContinue
+            if (-not $obj) { $missing += $attr }
+        }
+
+        if ($missing.Count -eq 0) {
+            New-HardeningCheckResult -Status 'OK' -Message "All $($expected.Count) Windows LAPS schema attributes present"
+        } elseif ($missing.Count -lt $expected.Count) {
+            New-HardeningCheckResult -Status 'Partial' -Message "Missing schema attribute(s): $($missing -join ', ')"
+        } else {
+            New-HardeningCheckResult -Status 'NotOK' -Message "Windows LAPS schema not extended — no msLAPS-* attributes found"
+        }
+    } catch { New-HardeningCheckResult -Status 'Error' -Message $_.Exception.Message }
+}
+
+function Test-HardeningLAPSADPermissions {
+    param(
+        [string[]]$SelfPermissionOUs,
+        [string[]]$ReadPasswordOUs,
+        [string[]]$ReadPasswordPrincipals,
+        [string[]]$ResetPasswordOUs,
+        [string[]]$ResetPasswordPrincipals
+    )
+    try {
+        $domain   = Get-ADDomain
+        $allOUDNs = @(Get-ADOrganizationalUnit -Filter * -ErrorAction Stop | Select-Object -ExpandProperty DistinguishedName)
+        $defaultContainers = @($domain.ComputersContainer, $domain.UsersContainer) | Where-Object { $_ }
+        $allTargets = ($allOUDNs + $defaultContainers) | Sort-Object -Unique
+
+        $lines = @()
+        foreach ($dn in $allTargets) {
+            try {
+                $rights = Find-LapsADExtendedRights -Identity $dn -ErrorAction Stop
+                $delegated = @($rights.ExtendedRightHolders | Where-Object { $_ -notmatch '^NT AUTHORITY\\' })
+                if ($delegated.Count -gt 0) {
+                    $lines += "$dn`n  $($delegated -join ', ')"
+                }
+            } catch { continue }
+        }
+
+        $msg = if ($lines.Count -gt 0) { $lines -join "`n`n" } else { "No LAPS extended rights delegated to any principal" }
+        New-HardeningCheckResult -Status 'Info' -Message $msg
+    } catch { New-HardeningCheckResult -Status 'Error' -Message $_.Exception.Message }
+}
+
+function Test-HardeningDNSDynamicUpdate {
+    try {
+        $domainDN    = (Get-ADDomain).DistinguishedName
+        $dnsBase     = "CN=MicrosoftDNS,DC=DomainDnsZones,$domainDN"
+        $zones       = @(Get-ADObject -Filter { objectClass -eq 'dnsZone' } -SearchBase $dnsBase -ErrorAction SilentlyContinue)
+
+        if ($zones.Count -eq 0) {
+            return New-HardeningCheckResult -Status 'Error' -Message "No AD-integrated DNS zones found"
+        }
+
+        $zoneWithAuthUsers = @()
+        foreach ($zone in $zones) {
+            $acl = Get-Acl -Path "AD:$($zone.DistinguishedName)" -ErrorAction SilentlyContinue
+            if ($acl) {
+                $bad = $acl.Access | Where-Object {
+                    $_.IdentityReference -match 'Authenticated Users' -and
+                    $_.ActiveDirectoryRights -match 'CreateChild'
+                }
+                if ($bad) { $zoneWithAuthUsers += $zone.Name }
+            }
+        }
+
+        if ($zoneWithAuthUsers.Count -eq 0) {
+            New-HardeningCheckResult -Status 'OK' -Message "Authenticated Users has no CreateChild on $($zones.Count) DNS zone(s)"
+        } else {
+            New-HardeningCheckResult -Status 'NotOK' -Message "Authenticated Users still has CreateChild on: $($zoneWithAuthUsers -join ', ')"
+        }
+    } catch { New-HardeningCheckResult -Status 'Error' -Message $_.Exception.Message }
+}
+
+function Test-HardeningDNSSecurityRecords {
+    param([string]$ZoneName, [string]$WpadIPAddress, [string]$WildcardTXTValue)
+    try {
+        $domainDN = (Get-ADDomain).DistinguishedName
+
+        if ([string]::IsNullOrWhiteSpace($ZoneName)) {
+            $ZoneName = (Get-ADDomain).DNSRoot
+        }
+
+        # Locate the zone — wrap each partition separately so an inaccessible
+        # partition doesn't abort the whole check with a terminating error
+        $zoneDN = $null
+        foreach ($container in @("CN=MicrosoftDNS,DC=DomainDnsZones,$domainDN", "CN=MicrosoftDNS,DC=ForestDnsZones,$domainDN")) {
+            try {
+                $zoneObj = Get-ADObject -Filter "objectClass -eq 'dnsZone' -and Name -eq '$ZoneName'" `
+                    -SearchBase $container -SearchScope OneLevel -ErrorAction Stop
+                if ($zoneObj) { $zoneDN = $zoneObj.DistinguishedName; break }
+            } catch { continue }
+        }
+
+        if (-not $zoneDN) {
+            return New-HardeningCheckResult -Status 'Error' -Message "Zone '$ZoneName' not found in AD"
+        }
+
+        # Fetch all dnsNode children and filter client-side — avoids LDAP escaping
+        # issues with '*' and does not require the DnsServer module
+        $allNodes     = @(Get-ADObject -Filter { objectClass -eq 'dnsNode' } `
+            -SearchBase $zoneDN -SearchScope OneLevel -ErrorAction SilentlyContinue)
+        $wpadNode     = $allNodes | Where-Object { $_.Name -eq 'wpad' }
+        $wildcardNode = $allNodes | Where-Object { $_.Name -eq '*' }
+
+        if ($wpadNode -and $wildcardNode) {
+            New-HardeningCheckResult -Status 'OK' -Message "WPAD A record and wildcard TXT record exist in $ZoneName"
+        } elseif ($wpadNode -or $wildcardNode) {
+            New-HardeningCheckResult -Status 'Partial' -Message "WPAD: $([bool][object]$wpadNode), Wildcard TXT: $([bool][object]$wildcardNode)"
+        } else {
+            New-HardeningCheckResult -Status 'NotOK' -Message "Neither WPAD nor wildcard TXT record found in $ZoneName"
+        }
+    } catch { New-HardeningCheckResult -Status 'Error' -Message $_.Exception.Message }
+}
+
+function Test-HardeningDNSRecordOwnership {
+    try {
+        $domain   = Get-ADDomain
+        $domainDN = $domain.DistinguishedName
+
+        # Build computer map: lowercase name -> ADComputer object (with SID)
+        $computerMap = @{}
+        Get-ADComputer -Filter * -Properties SID -ErrorAction SilentlyContinue | ForEach-Object {
+            $computerMap[$_.Name.ToLower()] = $_
+        }
+
+        $zoneContainers = @(
+            "CN=MicrosoftDNS,DC=DomainDNSZones,$domainDN"
+            "CN=MicrosoftDNS,DC=ForestDNSZones,$domainDN"
+        )
+
+        $relevant = 0; $wrong = 0
+
+        foreach ($container in $zoneContainers) {
+            # Wrap per-partition so an inaccessible partition doesn't abort the whole check
+            $zones = $null
+            try {
+                $zones = @(Get-ADObject -Filter { objectClass -eq 'dnsZone' } -SearchBase $container `
+                    -SearchScope OneLevel -ErrorAction Stop)
+            } catch { continue }
+
+            foreach ($zone in $zones) {
+                if ($zone.Name -match '^_') { continue }
+
+                $nodes = @(Get-ADObject -Filter { objectClass -eq 'dnsNode' } `
+                    -SearchBase $zone.DistinguishedName -SearchScope OneLevel `
+                    -Properties dnsRecord -ErrorAction SilentlyContinue)
+
+                foreach ($node in $nodes) {
+                    if ($node.Name -in @('@', '*') -or $node.Name -match '^_') { continue }
+
+                    $computer = $computerMap[$node.Name.ToLower()]
+                    if (-not $computer) { continue }
+
+                    if (-not (Test-HasDynamicHostRecord -DnsRecordAttr $node.dnsRecord)) { continue }
+
+                    $relevant++
+
+                    # Use "AD:\" (with backslash) — matches the path format used by the
+                    # hardening action; without it Get-Acl may fail on application-partition DNs
+                    $acl = Get-Acl -Path "AD:\$($node.DistinguishedName)" -ErrorAction SilentlyContinue
+                    if ($acl) {
+                        try {
+                            $currentSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])
+                            if ($currentSid.Value -ne $computer.SID.Value) { $wrong++ }
+                        } catch { $wrong++ }
+                    }
+                }
+            }
+        }
+
+        if ($relevant -eq 0) {
+            New-HardeningCheckResult -Status 'OK' -Message "No dynamic DNS nodes with a matching computer account found"
+        } elseif ($wrong -eq 0) {
+            New-HardeningCheckResult -Status 'OK' -Message "All $relevant dynamic DNS node(s) owned by their matching computer account"
+        } else {
+            New-HardeningCheckResult -Status 'NotOK' -Message "$wrong/$relevant dynamic DNS node(s) not owned by their matching computer account"
+        }
+    } catch { New-HardeningCheckResult -Status 'Error' -Message $_.Exception.Message }
+}
+
+function Test-HardeningADObjectOwnership {
+    try {
+        $objects = @(Get-ADObject -Filter { objectClass -eq 'user' -or objectClass -eq 'computer' } `
+            -ErrorAction SilentlyContinue)
+
+        if ($objects.Count -eq 0) {
+            return New-HardeningCheckResult -Status 'Error' -Message "No user/computer objects found"
+        }
+
+        $wrong = 0
+        foreach ($obj in $objects) {
+            $acl = Get-Acl -Path "AD:$($obj.DistinguishedName)" -ErrorAction SilentlyContinue
+            if ($acl -and $acl.Owner -notmatch 'Domain Admins') { $wrong++ }
+        }
+
+        if ($wrong -eq 0) {
+            New-HardeningCheckResult -Status 'OK' -Message "All $($objects.Count) user/computer objects owned by Domain Admins"
+        } else {
+            New-HardeningCheckResult -Status 'NotOK' -Message "$wrong/$($objects.Count) objects not owned by Domain Admins"
+        }
+    } catch { New-HardeningCheckResult -Status 'Error' -Message $_.Exception.Message }
+}
+
 # Export module functions
 Export-ModuleMember -Function @(
     'Write-HardeningLog',
@@ -1928,5 +2289,7 @@ Export-ModuleMember -Function @(
     'Set-HardeningDNSDynamicUpdate',
     'Set-HardeningDNSSecurityRecords',
     'Set-HardeningDNSRecordOwnership',
-    'Set-HardeningADObjectOwnership'
+    'Set-HardeningADObjectOwnership',
+    'New-HardeningCheckResult',
+    'Test-HardeningTask'
 )

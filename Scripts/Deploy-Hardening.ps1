@@ -168,8 +168,7 @@ foreach ($task in $config.Tasks) {
     try {
         switch ($task.Name) {
             'SetMachineAccountQuota' {
-                Set-HardeningMachineAccountQuota -Quota $task.Parameters.Quota `
-                                                  -LogDirectory $logDir `
+                Set-HardeningMachineAccountQuota -LogDirectory $logDir `
                                                   -WhatIf:$WhatIfPreference
             }
             'RaiseDomainFunctionalLevel' {

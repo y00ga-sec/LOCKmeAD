@@ -452,6 +452,7 @@ function Get-MainWindowXaml {
                                        VerticalAlignment="Center" Margin="0,0,20,0"/>
                             <Button Name="BtnSelectAll"   Content="Select All"   Style="{StaticResource ToolbarBtn}" Margin="0,0,6,0"/>
                             <Button Name="BtnDeselectAll" Content="Deselect All" Style="{StaticResource ToolbarBtn}"/>
+                            <Button Name="BtnVerifyAll"   Content="Verify All"   Style="{StaticResource ToolbarBtn}" Margin="6,0,0,0"/>
                         </StackPanel>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
                             <StackPanel Name="HardeningTaskList"/>

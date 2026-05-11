@@ -6,10 +6,7 @@
     {
       "Name": "SetMachineAccountQuota",
       "Description": "Set ms-DS-MachineAccountQuota to 0 to prevent unprivileged users from joining computers to the domain",
-      "Enabled": true,
-      "Parameters": {
-        "Quota": 0
-      }
+      "Enabled": true
     },
     {
       "Name": "RaiseDomainFunctionalLevel",

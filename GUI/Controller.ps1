@@ -360,6 +360,7 @@ function Populate-HardeningTab {
     $UI.HardeningTaskList.Children.Clear()
     $script:HardeningToggles = @()
     $script:HardeningParamControls = @{}
+    $script:HardeningStatusBadges = @{}
 
     for ($i = 0; $i -lt $script:Configs.Hardening.Tasks.Count; $i++) {
         $task = $script:Configs.Hardening.Tasks[$i]
@@ -403,7 +404,37 @@ function Populate-HardeningTab {
         [void]$textStack.Children.Add($nameBlock)
         [void]$textStack.Children.Add($descBlock)
 
+        $statusBadge = New-Object System.Windows.Controls.Border
+        $statusBadge.CornerRadius = [System.Windows.CornerRadius]::new(4)
+        $statusBadge.Padding = [System.Windows.Thickness]::new(8, 2, 8, 2)
+        $statusBadge.Background = Get-WPFBrush "#F0F0F0"
+        $statusBadge.VerticalAlignment = "Center"
+        $statusBadge.Margin = [System.Windows.Thickness]::new(8, 0, 0, 0)
+        [System.Windows.Controls.DockPanel]::SetDock($statusBadge, "Right")
+
+        $statusText = New-Object System.Windows.Controls.TextBlock
+        $statusText.Text = "—"
+        $statusText.FontSize = 11
+        $statusText.Foreground = Get-WPFBrush "#999999"
+        $statusText.VerticalAlignment = "Center"
+        [void]$statusBadge.AddChild($statusText)
+
+        $script:HardeningStatusBadges[$task.Name] = @{ Border = $statusBadge; Text = $statusText; Message = '' }
+
+        $statusBadge.Cursor = [System.Windows.Input.Cursors]::Hand
+        $badgeName = $task.Name
+        $badgeDict = $script:HardeningStatusBadges[$task.Name]
+        $statusBadge.Add_MouseLeftButtonDown({
+            if (-not [string]::IsNullOrWhiteSpace($badgeDict.Message)) {
+                [System.Windows.MessageBox]::Show(
+                    $badgeDict.Message, $badgeName,
+                    [System.Windows.MessageBoxButton]::OK,
+                    [System.Windows.MessageBoxImage]::Information)
+            }
+        }.GetNewClosure())
+
         [void]$headerDock.Children.Add($toggle)
+        [void]$headerDock.Children.Add($statusBadge)
         [void]$headerDock.Children.Add($textStack)
         [void]$outerStack.Children.Add($headerDock)
 
@@ -3166,6 +3197,83 @@ function Register-GUIEvents {
     })
     $UI.BtnDeselectAll.Add_Click({
         foreach ($t in $script:HardeningToggles) { $t.IsChecked = $false }
+    })
+
+    $UI.BtnVerifyAll.Add_Click({
+        $UI.BtnVerifyAll.IsEnabled = $false
+
+        # Ensure the Hardening module is loaded — in a fresh session where Deploy
+        # has not been run, the module is not yet imported
+        $appRoot    = Split-Path (Split-Path $script:ScriptPaths.Hardening)
+        $modulePath = Join-Path $appRoot "Modules\Hardening\Hardening.psm1"
+        try {
+            Import-Module $modulePath -Force -ErrorAction Stop
+        } catch {
+            Write-ConsoleUI "Cannot load Hardening module: $_" "Error"
+            $UI.BtnVerifyAll.IsEnabled = $true
+            return
+        }
+
+        # Mark badges as "checking" based on live toggle state, not saved config
+        for ($i = 0; $i -lt $script:Configs.Hardening.Tasks.Count; $i++) {
+            if (-not $script:HardeningToggles[$i].IsChecked) { continue }
+            $b = $script:HardeningStatusBadges[$script:Configs.Hardening.Tasks[$i].Name]
+            if ($b) {
+                $b.Border.Background = Get-WPFBrush "#EBF5FB"
+                $b.Text.Foreground   = Get-WPFBrush "#0078D4"
+                $b.Text.Text         = "..."
+            }
+        }
+        $script:Window.Dispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
+
+        for ($i = 0; $i -lt $script:Configs.Hardening.Tasks.Count; $i++) {
+            if (-not $script:HardeningToggles[$i].IsChecked) { continue }
+            $task = $script:Configs.Hardening.Tasks[$i]
+            $b = $script:HardeningStatusBadges[$task.Name]
+            if (-not $b) { continue }
+
+            try {
+                $result = Test-HardeningTask -TaskName $task.Name -TaskParameters $task.Parameters
+                switch ($result.Status) {
+                    'OK'      {
+                        $b.Border.Background = Get-WPFBrush "#E8F5E9"
+                        $b.Text.Foreground   = Get-WPFBrush "#2E7D32"
+                        $b.Text.Text         = "✓ Applied"
+                    }
+                    'NotOK'   {
+                        $b.Border.Background = Get-WPFBrush "#FFEBEE"
+                        $b.Text.Foreground   = Get-WPFBrush "#C62828"
+                        $b.Text.Text         = "✗ Missing"
+                    }
+                    'Partial' {
+                        $b.Border.Background = Get-WPFBrush "#FFF8E1"
+                        $b.Text.Foreground   = Get-WPFBrush "#F57F17"
+                        $b.Text.Text         = "⚠ Partial"
+                    }
+                    'Info'    {
+                        $b.Border.Background = Get-WPFBrush "#E3F2FD"
+                        $b.Text.Foreground   = Get-WPFBrush "#1565C0"
+                        $b.Text.Text         = "ℹ Details"
+                    }
+                    default   {
+                        $b.Border.Background = Get-WPFBrush "#FFF3E0"
+                        $b.Text.Foreground   = Get-WPFBrush "#E65100"
+                        $b.Text.Text         = "? Error"
+                    }
+                }
+                $b.Border.ToolTip = $result.Message
+                $b.Message        = $result.Message
+            } catch {
+                $b.Border.Background = Get-WPFBrush "#FFF3E0"
+                $b.Text.Foreground   = Get-WPFBrush "#E65100"
+                $b.Text.Text         = "? Error"
+                $b.Border.ToolTip    = $_.Exception.Message
+                $b.Message           = $_.Exception.Message
+            }
+            $script:Window.Dispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
+        }
+
+        $UI.BtnVerifyAll.IsEnabled = $true
     })
 
     # GPO toolbar
