@@ -603,8 +603,19 @@ function Get-MainWindowXaml {
                                                         Background="Transparent" BorderThickness="0" Cursor="Hand"
                                                         Foreground="#999" ToolTip="Copy DN to clipboard"
                                                         Padding="4,0" VerticalAlignment="Center" Margin="4,0,0,0"/>
-                                                <TextBlock Name="RBACGGOU" FontSize="11" Foreground="#999" TextWrapping="Wrap"/>
+                                                <TextBox Name="RBACGGOU" FontSize="11" Foreground="#555"
+                                                         BorderBrush="#DDD" BorderThickness="1"
+                                                         Padding="4,3" Background="#FAFAFA" TextWrapping="Wrap"/>
                                             </DockPanel>
+                                            <StackPanel Margin="0,10,0,0">
+                                                <TextBlock Text="Nested into" FontSize="11" FontWeight="SemiBold"
+                                                           Foreground="#0078D4" Margin="0,0,0,4"/>
+                                                <StackPanel Name="RBACGGMemberOfList"/>
+                                                <Button Name="RBACGGAddMemberOf" Content="+ Add group"
+                                                        Background="Transparent" BorderThickness="0"
+                                                        Foreground="#0078D4" FontSize="11" Cursor="Hand"
+                                                        HorizontalAlignment="Left" Padding="0,4,0,0"/>
+                                            </StackPanel>
                                         </StackPanel>
                                     </Border>
 

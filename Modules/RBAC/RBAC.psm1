@@ -104,12 +104,11 @@ function Import-RBACConfiguration {
         if (-not $role.GlobalGroup.Name) {
             throw "Role '$($role.Name)': GlobalGroup.Name is missing."
         }
-        if (-not $role.DomainLocalGroups -or $role.DomainLocalGroups.Count -eq 0) {
-            throw "Role '$($role.Name)' is missing 'DomainLocalGroups'."
-        }
-        foreach ($dlGroup in $role.DomainLocalGroups) {
-            if (-not $dlGroup.Name) {
-                throw "Role '$($role.Name)' contains a DomainLocalGroup without 'Name'."
+        if ($role.DomainLocalGroups) {
+            foreach ($dlGroup in $role.DomainLocalGroups) {
+                if (-not $dlGroup.Name) {
+                    throw "Role '$($role.Name)' contains a DomainLocalGroup without 'Name'."
+                }
             }
         }
     }
@@ -120,11 +119,7 @@ function Import-RBACConfiguration {
             if (-not $rootGroup.Name) {
                 throw "A RootGroup is missing the 'Name' property."
             }
-            $hasMembers = $rootGroup.Members -and $rootGroup.Members.Count -gt 0
-            $hasMemberOf = $rootGroup.MemberOf -and $rootGroup.MemberOf.Count -gt 0
-            if (-not $hasMembers -and -not $hasMemberOf) {
-                throw "RootGroup '$($rootGroup.Name)' needs at least 'Members' or 'MemberOf'."
-            }
+            # Empty root groups are allowed (tier may have no roles yet)
         }
     }
 

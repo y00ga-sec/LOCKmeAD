@@ -106,10 +106,10 @@ $disabledGPOs = @($config.GPOs | Where-Object { $_.Enabled -eq $false })
 $filteringOU = $config.Settings.FilteringGroupsOU
 $filteringEnabled = -not [string]::IsNullOrWhiteSpace($filteringOU)
 if ($filteringEnabled) {
-    if ($filteringOU -notmatch 'OU=GroupsT0,OU=Admin') {
+    if ($filteringOU -notmatch '(?i)(tier|t)[-_. ]?(0|zero)') {
         Write-Host ""
-        Write-Host "  [ERROR] FilteringGroupsOU '$filteringOU' is not within OU=GroupsT0,OU=Admin. Filtering groups will NOT be deployed." -ForegroundColor Red
-        Write-GPOLog -Message "FilteringGroupsOU '$filteringOU' is not within OU=GroupsT0,OU=Admin. Skipping filtering group deployment." -Level Error -LogDirectory $logDir
+        Write-Host "  [ERROR] FilteringGroupsOU '$filteringOU' does not reference a Tier 0 OU (e.g. T0, Tier0, Tier-0, TierZero...). Filtering groups will NOT be deployed." -ForegroundColor Red
+        Write-GPOLog -Message "FilteringGroupsOU '$filteringOU' does not reference a Tier 0 OU. Skipping filtering group deployment." -Level Error -LogDirectory $logDir
         $filteringEnabled = $false
     }
     else {

@@ -189,6 +189,24 @@ foreach ($role in $config.Roles) {
         continue
     }
 
+    # Add GG into existing AD groups (MemberOf)
+    if ($role.GlobalGroup.MemberOf) {
+        foreach ($targetGroup in $role.GlobalGroup.MemberOf) {
+            try {
+                Add-RBACGroupMember -GlobalGroupName $role.GlobalGroup.Name `
+                                    -DomainLocalGroupName $targetGroup `
+                                    -Server $targetServer `
+                                    -LogDirectory $logDir `
+                                    -WhatIf:$WhatIfPreference
+                $stats.MembershipsSet++
+            }
+            catch {
+                Write-RBACLog -Message "Failed to add '$($role.GlobalGroup.Name)' -> '$targetGroup': $_" -Level Error -LogDirectory $logDir
+                $stats.Errors++
+            }
+        }
+    }
+
     # --- Domain Local Groups ---
     foreach ($dlGroup in $role.DomainLocalGroups) {
         $dlOU = if ($dlGroup.OU) { $dlGroup.OU } else { $config.Settings.DefaultOU.DomainLocal }

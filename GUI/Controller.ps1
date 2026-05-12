@@ -544,13 +544,13 @@ function Update-GPOFilteringOUWarning {
     if ([string]::IsNullOrWhiteSpace($text)) {
         $UI.GPOFilteringOUWarning.Visibility = "Collapsed"
     }
-    elseif ($text -notmatch 'OU=GroupsT0,OU=Admin') {
-        $UI.GPOFilteringOUWarning.Text = "Warning: This OU is not within OU=GroupsT0,OU=Admin. Filtering groups will not be deployed."
+    elseif ($text -notmatch '(?i)(tier|t)[-_. ]?(0|zero)') {
+        $UI.GPOFilteringOUWarning.Text = "Warning: This OU does not reference a Tier 0 location (e.g. T0, Tier0, Tier-0...). Filtering groups will not be deployed."
         $UI.GPOFilteringOUWarning.Foreground = Get-WPFBrush "#D35400"
         $UI.GPOFilteringOUWarning.Visibility = "Visible"
     }
     else {
-        $UI.GPOFilteringOUWarning.Text = "OK: OU is within OU=GroupsT0,OU=Admin."
+        $UI.GPOFilteringOUWarning.Text = "OK: OU references a Tier 0 location."
         $UI.GPOFilteringOUWarning.Foreground = Get-WPFBrush "#1E8449"
         $UI.GPOFilteringOUWarning.Visibility = "Visible"
     }
@@ -852,7 +852,7 @@ function Populate-GPOTab {
             [void]$outerStack.Children.Add($svcExpander)
         }
 
-        # User Rights Assignments expander (read-only, only if URA exist)
+        # User Rights Assignments expander (editable groups)
         if ($uraCount -gt 0) {
             $uraExpander = New-Object System.Windows.Controls.Expander
             $uraExpander.Header = "User Rights Assignments"
@@ -863,31 +863,88 @@ function Populate-GPOTab {
             $uraStack.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
 
             foreach ($assignment in $gpo.UserRightsAssignments) {
-                $uraRow = New-Object System.Windows.Controls.DockPanel
-                $uraRow.Margin = [System.Windows.Thickness]::new(0, 2, 0, 2)
+                $uraBlock = New-Object System.Windows.Controls.StackPanel
+                $uraBlock.Margin = [System.Windows.Thickness]::new(0, 2, 0, 8)
 
                 $rightLabel = New-Object System.Windows.Controls.TextBlock
                 $rightLabel.FontSize = 11
                 $rightLabel.Foreground = Get-WPFBrush "#6C3483"
                 $rightLabel.FontWeight = "SemiBold"
-                $rightLabel.MinWidth = 220
                 $rightLabel.ToolTip = $assignment.Right
-                if ($assignment.Description) {
-                    $rightLabel.Text = $assignment.Description
-                } else {
-                    $rightLabel.Text = $assignment.Right
+                $rightLabel.Text = if ($assignment.Description) { $assignment.Description } else { $assignment.Right }
+                $rightLabel.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
+                [void]$uraBlock.Children.Add($rightLabel)
+
+                $groupsWrap = New-Object System.Windows.Controls.WrapPanel
+
+                $grpList = if ($assignment.Groups) { @($assignment.Groups) } else { @() }
+                foreach ($grpName in $grpList) {
+                    $tagBorder = New-Object System.Windows.Controls.Border
+                    $tagBorder.Background = Get-WPFBrush "#EDE7F6"
+                    $tagBorder.CornerRadius = [System.Windows.CornerRadius]::new(3)
+                    $tagBorder.Padding = [System.Windows.Thickness]::new(7, 2, 4, 2)
+                    $tagBorder.Margin = [System.Windows.Thickness]::new(0, 0, 4, 4)
+
+                    $tagInner = New-Object System.Windows.Controls.StackPanel
+                    $tagInner.Orientation = "Horizontal"
+
+                    $tagLabel = New-Object System.Windows.Controls.TextBlock
+                    $tagLabel.Text = $grpName
+                    $tagLabel.FontSize = 11
+                    $tagLabel.Foreground = Get-WPFBrush "#4A235A"
+                    $tagLabel.VerticalAlignment = "Center"
+
+                    $removeGrpBtn = New-Object System.Windows.Controls.Button
+                    $removeGrpBtn.Content = [char]0x00D7
+                    $removeGrpBtn.FontSize = 11
+                    $removeGrpBtn.Background = Get-WPFBrush "Transparent"
+                    $removeGrpBtn.BorderThickness = [System.Windows.Thickness]::new(0)
+                    $removeGrpBtn.Foreground = Get-WPFBrush "#A93226"
+                    $removeGrpBtn.Cursor = "Hand"
+                    $removeGrpBtn.Padding = [System.Windows.Thickness]::new(3, 0, 0, 0)
+                    $removeGrpBtn.VerticalAlignment = "Center"
+                    $removeGrpBtn.Tag = @{ Assignment = $assignment; GroupName = $grpName }
+                    $removeGrpBtn.Add_Click({
+                        $ctx = $this.Tag
+                        $ctx.Assignment.Groups = @($ctx.Assignment.Groups | Where-Object { $_ -ne $ctx.GroupName })
+                        $script:UnsavedChanges.GPO = $true
+                        Populate-GPOTab
+                    })
+
+                    [void]$tagInner.Children.Add($tagLabel)
+                    [void]$tagInner.Children.Add($removeGrpBtn)
+                    $tagBorder.Child = $tagInner
+                    [void]$groupsWrap.Children.Add($tagBorder)
                 }
-                [System.Windows.Controls.DockPanel]::SetDock($rightLabel, "Left")
 
-                $groupsLabel = New-Object System.Windows.Controls.TextBlock
-                $groupsLabel.Text = ($assignment.Groups -join ", ")
-                $groupsLabel.FontSize = 11
-                $groupsLabel.Foreground = Get-WPFBrush "#555"
-                $groupsLabel.TextWrapping = "Wrap"
+                $addGroupBtn = New-Object System.Windows.Controls.Button
+                $addGroupBtn.Content = "+ Add group"
+                $addGroupBtn.Background = Get-WPFBrush "Transparent"
+                $addGroupBtn.BorderThickness = [System.Windows.Thickness]::new(0)
+                $addGroupBtn.Foreground = Get-WPFBrush "#0078D4"
+                $addGroupBtn.FontSize = 11
+                $addGroupBtn.Cursor = "Hand"
+                $addGroupBtn.Padding = [System.Windows.Thickness]::new(0, 2, 0, 2)
+                $addGroupBtn.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
+                $addGroupBtn.Tag = $assignment
+                $addGroupBtn.Add_Click({
+                    $asgn = $this.Tag
+                    $groupName = Show-ADGroupSearchDialog
+                    if ($groupName) {
+                        if (-not $asgn.Groups) {
+                            $asgn | Add-Member -NotePropertyName Groups -NotePropertyValue @() -Force
+                        }
+                        if ($groupName -notin @($asgn.Groups)) {
+                            $asgn.Groups = @($asgn.Groups) + @($groupName)
+                            $script:UnsavedChanges.GPO = $true
+                        }
+                        Populate-GPOTab
+                    }
+                })
+                [void]$groupsWrap.Children.Add($addGroupBtn)
 
-                [void]$uraRow.Children.Add($rightLabel)
-                [void]$uraRow.Children.Add($groupsLabel)
-                [void]$uraStack.Children.Add($uraRow)
+                [void]$uraBlock.Children.Add($groupsWrap)
+                [void]$uraStack.Children.Add($uraBlock)
             }
 
             $uraExpander.Content = $uraStack
@@ -1908,6 +1965,41 @@ function Show-RBACRoleDetail($role) {
     $UI.RBACGGDesc.Text = $role.GlobalGroup.Description
     $UI.RBACGGOU.Text   = $role.GlobalGroup.OU
 
+    $UI.RBACGGMemberOfList.Children.Clear()
+    $moList = if ($role.GlobalGroup.MemberOf) { @($role.GlobalGroup.MemberOf) } else { @() }
+    foreach ($groupName in $moList) {
+        $row = New-Object System.Windows.Controls.DockPanel
+        $row.Margin = [System.Windows.Thickness]::new(0, 2, 0, 0)
+
+        $removeBtn = New-Object System.Windows.Controls.Button
+        $removeBtn.Content = [char]0x00D7
+        $removeBtn.FontSize = 12
+        $removeBtn.Background = Get-WPFBrush "Transparent"
+        $removeBtn.BorderThickness = [System.Windows.Thickness]::new(0)
+        $removeBtn.Foreground = Get-WPFBrush "#A93226"
+        $removeBtn.Cursor = "Hand"
+        $removeBtn.Padding = [System.Windows.Thickness]::new(4, 0, 4, 0)
+        $removeBtn.VerticalAlignment = "Center"
+        $removeBtn.Tag = @{ Role = $role; Group = $groupName }
+        $removeBtn.Add_Click({
+            $ctx = $this.Tag
+            $ctx.Role.GlobalGroup.MemberOf = @($ctx.Role.GlobalGroup.MemberOf | Where-Object { $_ -ne $ctx.Group })
+            $script:UnsavedChanges.RBAC = $true
+            Refresh-RBACRole $ctx.Role.Name
+        })
+        [System.Windows.Controls.DockPanel]::SetDock($removeBtn, "Right")
+        [void]$row.Children.Add($removeBtn)
+
+        $label = New-Object System.Windows.Controls.TextBlock
+        $label.Text = $groupName
+        $label.FontSize = 12
+        $label.VerticalAlignment = "Center"
+        $label.Foreground = Get-WPFBrush "#333333"
+        [void]$row.Children.Add($label)
+
+        [void]$UI.RBACGGMemberOfList.Children.Add($row)
+    }
+
     $UI.RBACDLList.Children.Clear()
 
     # Infer tier from role name
@@ -2025,12 +2117,23 @@ function Show-RBACRoleDetail($role) {
         $dlOUCopyBtn = New-CopyDNButton $dl.OU
         [System.Windows.Controls.DockPanel]::SetDock($dlOUCopyBtn, "Right")
         [void]$dlOUPanel.Children.Add($dlOUCopyBtn)
-        $dlOUText = New-Object System.Windows.Controls.TextBlock
-        $dlOUText.Text = $dl.OU
-        $dlOUText.FontSize = 10
-        $dlOUText.Foreground = Get-WPFBrush "#999"
-        $dlOUText.TextWrapping = "Wrap"
-        [void]$dlOUPanel.Children.Add($dlOUText)
+        $dlOUBox = New-Object System.Windows.Controls.TextBox
+        $dlOUBox.Text = $dl.OU
+        $dlOUBox.FontSize = 10
+        $dlOUBox.Foreground = Get-WPFBrush "#555"
+        $dlOUBox.BorderBrush = Get-WPFBrush "#DDD"
+        $dlOUBox.BorderThickness = [System.Windows.Thickness]::new(1)
+        $dlOUBox.Padding = [System.Windows.Thickness]::new(4, 3, 4, 3)
+        $dlOUBox.Background = Get-WPFBrush "#FAFAFA"
+        $dlOUBox.TextWrapping = "Wrap"
+        $dlOUBox.Tag = @{ DL = $dl; CopyBtn = $dlOUCopyBtn }
+        $dlOUBox.Add_TextChanged({
+            $ctx = $this.Tag
+            $ctx.DL.OU = $this.Text
+            $ctx.CopyBtn.Tag = $this.Text
+            $script:UnsavedChanges.RBAC = $true
+        })
+        [void]$dlOUPanel.Children.Add($dlOUBox)
         [void]$dlStack.Children.Add($dlOUPanel)
 
         # Determine if this DL group is a reference (empty Permissions) with actual perms defined in another role
@@ -2365,6 +2468,102 @@ function Update-DeployOrderHint {
 # RBAC Dialogs & Helpers
 # ============================================================================
 
+function Show-ADGroupSearchDialog {
+    $searchXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Add MemberOf — Search AD Group" Width="460" Height="380"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        Background="#F5F5F5" FontFamily="Segoe UI">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid Grid.Row="0" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBox Name="SearchBox" Grid.Column="0" Padding="8,6" FontSize="13"
+                     BorderBrush="#D0D0D0" BorderThickness="1"/>
+            <Button Name="SearchBtn" Grid.Column="1" Content="Search" Margin="8,0,0,0"
+                    Background="#0078D4" Foreground="White" Padding="14,6"
+                    BorderThickness="0" FontSize="13" Cursor="Hand"/>
+        </Grid>
+        <ListBox Name="ResultList" Grid.Row="1" FontSize="13" Padding="4"
+                 BorderBrush="#D0D0D0" BorderThickness="1"/>
+        <TextBlock Name="StatusText" Grid.Row="2" Margin="0,8,0,0"
+                   FontSize="11" Foreground="#888888"
+                   Text="Type a group name and press Enter or click Search. Double-click to select."/>
+    </Grid>
+</Window>
+"@
+    [xml]$searchDoc   = $searchXaml
+    $searchReader     = [System.Xml.XmlNodeReader]::new($searchDoc)
+    $searchWindow     = [System.Windows.Markup.XamlReader]::Load($searchReader)
+    $searchWindow.Owner = $script:Window
+
+    $searchBox  = $searchWindow.FindName("SearchBox")
+    $searchBtn  = $searchWindow.FindName("SearchBtn")
+    $resultList = $searchWindow.FindName("ResultList")
+    $statusText = $searchWindow.FindName("StatusText")
+
+    $script:dialogResult = $null
+
+    $doSearch = {
+        $val = $searchBox.Text.Trim()
+        if ([string]::IsNullOrWhiteSpace($val)) {
+            $statusText.Text = "Please enter a search term."
+            return
+        }
+        $resultList.Items.Clear()
+        $statusText.Text = "Searching..."
+        $searchWindow.Cursor = [System.Windows.Input.Cursors]::Wait
+        try {
+            $results = Get-ADGroup -Filter "Name -like '*$val*'" -ErrorAction Stop | Select-Object -First 50
+            foreach ($r in $results) {
+                $item = [System.Windows.Controls.ListBoxItem]::new()
+                $item.Content = "$($r.SamAccountName)  —  $($r.Name)"
+                $item.Tag = $r.SamAccountName
+                $resultList.Items.Add($item) | Out-Null
+            }
+            $count = $resultList.Items.Count
+            $statusText.Text = if ($count -eq 0) { "No results found." }
+                               elseif ($count -ge 50) { "$count results (showing first 50). Refine your search." }
+                               else { "$count result(s). Double-click to select." }
+        }
+        catch {
+            $statusText.Text = "Error: $($_.Exception.Message)"
+        }
+        finally {
+            $searchWindow.Cursor = [System.Windows.Input.Cursors]::Arrow
+        }
+    }
+
+    $searchBtn.Add_Click($doSearch)
+
+    $searchBox.Add_KeyDown({
+        param($sender, $e)
+        if ($e.Key -eq [System.Windows.Input.Key]::Return) {
+            $doSearch.Invoke()
+            $e.Handled = $true
+        }
+    })
+
+    $resultList.Add_MouseDoubleClick({
+        $selected = $resultList.SelectedItem
+        if ($selected -and $selected.Tag) {
+            $script:dialogResult = $selected.Tag
+            $searchWindow.DialogResult = $true
+            $searchWindow.Close()
+        }
+    })
+
+    $searchWindow.ShowDialog() | Out-Null
+    return $script:dialogResult
+}
+
 function Get-TierOU([string]$tier) {
     $ggBase = $script:Configs.RBAC.Settings.DefaultOU.Global
     $dlBase = $script:Configs.RBAC.Settings.DefaultOU.DomainLocal
@@ -2374,14 +2573,16 @@ function Get-TierOU([string]$tier) {
     }
 }
 
+function Apply-RBACFilter {
+    $filter = $script:RBACActiveFilter
+    foreach ($item in $UI.RBACRoleList.Items) {
+        $item.Visibility = if ($filter -and $item.Tag.Name -notlike "$filter*") { "Collapsed" } else { "Visible" }
+    }
+}
+
 function Refresh-RBACRole($roleName) {
     Populate-RBACTab
-    # Reapply the active tier filter
-    if ($script:RBACActiveFilter) {
-        foreach ($item in $UI.RBACRoleList.Items) {
-            $item.Visibility = if ($item.Tag.Name -like "$($script:RBACActiveFilter)*") { "Visible" } else { "Collapsed" }
-        }
-    }
+    Apply-RBACFilter
     foreach ($item in $UI.RBACRoleList.Items) {
         if ($item.Tag.Name -eq $roleName) {
             $item.IsSelected = $true
@@ -3477,29 +3678,35 @@ function Register-GUIEvents {
         }
     })
 
+    # RBAC GG OU edit
+    $UI.RBACGGOU.Add_TextChanged({
+        $selected = $UI.RBACRoleList.SelectedItem
+        if (-not $selected) { return }
+        $selected.Tag.GlobalGroup.OU = $UI.RBACGGOU.Text
+        $script:UnsavedChanges.RBAC = $true
+    })
+
+    # RBAC GG MemberOf add
+    $UI.RBACGGAddMemberOf.Add_Click({
+        $selected = $UI.RBACRoleList.SelectedItem
+        if (-not $selected) { return }
+        $currentRole = $selected.Tag
+        $groupName = Show-ADGroupSearchDialog
+        if ($groupName) {
+            if (-not $currentRole.GlobalGroup.MemberOf) {
+                $currentRole.GlobalGroup | Add-Member -NotePropertyName MemberOf -NotePropertyValue @() -Force
+            }
+            $currentRole.GlobalGroup.MemberOf = @($currentRole.GlobalGroup.MemberOf) + @($groupName)
+            $script:UnsavedChanges.RBAC = $true
+            Refresh-RBACRole $currentRole.Name
+        }
+    })
+
     # RBAC tier filters
-    $UI.RBACFilterAll.Add_Click({
-        $script:RBACActiveFilter = $null
-        foreach ($item in $UI.RBACRoleList.Items) { $item.Visibility = "Visible" }
-    })
-    $UI.RBACFilterT0.Add_Click({
-        $script:RBACActiveFilter = "T0_"
-        foreach ($item in $UI.RBACRoleList.Items) {
-            $item.Visibility = if ($item.Tag.Name -like "T0_*") { "Visible" } else { "Collapsed" }
-        }
-    })
-    $UI.RBACFilterT1.Add_Click({
-        $script:RBACActiveFilter = "T1_"
-        foreach ($item in $UI.RBACRoleList.Items) {
-            $item.Visibility = if ($item.Tag.Name -like "T1_*") { "Visible" } else { "Collapsed" }
-        }
-    })
-    $UI.RBACFilterT2.Add_Click({
-        $script:RBACActiveFilter = "T2_"
-        foreach ($item in $UI.RBACRoleList.Items) {
-            $item.Visibility = if ($item.Tag.Name -like "T2_*") { "Visible" } else { "Collapsed" }
-        }
-    })
+    $UI.RBACFilterAll.Add_Click({ $script:RBACActiveFilter = $null;  Apply-RBACFilter })
+    $UI.RBACFilterT0.Add_Click({  $script:RBACActiveFilter = "T0_"; Apply-RBACFilter })
+    $UI.RBACFilterT1.Add_Click({  $script:RBACActiveFilter = "T1_"; Apply-RBACFilter })
+    $UI.RBACFilterT2.Add_Click({  $script:RBACActiveFilter = "T2_"; Apply-RBACFilter })
 
     # Deploy module checkboxes: update order hint on toggle
     $UI.DeployHardening.Add_Checked({ Update-DeployOrderHint })
@@ -3622,6 +3829,7 @@ function Register-GUIEvents {
             $script:Configs.RBAC.Roles = @($script:Configs.RBAC.Roles | Where-Object { $_.Name -ne $roleName })
             $UI.RBACDLList.Children.Clear()
             Populate-RBACTab
+            Apply-RBACFilter
             Write-ConsoleUI "Role '$roleName' deleted." "Success"
         }
     })
