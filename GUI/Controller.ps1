@@ -510,6 +510,28 @@ function Populate-HardeningTab {
             [void]$outerStack.Children.Add($expander)
         }
 
+        # Info note — ConfigureLAPSADPermissions
+        if ($task.Name -eq 'ConfigureLAPSADPermissions') {
+            $infoLink = New-Object System.Windows.Controls.TextBlock
+            $infoLink.Text = "ⓘ  How OUs and groups interact"
+            $infoLink.FontSize = 11
+            $infoLink.Foreground = Get-WPFBrush "#0078D4"
+            $infoLink.Margin = [System.Windows.Thickness]::new(62, 4, 0, 0)
+            $infoLink.Cursor = [System.Windows.Input.Cursors]::Hand
+            $infoLink.TextDecorations = [System.Windows.TextDecorations]::Underline
+            $infoLink.Add_MouseLeftButtonDown({
+                [System.Windows.MessageBox]::Show(
+                    "Permissions are applied per OU, with all listed groups in a single operation:`n`n" +
+                    "• Each OU is processed independently.`n" +
+                    "• All groups in the principals field are applied at once to each OU.`n`n" +
+                    "Example: 2 groups + 2 OUs → both groups receive the permission on OU1, then both on OU2.",
+                    "How OUs and groups interact",
+                    [System.Windows.MessageBoxButton]::OK,
+                    [System.Windows.MessageBoxImage]::Information)
+            })
+            [void]$outerStack.Children.Add($infoLink)
+        }
+
         # Prerequisites check button — for RaiseDomainFunctionalLevel and RaiseForestFunctionalLevel
         $prereqScope    = $null
         $prereqParamKey = $null
@@ -1097,6 +1119,35 @@ function Populate-GPOTab {
                 # Wrap control + optional hint TextBlock in a StackPanel when a hint is defined
                 if ($pd.ContainsKey('Hint')) {
                     $lapsCtrl.Margin = [System.Windows.Thickness]::new(0, 4, 0, 2)
+
+                    # For the encryption principal field, add an AD group search button
+                    $lapsInner = if ($pd.VN -eq 'ADPasswordEncryptionPrincipal') {
+                        $lapsSrchBtn = New-Object System.Windows.Controls.Button
+                        $lapsSrchBtn.Content = "Search AD"
+                        $lapsSrchBtn.Padding = [System.Windows.Thickness]::new(10, 4, 10, 4)
+                        $lapsSrchBtn.Margin = [System.Windows.Thickness]::new(6, 0, 0, 0)
+                        $lapsSrchBtn.FontSize = 11
+                        $lapsSrchBtn.Background = Get-WPFBrush "#EBF5FB"
+                        $lapsSrchBtn.Foreground = Get-WPFBrush "#0078D4"
+                        $lapsSrchBtn.BorderBrush = Get-WPFBrush "#AED6F1"
+                        $lapsSrchBtn.BorderThickness = [System.Windows.Thickness]::new(1)
+                        $lapsSrchBtn.Cursor = "Hand"
+                        $lapsSrchBtn.VerticalAlignment = "Center"
+                        $lapsSrchBtn.Tag = $lapsCtrl
+                        [System.Windows.Controls.DockPanel]::SetDock($lapsSrchBtn, "Right")
+                        $lapsSrchBtn.Add_Click({
+                            $tb = $this.Tag
+                            $result = Show-ADGroupSearchDialog
+                            if ($result) { $tb.Text = $result }
+                        })
+                        $lapsDock = New-Object System.Windows.Controls.DockPanel
+                        [void]$lapsDock.Children.Add($lapsSrchBtn)
+                        [void]$lapsDock.Children.Add($lapsCtrl)
+                        $lapsDock
+                    } else {
+                        $lapsCtrl
+                    }
+
                     $lapsHintBlock = New-Object System.Windows.Controls.TextBlock
                     $lapsHintBlock.Text = $pd.Hint
                     $lapsHintBlock.FontSize = 10
@@ -1104,7 +1155,7 @@ function Populate-GPOTab {
                     $lapsHintBlock.TextWrapping = "Wrap"
                     $lapsHintBlock.Margin = [System.Windows.Thickness]::new(1, 0, 0, 4)
                     $lapsWrapper = New-Object System.Windows.Controls.StackPanel
-                    [void]$lapsWrapper.Children.Add($lapsCtrl)
+                    [void]$lapsWrapper.Children.Add($lapsInner)
                     [void]$lapsWrapper.Children.Add($lapsHintBlock)
                     $lapsGridChild = $lapsWrapper
                 } else {
@@ -2642,7 +2693,7 @@ function Show-ADGroupSearchDialog {
             </Grid.ColumnDefinitions>
             <TextBlock Name="StatusText" Grid.Column="0" FontSize="11" Foreground="#888888"
                        VerticalAlignment="Center"
-                       Text="Type a group name and press Enter or click Search. Double-click to select."/>
+                       Text="Enter a name, press Enter or Search. Double-click to select."/>
             <Button Name="UseTypedBtn" Grid.Column="1" Content="Use typed name" Margin="8,0,0,0"
                     Background="#F0F0F0" BorderBrush="#CCC" BorderThickness="1"
                     FontSize="12" Padding="10,6" Cursor="Hand"/>
