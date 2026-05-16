@@ -369,9 +369,12 @@ function Set-GPOFilteringPermission {
 
     if ($PSCmdlet.ShouldProcess($GPOName, "Set filtering ACEs (Apply: $ApplyGroupName, Deny: $DenyGroupName)")) {
         try {
-            $gpo = Get-GPO -Name $GPOName @serverParam -ErrorAction Stop
-            $domainDN = (Get-ADDomain @serverParam).DistinguishedName
-            $gpoDN = "CN={$($gpo.Id.ToString().ToUpper())},CN=Policies,CN=System,$domainDN"
+            $gpo      = Get-GPO -Name $GPOName @serverParam -ErrorAction Stop
+            $adDomain = Get-ADDomain @serverParam
+            $domainDN = $adDomain.DistinguishedName
+            $domainName = $adDomain.DNSRoot
+            $gpoDN    = "CN={$($gpo.Id.ToString().ToUpper())},CN=Policies,CN=System,$domainDN"
+            $gpoGuid  = $gpo.Id.ToString().ToUpper()
 
             $acl = Get-Acl -Path "AD:\$gpoDN"
 
@@ -424,9 +427,37 @@ function Set-GPOFilteringPermission {
 
             Write-GPOLog -Message "  ACE: Deny Apply Group Policy -> $DenyGroupName" -Level Success -LogDirectory $LogDirectory
 
-            # Commit ACL
+            # Commit AD ACL
             Set-Acl -Path "AD:\$gpoDN" -AclObject $acl
-            Write-GPOLog -Message "Filtering permissions applied to GPO '$GPOName'." -Level Success -LogDirectory $LogDirectory
+            Write-GPOLog -Message "Filtering permissions applied to GPO '$GPOName' (AD object)." -Level Success -LogDirectory $LogDirectory
+
+            # --- Sync SYSVOL folder ACL ---
+            $sysvolPath = "\\$domainName\SYSVOL\$domainName\Policies\{$gpoGuid}"
+            if (Test-Path $sysvolPath) {
+                $sysvolAcl = Get-Acl -Path $sysvolPath
+
+                # Remove Authenticated Users from SYSVOL
+                $sysvolAuthRules = @($sysvolAcl.Access | Where-Object {
+                    try { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq $authUsersSID.Value } catch { $false }
+                })
+                foreach ($rule in $sysvolAuthRules) { $sysvolAcl.RemoveAccessRule($rule) | Out-Null }
+
+                # Grant Apply group Read & Execute (inherited through all subdirectories)
+                $fsReadRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                    $applySID,
+                    [System.Security.AccessControl.FileSystemRights]::ReadAndExecute,
+                    ([System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit),
+                    [System.Security.AccessControl.PropagationFlags]::None,
+                    [System.Security.AccessControl.AccessControlType]::Allow
+                )
+                $sysvolAcl.AddAccessRule($fsReadRule)
+
+                Set-Acl -Path $sysvolPath -AclObject $sysvolAcl
+                Write-GPOLog -Message "  SYSVOL ACL synced: Authenticated Users removed, ReadAndExecute granted to $ApplyGroupName." -Level Success -LogDirectory $LogDirectory
+            }
+            else {
+                Write-GPOLog -Message "  SYSVOL path not accessible, skipping SYSVOL ACL sync: $sysvolPath" -Level Warning -LogDirectory $LogDirectory
+            }
         }
         catch {
             Write-GPOLog -Message "Error setting filtering permissions on GPO '$GPOName': $_" -Level Error -LogDirectory $LogDirectory
@@ -435,8 +466,8 @@ function Set-GPOFilteringPermission {
     }
     else {
         Write-GPOLog -Message "[WhatIf] Filtering ACEs would be set on GPO '$GPOName':" -Level Info -LogDirectory $LogDirectory
-        Write-GPOLog -Message "  [WhatIf] Authenticated Users would be removed from security filtering" -Level Info -LogDirectory $LogDirectory
-        Write-GPOLog -Message "  [WhatIf] Allow Read + Apply Group Policy -> $ApplyGroupName" -Level Info -LogDirectory $LogDirectory
+        Write-GPOLog -Message "  [WhatIf] Authenticated Users would be removed from AD object and SYSVOL ACL" -Level Info -LogDirectory $LogDirectory
+        Write-GPOLog -Message "  [WhatIf] Allow Read + Apply Group Policy (AD) + ReadAndExecute (SYSVOL) -> $ApplyGroupName" -Level Info -LogDirectory $LogDirectory
         Write-GPOLog -Message "  [WhatIf] Deny Apply Group Policy -> $DenyGroupName" -Level Info -LogDirectory $LogDirectory
     }
 }
@@ -471,12 +502,15 @@ function Remove-GPOAuthenticatedUsers {
 
     if ($PSCmdlet.ShouldProcess($GPOName, "Remove Authenticated Users from security filtering")) {
         try {
-            $gpo      = Get-GPO -Name $GPOName @serverParam -ErrorAction Stop
-            $domainDN = (Get-ADDomain @serverParam).DistinguishedName
-            $gpoDN    = "CN={$($gpo.Id.ToString().ToUpper())},CN=Policies,CN=System,$domainDN"
+            $gpo        = Get-GPO -Name $GPOName @serverParam -ErrorAction Stop
+            $adDomain   = Get-ADDomain @serverParam
+            $domainDN   = $adDomain.DistinguishedName
+            $domainName = $adDomain.DNSRoot
+            $gpoGuid    = $gpo.Id.ToString().ToUpper()
+            $gpoDN      = "CN={$gpoGuid},CN=Policies,CN=System,$domainDN"
 
-            $acl           = Get-Acl -Path "AD:\$gpoDN"
-            $authUsersSID  = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-11")
+            $acl          = Get-Acl -Path "AD:\$gpoDN"
+            $authUsersSID = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-11")
             $rulesToRemove = @($acl.Access | Where-Object {
                 $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq $authUsersSID.Value
             })
@@ -486,10 +520,30 @@ function Remove-GPOAuthenticatedUsers {
                     $acl.RemoveAccessRule($rule) | Out-Null
                 }
                 Set-Acl -Path "AD:\$gpoDN" -AclObject $acl
-                Write-GPOLog -Message "Removed Authenticated Users from GPO '$GPOName' security filtering ($($rulesToRemove.Count) ACE(s))." -Level Success -LogDirectory $LogDirectory
+                Write-GPOLog -Message "Removed Authenticated Users from GPO '$GPOName' AD object ($($rulesToRemove.Count) ACE(s))." -Level Success -LogDirectory $LogDirectory
             }
             else {
-                Write-GPOLog -Message "Authenticated Users already absent from GPO '$GPOName' security filtering." -Level Info -LogDirectory $LogDirectory
+                Write-GPOLog -Message "Authenticated Users already absent from GPO '$GPOName' AD object." -Level Info -LogDirectory $LogDirectory
+            }
+
+            # --- Sync SYSVOL folder ACL ---
+            $sysvolPath = "\\$domainName\SYSVOL\$domainName\Policies\{$gpoGuid}"
+            if (Test-Path $sysvolPath) {
+                $sysvolAcl = Get-Acl -Path $sysvolPath
+                $sysvolAuthRules = @($sysvolAcl.Access | Where-Object {
+                    try { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq $authUsersSID.Value } catch { $false }
+                })
+                if ($sysvolAuthRules.Count -gt 0) {
+                    foreach ($rule in $sysvolAuthRules) { $sysvolAcl.RemoveAccessRule($rule) | Out-Null }
+                    Set-Acl -Path $sysvolPath -AclObject $sysvolAcl
+                    Write-GPOLog -Message "Removed Authenticated Users from SYSVOL ACL for GPO '$GPOName' ($($sysvolAuthRules.Count) ACE(s))." -Level Success -LogDirectory $LogDirectory
+                }
+                else {
+                    Write-GPOLog -Message "Authenticated Users already absent from SYSVOL ACL for GPO '$GPOName'." -Level Info -LogDirectory $LogDirectory
+                }
+            }
+            else {
+                Write-GPOLog -Message "SYSVOL path not accessible, skipping SYSVOL ACL sync: $sysvolPath" -Level Warning -LogDirectory $LogDirectory
             }
         }
         catch {
@@ -498,7 +552,7 @@ function Remove-GPOAuthenticatedUsers {
         }
     }
     else {
-        Write-GPOLog -Message "[WhatIf] Authenticated Users would be removed from GPO '$GPOName' security filtering." -Level Info -LogDirectory $LogDirectory
+        Write-GPOLog -Message "[WhatIf] Authenticated Users would be removed from GPO '$GPOName' AD object and SYSVOL ACL." -Level Info -LogDirectory $LogDirectory
     }
 }
 
