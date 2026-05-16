@@ -211,6 +211,8 @@ function New-SiloAuthPolicy {
                 $siloCondition = 'O:SYG:SYD:(XA;OICI;CR;;;WD;(@USER.ad://ext/AuthenticationSilo == "{0}"))' -f $siloName
                 Set-ADAuthenticationPolicy -Identity $policyName `
                     -UserTGTLifetimeMins $TGTLifetimeMinutes `
+                    -ComputerTGTLifetimeMins $TGTLifetimeMinutes `
+                    -ServiceTGTLifetimeMins $TGTLifetimeMinutes `
                     -UserAllowedToAuthenticateFrom $siloCondition `
                     -Enforce:$Enforce `
                     @serverParam
@@ -232,6 +234,8 @@ function New-SiloAuthPolicy {
                 New-ADAuthenticationPolicy -Name $policyName `
                     -Description $Description `
                     -UserTGTLifetimeMins $TGTLifetimeMinutes `
+                    -ComputerTGTLifetimeMins $TGTLifetimeMinutes `
+                    -ServiceTGTLifetimeMins $TGTLifetimeMinutes `
                     -UserAllowedToAuthenticateFrom $siloCondition `
                     -Enforce:$Enforce `
                     -ProtectedFromAccidentalDeletion $true `
