@@ -57,6 +57,7 @@ try {
     $runFolder = if ($global:LOCKmeAD_RunFolder) { $global:LOCKmeAD_RunFolder } else { Get-Date -Format 'yyyy-MM-dd_HH-mm-ss' }
     $logDir = Join-Path $logDir $runFolder
     Write-RBACLog -Message "Configuration loaded successfully from '$ConfigPath'." -Level Success -LogDirectory $logDir
+    $logFilePath = Get-ChildItem $logDir -Filter "RBAC_*.log" | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
 }
 catch {
     Write-Host "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
@@ -162,6 +163,7 @@ $stats = @{
     MembershipsSet           = 0
     RootGroupsMemberships    = 0
     NTFSPermissionsSet       = 0
+    SharePermissionsSet      = 0
     ADPermissionsSet         = 0
     ADCSPermissionsSet       = 0
     Errors                   = 0
@@ -270,6 +272,14 @@ foreach ($role in $config.Roles) {
                                                -WhatIf:$WhatIfPreference
                         $stats.ADCSPermissionsSet++
                     }
+                    "Share" {
+                        Set-RBACSharePermission -GroupName $dlGroup.Name `
+                                                -Permission $perm `
+                                                -Server $targetServer `
+                                                -LogDirectory $logDir `
+                                                -WhatIf:$WhatIfPreference
+                        $stats.SharePermissionsSet++
+                    }
                     default {
                         Write-RBACLog -Message "Unknown permission type: '$($perm.Type)'" -Level Warning -LogDirectory $logDir
                     }
@@ -365,6 +375,7 @@ Write-Host "  Groups created$modeLabel          : $($stats.GroupsCreated)" -Fore
 Write-Host "  AGDLP memberships$modeLabel       : $($stats.MembershipsSet)" -ForegroundColor Cyan
 Write-Host "  Root memberships$modeLabel        : $($stats.RootGroupsMemberships)" -ForegroundColor Cyan
 Write-Host "  NTFS permissions$modeLabel        : $($stats.NTFSPermissionsSet)" -ForegroundColor Cyan
+Write-Host "  Share permissions$modeLabel       : $($stats.SharePermissionsSet)" -ForegroundColor Cyan
 Write-Host "  AD delegations$modeLabel          : $($stats.ADPermissionsSet)" -ForegroundColor Cyan
 Write-Host "  ADCS permissions$modeLabel        : $($stats.ADCSPermissionsSet)" -ForegroundColor Cyan
 
@@ -376,8 +387,17 @@ else {
 }
 
 Write-Host ""
-if ($script:LogFilePath) {
-    Write-Host "  Log file: $($script:LogFilePath)" -ForegroundColor Cyan
+if ($logFilePath) {
+    Write-Host "  Log file: $logFilePath" -ForegroundColor Cyan
 }
 Write-Host ""
 Write-RBACLog -Message "Deployment completed." -Level Info -LogDirectory $logDir
+
+# Generate CSV report from log
+if ($logFilePath -and (Test-Path $logFilePath)) {
+    $csvPath = Export-RBACDeploymentReport -LogPath $logFilePath
+    if ($csvPath) {
+        Write-Host "  CSV report: $csvPath" -ForegroundColor Cyan
+        Write-Host ""
+    }
+}

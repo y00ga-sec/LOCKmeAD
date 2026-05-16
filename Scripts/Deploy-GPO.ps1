@@ -345,6 +345,20 @@ foreach ($gpo in $config.GPOs) {
             $stats.Errors++
         }
     }
+    else {
+        # Filtering groups are not deployed, but Authenticated Users must still be removed
+        # so the GPO cannot silently apply to every machine in linked OUs.
+        try {
+            Remove-GPOAuthenticatedUsers -GPOName $gpo.Name `
+                                          -Server $targetServer `
+                                          -LogDirectory $logDir `
+                                          -WhatIf:$WhatIfPreference
+        }
+        catch {
+            Write-GPOLog -Message "Failed to remove Authenticated Users from '$($gpo.Name)': $_" -Level Error -LogDirectory $logDir
+            $stats.Errors++
+        }
+    }
 
     # Link GPO to target OUs
     if ($gpo.LinkTargets -and $gpo.LinkTargets.Count -gt 0) {

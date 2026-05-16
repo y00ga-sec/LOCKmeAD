@@ -185,7 +185,7 @@
             {
               "Type": "ADCS",
               "CAName": "ForestSubCA",
-              "CAHostname": "CA01.forest.lol",
+              "CAHostname": "SUBCA.forest.lol",
               "Right": "ManageCA"
             }
           ]
@@ -198,7 +198,7 @@
             {
               "Type": "ADCS",
               "CAName": "ForestSubCA",
-              "CAHostname": "CA01.forest.lol",
+              "CAHostname": "SUBCA.forest.lol",
               "Right": "ManageCertificates"
             }
           ]
@@ -339,12 +339,12 @@
         },
         {
           "Name": "DL_T1_FileServer_ReadWrite",
-          "Description": "DL T1 - Read/Write on \\\\SRV-FILES.forest.lol\\Data$ share",
+          "Description": "DL T1 - Read/Write on \\\\SRV01.forest.lol\\Data$ share",
           "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=forest,DC=lol",
           "Permissions": [
             {
               "Type": "NTFS",
-              "Path": "\\\\SRV-FILES.forest.lol\\Data$",
+              "Path": "\\\\SRV01.forest.lol\\Data$",
               "Rights": "Modify",
               "InheritanceFlags": "ContainerInherit, ObjectInherit",
               "PropagationFlags": "None",
@@ -381,12 +381,12 @@
         },
         {
           "Name": "DL_T1_FileServer_FullControl",
-          "Description": "DL T1 - Full control on \\\\SRV-FILES.forest.lol\\Data$ share",
+          "Description": "DL T1 - Full control on \\\\SRV01.forest.lol\\Data$ share",
           "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=forest,DC=lol",
           "Permissions": [
             {
               "Type": "NTFS",
-              "Path": "\\\\SRV-FILES.forest.lol\\Data$",
+              "Path": "\\\\SRV01.forest.lol\\Data$",
               "Rights": "FullControl",
               "InheritanceFlags": "ContainerInherit, ObjectInherit",
               "PropagationFlags": "None",

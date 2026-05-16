@@ -441,6 +441,67 @@ function Set-GPOFilteringPermission {
     }
 }
 
+function Remove-GPOAuthenticatedUsers {
+    <#
+    .SYNOPSIS
+        Removes Authenticated Users from a GPO's security filtering ACL.
+    .DESCRIPTION
+        Called when filtering groups are not deployed so that the GPO cannot apply
+        to any machine via the default Authenticated Users grant, preventing
+        unintended mass application to all computers in linked OUs.
+    .PARAMETER GPOName
+        Name of the GPO to harden.
+    .PARAMETER Server
+        Target DC for all AD operations (avoids replication lag).
+    .PARAMETER LogDirectory
+        Log directory.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)]
+        [string]$GPOName,
+
+        [string]$Server,
+
+        [string]$LogDirectory
+    )
+
+    $serverParam = @{}
+    if ($Server) { $serverParam.Server = $Server }
+
+    if ($PSCmdlet.ShouldProcess($GPOName, "Remove Authenticated Users from security filtering")) {
+        try {
+            $gpo      = Get-GPO -Name $GPOName @serverParam -ErrorAction Stop
+            $domainDN = (Get-ADDomain @serverParam).DistinguishedName
+            $gpoDN    = "CN={$($gpo.Id.ToString().ToUpper())},CN=Policies,CN=System,$domainDN"
+
+            $acl           = Get-Acl -Path "AD:\$gpoDN"
+            $authUsersSID  = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-11")
+            $rulesToRemove = @($acl.Access | Where-Object {
+                $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq $authUsersSID.Value
+            })
+
+            if ($rulesToRemove.Count -gt 0) {
+                foreach ($rule in $rulesToRemove) {
+                    $acl.RemoveAccessRule($rule) | Out-Null
+                }
+                Set-Acl -Path "AD:\$gpoDN" -AclObject $acl
+                Write-GPOLog -Message "Removed Authenticated Users from GPO '$GPOName' security filtering ($($rulesToRemove.Count) ACE(s))." -Level Success -LogDirectory $LogDirectory
+            }
+            else {
+                Write-GPOLog -Message "Authenticated Users already absent from GPO '$GPOName' security filtering." -Level Info -LogDirectory $LogDirectory
+            }
+        }
+        catch {
+            Write-GPOLog -Message "Error removing Authenticated Users from GPO '$GPOName': $_" -Level Error -LogDirectory $LogDirectory
+            throw
+        }
+    }
+    else {
+        Write-GPOLog -Message "[WhatIf] Authenticated Users would be removed from GPO '$GPOName' security filtering." -Level Info -LogDirectory $LogDirectory
+    }
+}
+
 # ============================================================================
 # GPO Creation
 # ============================================================================
@@ -1298,6 +1359,7 @@ Export-ModuleMember -Function @(
     'Get-GPOEnvironmentInfo',
     'New-GPOFilteringGroup',
     'Set-GPOFilteringPermission',
+    'Remove-GPOAuthenticatedUsers',
     'New-GPOSecurityPolicy',
     'Set-GPORegistryPreferences',
     'Set-GPOUserRightsAssignment',

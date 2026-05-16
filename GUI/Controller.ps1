@@ -114,6 +114,12 @@ function Save-AllConfigs {
     if ($script:Configs.GPO) {
         for ($i = 0; $i -lt $script:GPOToggles.Count; $i++) {
             $script:Configs.GPO.GPOs[$i].Enabled = [bool]$script:GPOToggles[$i].IsChecked
+            if ($script:GPONameControls.ContainsKey($i)) {
+                $newName = $script:GPONameControls[$i].Text.Trim()
+                if (-not [string]::IsNullOrWhiteSpace($newName)) {
+                    $script:Configs.GPO.GPOs[$i].Name = $newName
+                }
+            }
         }
         foreach ($key in $script:GPOLinkControls.Keys) {
             $idx = [int]$key
@@ -127,7 +133,7 @@ function Save-AllConfigs {
 
         # LAPS GPO: read dedicated editable controls and update RegistrySettings
         if ($script:GPOLAPSControls -and $script:GPOLAPSControls.Count -gt 0) {
-            $lapsGPO = $script:Configs.GPO.GPOs | Where-Object { $_.Name -eq "SEC-Configure-LAPS" }
+            $lapsGPO = $script:Configs.GPO.GPOs | Where-Object { $_.RegistrySettings -and ($_.RegistrySettings | Where-Object { $_.Key -like "*LAPS*" }) } | Select-Object -First 1
             if ($lapsGPO) {
                 $lapsTypeMap = @{
                     "BackupDirectory"                          = "DWord"
@@ -559,6 +565,7 @@ function Update-GPOFilteringOUWarning {
 function Populate-GPOTab {
     $UI.GPOTaskList.Children.Clear()
     $script:GPOToggles = @()
+    $script:GPONameControls = @{}
     $script:GPOLinkControls = @{}
     $script:GPOLAPSControls = @{}
 
@@ -603,15 +610,66 @@ function Populate-GPOTab {
         $secOptCount = if ($gpo.SecurityOptions) { $gpo.SecurityOptions.Count } else { 0 }
         $uraCount = if ($gpo.UserRightsAssignments) { $gpo.UserRightsAssignments.Count } else { 0 }
         $svcCount = if ($gpo.SystemServices) { $gpo.SystemServices.Count } else { 0 }
-        $isLapsGPO = $gpo.Name -eq "SEC-Configure-LAPS"
+        $isLapsGPO = [bool]($gpo.RegistrySettings | Where-Object { $_.Key -like "*LAPS*" })
 
         $textStack = New-Object System.Windows.Controls.StackPanel
         $textStack.Margin = [System.Windows.Thickness]::new(14, 0, 10, 0)
+
+        $nameRow = New-Object System.Windows.Controls.StackPanel
+        $nameRow.Orientation = "Horizontal"
+        $nameRow.VerticalAlignment = "Center"
 
         $nameBlock = New-Object System.Windows.Controls.TextBlock
         $nameBlock.Text = $gpo.Name
         $nameBlock.FontSize = 14
         $nameBlock.FontWeight = "SemiBold"
+        $nameBlock.VerticalAlignment = "Center"
+
+        $nameBox = New-Object System.Windows.Controls.TextBox
+        $nameBox.Text = $gpo.Name
+        $nameBox.FontSize = 14
+        $nameBox.FontWeight = "SemiBold"
+        $nameBox.Padding = [System.Windows.Thickness]::new(2, 0, 2, 0)
+        $nameBox.VerticalAlignment = "Center"
+        $nameBox.Visibility = "Collapsed"
+        $script:GPONameControls[$idx] = $nameBox
+
+        $editNameBtn = New-Object System.Windows.Controls.Button
+        $editNameBtn.Content = [char]0x270F
+        $editNameBtn.FontSize = 11
+        $editNameBtn.Background = Get-WPFBrush "Transparent"
+        $editNameBtn.BorderThickness = [System.Windows.Thickness]::new(0)
+        $editNameBtn.Foreground = Get-WPFBrush "#AAAAAA"
+        $editNameBtn.Cursor = "Hand"
+        $editNameBtn.Padding = [System.Windows.Thickness]::new(6, 0, 0, 0)
+        $editNameBtn.VerticalAlignment = "Center"
+        $editNameBtn.Tag = @{ Block = $nameBlock; Box = $nameBox }
+        $editNameBtn.Add_Click({
+            $ctx = $this.Tag
+            $ctx.Block.Visibility = "Collapsed"
+            $ctx.Box.Visibility = "Visible"
+            [void]$ctx.Box.Focus()
+            $ctx.Box.SelectAll()
+            $this.Visibility = "Collapsed"
+        })
+
+        $nameBox.Tag = @{ Block = $nameBlock; Btn = $editNameBtn }
+        $nameBox.Add_LostFocus({
+            $ctx = $this.Tag
+            $ctx.Block.Text = $this.Text
+            $ctx.Block.Visibility = "Visible"
+            $ctx.Btn.Visibility  = "Visible"
+            $this.Visibility = "Collapsed"
+        })
+        $nameBox.Add_KeyDown({
+            if ($_.Key -eq [System.Windows.Input.Key]::Return) {
+                [System.Windows.Input.Keyboard]::ClearFocus()
+            }
+        })
+
+        [void]$nameRow.Children.Add($nameBlock)
+        [void]$nameRow.Children.Add($nameBox)
+        [void]$nameRow.Children.Add($editNameBtn)
 
         $descBlock = New-Object System.Windows.Controls.TextBlock
         $descBlock.Text = $gpo.Description
@@ -619,7 +677,7 @@ function Populate-GPOTab {
         $descBlock.Foreground = Get-WPFBrush "#666666"
         $descBlock.TextWrapping = "Wrap"
 
-        [void]$textStack.Children.Add($nameBlock)
+        [void]$textStack.Children.Add($nameRow)
         [void]$textStack.Children.Add($descBlock)
 
         [void]$headerDock.Children.Add($toggle)
@@ -908,7 +966,7 @@ function Populate-GPOTab {
                         $ctx = $this.Tag
                         $ctx.Assignment.Groups = @($ctx.Assignment.Groups | Where-Object { $_ -ne $ctx.GroupName })
                         $script:UnsavedChanges.GPO = $true
-                        Populate-GPOTab
+                        Invoke-GPOTabRefresh
                     })
 
                     [void]$tagInner.Children.Add($tagLabel)
@@ -938,7 +996,7 @@ function Populate-GPOTab {
                             $asgn.Groups = @($asgn.Groups) + @($groupName)
                             $script:UnsavedChanges.GPO = $true
                         }
-                        Populate-GPOTab
+                        Invoke-GPOTabRefresh
                     }
                 })
                 [void]$groupsWrap.Children.Add($addGroupBtn)
@@ -1102,6 +1160,41 @@ function Populate-GPOTab {
 
         $card.Child = $outerStack
         [void]$UI.GPOTaskList.Children.Add($card)
+    }
+}
+
+function Invoke-GPOTabRefresh {
+    # Save expanded state of every Expander in every GPO card, keyed by card index + header text.
+    $expanderStates = @{}
+    for ($i = 0; $i -lt $UI.GPOTaskList.Children.Count; $i++) {
+        $outerStack = $UI.GPOTaskList.Children[$i].Child
+        $cardStates = @{}
+        foreach ($child in $outerStack.Children) {
+            if ($child -is [System.Windows.Controls.Expander]) {
+                $cardStates[$child.Header] = $child.IsExpanded
+            }
+        }
+        $expanderStates[$i] = $cardStates
+    }
+
+    $searchText = $UI.SearchBox.Text
+
+    Populate-GPOTab
+
+    # Restore expander states
+    for ($i = 0; $i -lt $UI.GPOTaskList.Children.Count; $i++) {
+        if (-not $expanderStates.ContainsKey($i)) { continue }
+        $outerStack = $UI.GPOTaskList.Children[$i].Child
+        foreach ($child in $outerStack.Children) {
+            if ($child -is [System.Windows.Controls.Expander] -and $expanderStates[$i].ContainsKey($child.Header)) {
+                $child.IsExpanded = $expanderStates[$i][$child.Header]
+            }
+        }
+    }
+
+    # Re-apply the search filter if the user had typed something
+    if (-not [string]::IsNullOrWhiteSpace($searchText)) {
+        Invoke-Search $searchText
     }
 }
 
@@ -1391,12 +1484,31 @@ function Populate-PSOTab {
         $appliesToStack = New-Object System.Windows.Controls.StackPanel
         $appliesToStack.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
 
-        $appliesToHint = New-Object System.Windows.Controls.TextBlock
-        $appliesToHint.Text = "One group or user name per line (e.g. GG_T0_PKI_Operators)"
-        $appliesToHint.FontSize = 10
-        $appliesToHint.Foreground = Get-WPFBrush "#999"
-        $appliesToHint.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
-        [void]$appliesToStack.Children.Add($appliesToHint)
+        $appliesToBtnRow = New-Object System.Windows.Controls.StackPanel
+        $appliesToBtnRow.Orientation = "Horizontal"
+        $appliesToBtnRow.Margin = [System.Windows.Thickness]::new(0, 0, 0, 6)
+
+        $searchGroupBtn = New-Object System.Windows.Controls.Button
+        $searchGroupBtn.Content = "+ Add Group"
+        $searchGroupBtn.Background = Get-WPFBrush "Transparent"
+        $searchGroupBtn.BorderThickness = [System.Windows.Thickness]::new(0)
+        $searchGroupBtn.Foreground = Get-WPFBrush "#0078D4"
+        $searchGroupBtn.FontSize = 11
+        $searchGroupBtn.Cursor = "Hand"
+        $searchGroupBtn.Padding = [System.Windows.Thickness]::new(0, 2, 10, 2)
+
+        $searchUserBtn = New-Object System.Windows.Controls.Button
+        $searchUserBtn.Content = "+ Add User"
+        $searchUserBtn.Background = Get-WPFBrush "Transparent"
+        $searchUserBtn.BorderThickness = [System.Windows.Thickness]::new(0)
+        $searchUserBtn.Foreground = Get-WPFBrush "#0078D4"
+        $searchUserBtn.FontSize = 11
+        $searchUserBtn.Cursor = "Hand"
+        $searchUserBtn.Padding = [System.Windows.Thickness]::new(0, 2, 0, 2)
+
+        [void]$appliesToBtnRow.Children.Add($searchGroupBtn)
+        [void]$appliesToBtnRow.Children.Add($searchUserBtn)
+        [void]$appliesToStack.Children.Add($appliesToBtnRow)
 
         $appliesToTextBox = New-Object System.Windows.Controls.TextBox
         $appliesToTextBox.AcceptsReturn = $true
@@ -1411,6 +1523,31 @@ function Populate-PSOTab {
             $appliesToTextBox.Text = ($policy.AppliesTo -join "`r`n")
         }
         $script:PSOAppliesToControls["$idx"] = $appliesToTextBox
+
+        $searchGroupBtn.Tag = $appliesToTextBox
+        $searchGroupBtn.Add_Click({
+            $result = Show-ADObjectSearchDialog -SearchType "Group"
+            if ($result) {
+                $tb = $this.Tag
+                $existing = @($tb.Text -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+                if ($result -notin $existing) {
+                    $tb.Text = (($existing + @($result)) -join "`r`n")
+                }
+            }
+        })
+
+        $searchUserBtn.Tag = $appliesToTextBox
+        $searchUserBtn.Add_Click({
+            $result = Show-ADObjectSearchDialog -SearchType "User"
+            if ($result) {
+                $tb = $this.Tag
+                $existing = @($tb.Text -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+                if ($result -notin $existing) {
+                    $tb.Text = (($existing + @($result)) -join "`r`n")
+                }
+            }
+        })
+
         [void]$appliesToStack.Children.Add($appliesToTextBox)
 
         $appliesToExpander.Content = $appliesToStack
@@ -2233,9 +2370,10 @@ function Show-RBACRoleDetail($role) {
             $typeBadge.Margin = [System.Windows.Thickness]::new(0, 0, 10, 0)
             $typeBadge.VerticalAlignment = "Center"
             switch ($perm.Type) {
-                "NTFS" { $typeBadge.Foreground = Get-WPFBrush "#1E8449"; $typeBadge.Background = Get-WPFBrush "#E8F8F0" }
-                "AD"   { $typeBadge.Foreground = Get-WPFBrush "#2E86C1"; $typeBadge.Background = Get-WPFBrush "#E8F2FC" }
-                "ADCS" { $typeBadge.Foreground = Get-WPFBrush "#A93226"; $typeBadge.Background = Get-WPFBrush "#FCE8E8" }
+                "NTFS"  { $typeBadge.Foreground = Get-WPFBrush "#1E8449"; $typeBadge.Background = Get-WPFBrush "#E8F8F0" }
+                "AD"    { $typeBadge.Foreground = Get-WPFBrush "#2E86C1"; $typeBadge.Background = Get-WPFBrush "#E8F2FC" }
+                "ADCS"  { $typeBadge.Foreground = Get-WPFBrush "#A93226"; $typeBadge.Background = Get-WPFBrush "#FCE8E8" }
+                "Share" { $typeBadge.Foreground = Get-WPFBrush "#6C3483"; $typeBadge.Background = Get-WPFBrush "#F4ECF7" }
             }
             if ($sourceRoleName) { $typeBadge.Opacity = 0.6 }
             [System.Windows.Controls.DockPanel]::SetDock($typeBadge, "Left")
@@ -2246,9 +2384,13 @@ function Show-RBACRoleDetail($role) {
             $permInfo.TextWrapping = "Wrap"
             if ($sourceRoleName) { $permInfo.Foreground = Get-WPFBrush "#888" }
             switch ($perm.Type) {
-                "NTFS" { $permInfo.Text = "$($perm.Rights) on $($perm.Path)" }
-                "AD"   { $permInfo.Text = "$($perm.ADRights) on $($perm.TargetOU)" }
-                "ADCS" { $permInfo.Text = "$($perm.Right) on $($perm.CAName) ($($perm.CAHostname))" }
+                "NTFS" {
+                    $shareInfo = if ($perm.ShareName) { " + Share $($perm.ShareRight) on $($perm.ShareName)" } else { "" }
+                    $permInfo.Text = "$($perm.Rights) on $($perm.Path)$shareInfo"
+                }
+                "AD"    { $permInfo.Text = "$($perm.ADRights) on $($perm.TargetOU)" }
+                "ADCS"  { $permInfo.Text = "$($perm.Right) on $($perm.CAName) ($($perm.CAHostname))" }
+                "Share" { $permInfo.Text = "$($perm.ShareRight) on \\$($perm.ShareServer)\$($perm.ShareName)" }
             }
 
             # Copy DN button for AD/NTFS permissions
@@ -2493,9 +2635,18 @@ function Show-ADGroupSearchDialog {
         </Grid>
         <ListBox Name="ResultList" Grid.Row="1" FontSize="13" Padding="4"
                  BorderBrush="#D0D0D0" BorderThickness="1"/>
-        <TextBlock Name="StatusText" Grid.Row="2" Margin="0,8,0,0"
-                   FontSize="11" Foreground="#888888"
-                   Text="Type a group name and press Enter or click Search. Double-click to select."/>
+        <Grid Grid.Row="2" Margin="0,8,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Name="StatusText" Grid.Column="0" FontSize="11" Foreground="#888888"
+                       VerticalAlignment="Center"
+                       Text="Type a group name and press Enter or click Search. Double-click to select."/>
+            <Button Name="UseTypedBtn" Grid.Column="1" Content="Use typed name" Margin="8,0,0,0"
+                    Background="#F0F0F0" BorderBrush="#CCC" BorderThickness="1"
+                    FontSize="12" Padding="10,6" Cursor="Hand"/>
+        </Grid>
     </Grid>
 </Window>
 "@
@@ -2504,10 +2655,11 @@ function Show-ADGroupSearchDialog {
     $searchWindow     = [System.Windows.Markup.XamlReader]::Load($searchReader)
     $searchWindow.Owner = $script:Window
 
-    $searchBox  = $searchWindow.FindName("SearchBox")
-    $searchBtn  = $searchWindow.FindName("SearchBtn")
-    $resultList = $searchWindow.FindName("ResultList")
-    $statusText = $searchWindow.FindName("StatusText")
+    $searchBox   = $searchWindow.FindName("SearchBox")
+    $searchBtn   = $searchWindow.FindName("SearchBtn")
+    $resultList  = $searchWindow.FindName("ResultList")
+    $statusText  = $searchWindow.FindName("StatusText")
+    $useTypedBtn = $searchWindow.FindName("UseTypedBtn")
 
     $script:dialogResult = $null
 
@@ -2543,11 +2695,219 @@ function Show-ADGroupSearchDialog {
 
     $searchBtn.Add_Click($doSearch)
 
+    $useTypedBtn.Add_Click({
+        $val = $searchBox.Text.Trim()
+        if ([string]::IsNullOrWhiteSpace($val)) {
+            $statusText.Text = "Please enter a group name first."
+            return
+        }
+        $script:dialogResult = $val
+        $searchWindow.DialogResult = $true
+        $searchWindow.Close()
+    })
+
     $searchBox.Add_KeyDown({
         param($sender, $e)
         if ($e.Key -eq [System.Windows.Input.Key]::Return) {
             $doSearch.Invoke()
             $e.Handled = $true
+        }
+    })
+
+    $resultList.Add_MouseDoubleClick({
+        $selected = $resultList.SelectedItem
+        if ($selected -and $selected.Tag) {
+            $script:dialogResult = $selected.Tag
+            $searchWindow.DialogResult = $true
+            $searchWindow.Close()
+        }
+    })
+
+    $searchWindow.ShowDialog() | Out-Null
+    return $script:dialogResult
+}
+
+function Show-ADObjectSearchDialog {
+    param([ValidateSet("Group","User")][string]$SearchType = "Group")
+
+    $typeLabel = if ($SearchType -eq "User") { "User" } else { "Group" }
+    $searchXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Search AD $typeLabel" Width="460" Height="380"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        Background="#F5F5F5" FontFamily="Segoe UI">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid Grid.Row="0" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBox Name="SearchBox" Grid.Column="0" Padding="8,6" FontSize="13"
+                     BorderBrush="#D0D0D0" BorderThickness="1"/>
+            <Button Name="SearchBtn" Grid.Column="1" Content="Search" Margin="8,0,0,0"
+                    Background="#0078D4" Foreground="White" Padding="14,6"
+                    BorderThickness="0" FontSize="13" Cursor="Hand"/>
+        </Grid>
+        <ListBox Name="ResultList" Grid.Row="1" FontSize="13" Padding="4"
+                 BorderBrush="#D0D0D0" BorderThickness="1"/>
+        <TextBlock Name="StatusText" Grid.Row="2" Margin="0,8,0,0"
+                   FontSize="11" Foreground="#888888"
+                   Text="Type a name and press Enter or click Search. Double-click to select."/>
+    </Grid>
+</Window>
+"@
+    [xml]$searchDoc   = $searchXaml
+    $searchReader     = [System.Xml.XmlNodeReader]::new($searchDoc)
+    $searchWindow     = [System.Windows.Markup.XamlReader]::Load($searchReader)
+    $searchWindow.Owner = $script:Window
+
+    $searchBox  = $searchWindow.FindName("SearchBox")
+    $searchBtn  = $searchWindow.FindName("SearchBtn")
+    $resultList = $searchWindow.FindName("ResultList")
+    $statusText = $searchWindow.FindName("StatusText")
+
+    $script:dialogResult = $null
+
+    $capturedType = $SearchType
+    $doSearch = {
+        $val = $searchBox.Text.Trim()
+        if ([string]::IsNullOrWhiteSpace($val)) {
+            $statusText.Text = "Please enter a search term."
+            return
+        }
+        $resultList.Items.Clear()
+        $statusText.Text = "Searching..."
+        $searchWindow.Cursor = [System.Windows.Input.Cursors]::Wait
+        try {
+            if ($capturedType -eq "User") {
+                $results = Get-ADUser -Filter "Name -like '*$val*'" -ErrorAction Stop | Select-Object -First 50
+                foreach ($r in $results) {
+                    $item = [System.Windows.Controls.ListBoxItem]::new()
+                    $item.Content = "$($r.SamAccountName)  —  $($r.Name)"
+                    $item.Tag = $r.SamAccountName
+                    $resultList.Items.Add($item) | Out-Null
+                }
+            } else {
+                $results = Get-ADGroup -Filter "Name -like '*$val*'" -ErrorAction Stop | Select-Object -First 50
+                foreach ($r in $results) {
+                    $item = [System.Windows.Controls.ListBoxItem]::new()
+                    $item.Content = "$($r.SamAccountName)  —  $($r.Name)"
+                    $item.Tag = $r.SamAccountName
+                    $resultList.Items.Add($item) | Out-Null
+                }
+            }
+            $count = $resultList.Items.Count
+            $statusText.Text = if ($count -eq 0) { "No results found." }
+                               elseif ($count -ge 50) { "$count results (showing first 50). Refine your search." }
+                               else { "$count result(s). Double-click to select." }
+        }
+        catch {
+            $statusText.Text = "Error: $($_.Exception.Message)"
+        }
+        finally {
+            $searchWindow.Cursor = [System.Windows.Input.Cursors]::Arrow
+        }
+    }
+
+    $searchBtn.Add_Click($doSearch)
+
+    $searchBox.Add_KeyDown({
+        param($sender, $e)
+        if ($e.Key -eq [System.Windows.Input.Key]::Return) {
+            $doSearch.Invoke()
+            $e.Handled = $true
+        }
+    })
+
+    $resultList.Add_MouseDoubleClick({
+        $selected = $resultList.SelectedItem
+        if ($selected -and $selected.Tag) {
+            $script:dialogResult = $selected.Tag
+            $searchWindow.DialogResult = $true
+            $searchWindow.Close()
+        }
+    })
+
+    $searchWindow.ShowDialog() | Out-Null
+    return $script:dialogResult
+}
+
+function Show-CASearchDialog {
+    $searchXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Search Enterprise CAs" Width="480" Height="360"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        Background="#F5F5F5" FontFamily="Segoe UI">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <TextBox Name="FilterBox" Grid.Row="0" Padding="8,6" FontSize="13"
+                 BorderBrush="#D0D0D0" BorderThickness="1" Margin="0,0,0,10"/>
+        <ListBox Name="ResultList" Grid.Row="1" FontSize="13" Padding="4"
+                 BorderBrush="#D0D0D0" BorderThickness="1"/>
+        <TextBlock Name="StatusText" Grid.Row="2" Margin="0,8,0,0"
+                   FontSize="11" Foreground="#888888"
+                   Text="Loading CAs from AD..."/>
+    </Grid>
+</Window>
+"@
+    [xml]$searchDoc  = $searchXaml
+    $searchReader    = [System.Xml.XmlNodeReader]::new($searchDoc)
+    $searchWindow    = [System.Windows.Markup.XamlReader]::Load($searchReader)
+    $searchWindow.Owner = $script:Window
+
+    $filterBox  = $searchWindow.FindName("FilterBox")
+    $resultList = $searchWindow.FindName("ResultList")
+    $statusText = $searchWindow.FindName("StatusText")
+
+    $script:dialogResult = $null
+    $script:caList = @()
+
+    try {
+        $domainDN   = (Get-ADDomain).DistinguishedName
+        $enrollBase = "CN=Enrollment Services,CN=Public Key Services,CN=Services,CN=Configuration,$domainDN"
+        $cas = Get-ADObject -LDAPFilter "(objectClass=pKIEnrollmentService)" `
+                            -SearchBase $enrollBase `
+                            -Properties dNSHostName `
+                            -ErrorAction Stop
+        $script:caList = @($cas | ForEach-Object {
+            [PSCustomObject]@{ CAName = $_.Name; CAHostname = $_.dNSHostName }
+        })
+        foreach ($ca in $script:caList) {
+            $item = [System.Windows.Controls.ListBoxItem]::new()
+            $item.Content = "$($ca.CAName)  —  $($ca.CAHostname)"
+            $item.Tag = $ca
+            $resultList.Items.Add($item) | Out-Null
+        }
+        $count = $resultList.Items.Count
+        $statusText.Text = if ($count -eq 0) { "No Enterprise CAs found in AD." }
+                           else { "$count CA(s) found. Type to filter, double-click to select." }
+    }
+    catch {
+        $statusText.Text = "Error: $($_.Exception.Message)"
+    }
+
+    $capturedList = $script:caList
+    $filterBox.Add_TextChanged({
+        $filter = $filterBox.Text.Trim().ToLower()
+        $resultList.Items.Clear()
+        foreach ($ca in $capturedList) {
+            if ([string]::IsNullOrEmpty($filter) -or
+                $ca.CAName.ToLower().Contains($filter) -or
+                $ca.CAHostname.ToLower().Contains($filter)) {
+                $item = [System.Windows.Controls.ListBoxItem]::new()
+                $item.Content = "$($ca.CAName)  —  $($ca.CAHostname)"
+                $item.Tag = $ca
+                $resultList.Items.Add($item) | Out-Null
+            }
         }
     })
 
@@ -2897,6 +3257,7 @@ function Show-PermissionDialog($existingPerm) {
             <ComboBoxItem Content="AD"/>
             <ComboBoxItem Content="NTFS"/>
             <ComboBoxItem Content="ADCS"/>
+            <ComboBoxItem Content="Share"/>
         </ComboBox>
 
         <!-- AD fields -->
@@ -2943,7 +3304,17 @@ function Show-PermissionDialog($existingPerm) {
         <!-- NTFS fields -->
         <StackPanel Name="PanelNTFS" Margin="0,12,0,0" Visibility="Collapsed">
             <TextBlock Text="Path (UNC or local)" FontSize="12" Foreground="#555" Margin="0,0,0,4"/>
-            <TextBox Name="NTFSPath" FontSize="13" Padding="8,6" BorderBrush="#DDD"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox Name="NTFSPath" Grid.Column="0" FontSize="13" Padding="8,6" BorderBrush="#DDD"/>
+                <Button Name="BtnCheckNTFS" Grid.Column="1" Content="Check" Margin="8,0,0,0"
+                        Background="#F0F0F0" BorderBrush="#CCC" BorderThickness="1"
+                        FontSize="12" Padding="10,6" Cursor="Hand"/>
+            </Grid>
+            <TextBlock Name="NTFSCheckStatus" FontSize="11" Margin="0,4,0,0" Visibility="Collapsed"/>
             <TextBlock Text="Rights" FontSize="12" Foreground="#555" Margin="0,10,0,4"/>
             <ComboBox Name="NTFSRights" FontSize="13" Padding="6,4" IsEditable="True">
                 <ComboBoxItem Content="FullControl"/>
@@ -2970,19 +3341,73 @@ function Show-PermissionDialog($existingPerm) {
                 <ComboBoxItem Content="Allow"/>
                 <ComboBoxItem Content="Deny"/>
             </ComboBox>
+            <CheckBox Name="NTFSSetShare" Content="Also set Share (SMB) permissions" Margin="0,14,0,0" FontSize="12"/>
+            <StackPanel Name="PanelNTFSShare" Margin="0,8,0,0" Visibility="Collapsed">
+                <TextBlock Text="Share Name" FontSize="12" Foreground="#555" Margin="0,0,0,4"/>
+                <TextBox Name="NTFSShareName" FontSize="13" Padding="8,6" BorderBrush="#DDD"/>
+                <TextBlock Text="Share Right" FontSize="12" Foreground="#555" Margin="0,10,0,4"/>
+                <ComboBox Name="NTFSShareRight" FontSize="13" Padding="6,4" SelectedIndex="1">
+                    <ComboBoxItem Content="Full"/>
+                    <ComboBoxItem Content="Change"/>
+                    <ComboBoxItem Content="Read"/>
+                </ComboBox>
+            </StackPanel>
         </StackPanel>
 
         <!-- ADCS fields -->
         <StackPanel Name="PanelADCS" Margin="0,12,0,0" Visibility="Collapsed">
             <TextBlock Text="CA Name" FontSize="12" Foreground="#555" Margin="0,0,0,4"/>
-            <TextBox Name="ADCSCAName" FontSize="13" Padding="8,6" BorderBrush="#DDD"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox Name="ADCSCAName" Grid.Column="0" FontSize="13" Padding="8,6" BorderBrush="#DDD"/>
+                <Button Name="BtnSearchCA" Grid.Column="1" Content="Search AD" Margin="8,0,0,0"
+                        Background="#F0F0F0" BorderBrush="#CCC" BorderThickness="1"
+                        FontSize="12" Padding="10,6" Cursor="Hand"/>
+            </Grid>
             <TextBlock Text="CA Hostname (FQDN)" FontSize="12" Foreground="#555" Margin="0,10,0,4"/>
-            <TextBox Name="ADCSCAHostname" FontSize="13" Padding="8,6" BorderBrush="#DDD"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox Name="ADCSCAHostname" Grid.Column="0" FontSize="13" Padding="8,6" BorderBrush="#DDD"/>
+                <Button Name="BtnCheckADCS" Grid.Column="1" Content="Check" Margin="8,0,0,0"
+                        Background="#F0F0F0" BorderBrush="#CCC" BorderThickness="1"
+                        FontSize="12" Padding="10,6" Cursor="Hand"/>
+            </Grid>
+            <TextBlock Name="ADCSCheckStatus" FontSize="11" Margin="0,4,0,0" Visibility="Collapsed"/>
             <TextBlock Text="Right" FontSize="12" Foreground="#555" Margin="0,10,0,4"/>
             <ComboBox Name="ADCSRight" FontSize="13" Padding="6,4" SelectedIndex="0">
                 <ComboBoxItem Content="ManageCA"/>
                 <ComboBoxItem Content="ManageCertificates"/>
                 <ComboBoxItem Content="Enroll"/>
+                <ComboBoxItem Content="Read"/>
+            </ComboBox>
+        </StackPanel>
+
+        <!-- Share fields -->
+        <StackPanel Name="PanelShare" Margin="0,12,0,0" Visibility="Collapsed">
+            <TextBlock Text="File Server (hostname or FQDN)" FontSize="12" Foreground="#555" Margin="0,0,0,4"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox Name="ShareServer" Grid.Column="0" FontSize="13" Padding="8,6" BorderBrush="#DDD"/>
+                <Button Name="BtnCheckShare" Grid.Column="1" Content="Check" Margin="8,0,0,0"
+                        Background="#F0F0F0" BorderBrush="#CCC" BorderThickness="1"
+                        FontSize="12" Padding="10,6" Cursor="Hand"/>
+            </Grid>
+            <TextBlock Name="ShareCheckStatus" FontSize="11" Margin="0,4,0,0" Visibility="Collapsed"/>
+            <TextBlock Text="Share Name" FontSize="12" Foreground="#555" Margin="0,10,0,4"/>
+            <TextBox Name="ShareName" FontSize="13" Padding="8,6" BorderBrush="#DDD"/>
+            <TextBlock Text="Share Right" FontSize="12" Foreground="#555" Margin="0,10,0,4"/>
+            <ComboBox Name="ShareRight" FontSize="13" Padding="6,4" SelectedIndex="1">
+                <ComboBoxItem Content="Full"/>
+                <ComboBoxItem Content="Change"/>
                 <ComboBoxItem Content="Read"/>
             </ComboBox>
         </StackPanel>
@@ -3006,14 +3431,129 @@ function Show-PermissionDialog($existingPerm) {
     $panelAD    = $dlg.FindName("PanelAD")
     $panelNTFS  = $dlg.FindName("PanelNTFS")
     $panelADCS  = $dlg.FindName("PanelADCS")
+    $panelShare = $dlg.FindName("PanelShare")
 
     # Type switching
     $cmbType.Add_SelectionChanged({
         $sel = $cmbType.SelectedItem.Content
-        $panelAD.Visibility   = if ($sel -eq "AD")   { "Visible" } else { "Collapsed" }
-        $panelNTFS.Visibility = if ($sel -eq "NTFS") { "Visible" } else { "Collapsed" }
-        $panelADCS.Visibility = if ($sel -eq "ADCS") { "Visible" } else { "Collapsed" }
+        $panelAD.Visibility    = if ($sel -eq "AD")    { "Visible" } else { "Collapsed" }
+        $panelNTFS.Visibility  = if ($sel -eq "NTFS")  { "Visible" } else { "Collapsed" }
+        $panelADCS.Visibility  = if ($sel -eq "ADCS")  { "Visible" } else { "Collapsed" }
+        $panelShare.Visibility = if ($sel -eq "Share") { "Visible" } else { "Collapsed" }
     }.GetNewClosure())
+
+    # NTFS path connectivity check
+    $ntfsPathBox     = $dlg.FindName("NTFSPath")
+    $ntfsCheckStatus = $dlg.FindName("NTFSCheckStatus")
+    $dlg.FindName("BtnCheckNTFS").Add_Click({
+        $path = $ntfsPathBox.Text.Trim()
+        if ([string]::IsNullOrWhiteSpace($path)) {
+            $ntfsCheckStatus.Text       = "Enter a path first."
+            $ntfsCheckStatus.Foreground = Get-WPFBrush "#E67E22"
+            $ntfsCheckStatus.Visibility = "Visible"
+            return
+        }
+        $ntfsCheckStatus.Text       = "Checking..."
+        $ntfsCheckStatus.Foreground = Get-WPFBrush "#888888"
+        $ntfsCheckStatus.Visibility = "Visible"
+        $dlg.Cursor = [System.Windows.Input.Cursors]::Wait
+        try {
+            if (Test-Path -LiteralPath $path) {
+                $ntfsCheckStatus.Text       = [char]0x2713 + " Path is reachable"
+                $ntfsCheckStatus.Foreground = Get-WPFBrush "#1E8449"
+            } else {
+                $ntfsCheckStatus.Text       = [char]0x2717 + " Path not found or not accessible"
+                $ntfsCheckStatus.Foreground = Get-WPFBrush "#C0392B"
+            }
+        } catch {
+            $ntfsCheckStatus.Text       = [char]0x2717 + " $($_.Exception.Message)"
+            $ntfsCheckStatus.Foreground = Get-WPFBrush "#C0392B"
+        } finally {
+            $dlg.Cursor = [System.Windows.Input.Cursors]::Arrow
+        }
+    })
+
+    # NTFS share (SMB) permissions toggle
+    $ntfsSetShare    = $dlg.FindName("NTFSSetShare")
+    $panelNTFSShare  = $dlg.FindName("PanelNTFSShare")
+    $ntfsSetShare.Add_Checked({   $panelNTFSShare.Visibility = "Visible"   })
+    $ntfsSetShare.Add_Unchecked({ $panelNTFSShare.Visibility = "Collapsed" })
+
+    # ADCS CA search from AD
+    $adcsCANameBox   = $dlg.FindName("ADCSCAName")
+    $adcsHostnameBox = $dlg.FindName("ADCSCAHostname")
+    $dlg.FindName("BtnSearchCA").Add_Click({
+        $result = Show-CASearchDialog
+        if ($result) {
+            $adcsCANameBox.Text   = $result.CAName
+            $adcsHostnameBox.Text = $result.CAHostname
+        }
+    })
+
+    # ADCS CA hostname connectivity check (DCOM port 135 used by remote registry)
+    $adcsCheckStatus  = $dlg.FindName("ADCSCheckStatus")
+    $dlg.FindName("BtnCheckADCS").Add_Click({
+        $hostname = $adcsHostnameBox.Text.Trim()
+        if ([string]::IsNullOrWhiteSpace($hostname)) {
+            $adcsCheckStatus.Text       = "Enter a CA hostname first."
+            $adcsCheckStatus.Foreground = Get-WPFBrush "#E67E22"
+            $adcsCheckStatus.Visibility = "Visible"
+            return
+        }
+        $adcsCheckStatus.Text       = "Checking..."
+        $adcsCheckStatus.Foreground = Get-WPFBrush "#888888"
+        $adcsCheckStatus.Visibility = "Visible"
+        $dlg.Cursor = [System.Windows.Input.Cursors]::Wait
+        try {
+            $reachable = Test-NetConnection -ComputerName $hostname -Port 135 `
+                             -InformationLevel Quiet -WarningAction SilentlyContinue -ErrorAction Stop
+            if ($reachable) {
+                $adcsCheckStatus.Text       = [char]0x2713 + " CA host reachable (DCOM/RPC port 135)"
+                $adcsCheckStatus.Foreground = Get-WPFBrush "#1E8449"
+            } else {
+                $adcsCheckStatus.Text       = [char]0x2717 + " CA host not reachable on port 135"
+                $adcsCheckStatus.Foreground = Get-WPFBrush "#C0392B"
+            }
+        } catch {
+            $adcsCheckStatus.Text       = [char]0x2717 + " $($_.Exception.Message)"
+            $adcsCheckStatus.Foreground = Get-WPFBrush "#C0392B"
+        } finally {
+            $dlg.Cursor = [System.Windows.Input.Cursors]::Arrow
+        }
+    })
+
+    # Share file server connectivity check (SMB port 445)
+    $shareServerBox   = $dlg.FindName("ShareServer")
+    $shareCheckStatus = $dlg.FindName("ShareCheckStatus")
+    $dlg.FindName("BtnCheckShare").Add_Click({
+        $hostname = $shareServerBox.Text.Trim()
+        if ([string]::IsNullOrWhiteSpace($hostname)) {
+            $shareCheckStatus.Text       = "Enter a file server hostname first."
+            $shareCheckStatus.Foreground = Get-WPFBrush "#E67E22"
+            $shareCheckStatus.Visibility = "Visible"
+            return
+        }
+        $shareCheckStatus.Text       = "Checking..."
+        $shareCheckStatus.Foreground = Get-WPFBrush "#888888"
+        $shareCheckStatus.Visibility = "Visible"
+        $dlg.Cursor = [System.Windows.Input.Cursors]::Wait
+        try {
+            $reachable = Test-NetConnection -ComputerName $hostname -Port 445 `
+                             -InformationLevel Quiet -WarningAction SilentlyContinue -ErrorAction Stop
+            if ($reachable) {
+                $shareCheckStatus.Text       = [char]0x2713 + " File server reachable (SMB port 445)"
+                $shareCheckStatus.Foreground = Get-WPFBrush "#1E8449"
+            } else {
+                $shareCheckStatus.Text       = [char]0x2717 + " File server not reachable on port 445"
+                $shareCheckStatus.Foreground = Get-WPFBrush "#C0392B"
+            }
+        } catch {
+            $shareCheckStatus.Text       = [char]0x2717 + " $($_.Exception.Message)"
+            $shareCheckStatus.Foreground = Get-WPFBrush "#C0392B"
+        } finally {
+            $dlg.Cursor = [System.Windows.Input.Cursors]::Arrow
+        }
+    })
 
     # Pre-fill if editing
     if ($existingPerm) {
@@ -3045,6 +3585,14 @@ function Show-PermissionDialog($existingPerm) {
                 foreach ($item in $dlg.FindName("NTFSAccessControl").Items) {
                     if ($item.Content -eq $existingPerm.AccessControlType) { $item.IsSelected = $true }
                 }
+                if ($existingPerm.ShareName) {
+                    $dlg.FindName("NTFSSetShare").IsChecked = $true
+                    $dlg.FindName("PanelNTFSShare").Visibility = "Visible"
+                    $dlg.FindName("NTFSShareName").Text = $existingPerm.ShareName
+                    foreach ($item in $dlg.FindName("NTFSShareRight").Items) {
+                        if ($item.Content -eq $existingPerm.ShareRight) { $item.IsSelected = $true }
+                    }
+                }
             }
             "ADCS" {
                 $cmbType.SelectedIndex = 2
@@ -3053,6 +3601,15 @@ function Show-PermissionDialog($existingPerm) {
                 $dlg.FindName("ADCSCAHostname").Text = $existingPerm.CAHostname
                 foreach ($item in $dlg.FindName("ADCSRight").Items) {
                     if ($item.Content -eq $existingPerm.Right) { $item.IsSelected = $true }
+                }
+            }
+            "Share" {
+                $cmbType.SelectedIndex = 3
+                $panelAD.Visibility = "Collapsed"; $panelShare.Visibility = "Visible"
+                $dlg.FindName("ShareServer").Text = $existingPerm.ShareServer
+                $dlg.FindName("ShareName").Text   = $existingPerm.ShareName
+                foreach ($item in $dlg.FindName("ShareRight").Items) {
+                    if ($item.Content -eq $existingPerm.ShareRight) { $item.IsSelected = $true }
                 }
             }
         }
@@ -3082,6 +3639,8 @@ function Show-PermissionDialog($existingPerm) {
                     InheritanceFlags  = $dlg.FindName("NTFSInheritance").SelectedItem.Content
                     PropagationFlags  = $dlg.FindName("NTFSPropagation").SelectedItem.Content
                     AccessControlType = $dlg.FindName("NTFSAccessControl").SelectedItem.Content
+                    ShareName         = if ($dlg.FindName("NTFSSetShare").IsChecked) { $dlg.FindName("NTFSShareName").Text } else { $null }
+                    ShareRight        = if ($dlg.FindName("NTFSSetShare").IsChecked) { $dlg.FindName("NTFSShareRight").SelectedItem.Content } else { $null }
                 }
             }
             "ADCS" {
@@ -3090,6 +3649,14 @@ function Show-PermissionDialog($existingPerm) {
                     CAName     = $dlg.FindName("ADCSCAName").Text
                     CAHostname = $dlg.FindName("ADCSCAHostname").Text
                     Right      = $dlg.FindName("ADCSRight").SelectedItem.Content
+                }
+            }
+            "Share" {
+                $perm = [PSCustomObject]@{
+                    Type        = "Share"
+                    ShareServer = $dlg.FindName("ShareServer").Text
+                    ShareName   = $dlg.FindName("ShareName").Text
+                    ShareRight  = $dlg.FindName("ShareRight").SelectedItem.Content
                 }
             }
         }

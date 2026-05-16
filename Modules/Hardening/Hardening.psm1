@@ -1086,11 +1086,39 @@ function Set-HardeningReplicationNotify {
 # Task: ConfigureCentralStore
 # ============================================================================
 
+function Find-LatestWindowsADMXPageId {
+    # Queries the Microsoft Download Center search (sorted newest first) and returns the
+    # download page ID for the latest Windows Administrative Templates package.
+    # Validates each candidate by checking that its surrounding context on the search
+    # page mentions both "Administrative Templates" and ".admx".
+    [CmdletBinding()]
+    param([string]$LogDirectory)
+
+    $searchUrl = "https://www.microsoft.com/en-us/download/search?q=Administrative+Templates+admx+Windows&p=0&r=10&t=All&s=Date&o=Descending"
+    Write-HardeningLog -Message "Searching Microsoft Download Center for the latest Windows ADMX templates..." -Level Info -LogDirectory $LogDirectory
+
+    $page    = Invoke-WebRequest -Uri $searchUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+    $content = $page.Content
+
+    $idMatches = [regex]::Matches($content, 'details\.aspx\?id=(\d+)')
+    foreach ($m in $idMatches) {
+        # Inspect the surrounding HTML (600 chars centred on the link) to confirm
+        # this result is actually the Administrative Templates ADMX package.
+        $start   = [Math]::Max(0, $m.Index - 300)
+        $length  = [Math]::Min(600, $content.Length - $start)
+        $context = $content.Substring($start, $length)
+        if ($context -imatch 'administrative[\s\-]+templates' -and $context -imatch '\.admx') {
+            return $m.Groups[1].Value
+        }
+    }
+
+    throw "No Administrative Templates download page found in search results ($($idMatches.Count) candidates checked)."
+}
+
 function Get-HardeningWindowsADMX {
     # Downloads the latest Windows Administrative Templates from Microsoft Download Center,
     # extracts the MSI, and copies PolicyDefinitions to $DestinationPath.
-    # Download page ID 108542 = Windows 11 25H2 Administrative Templates V3.0 (February 2026).
-    # Update the ID here when Microsoft releases newer templates.
+    # $fallbackPageId is used only when the automatic search fails.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
@@ -1098,20 +1126,43 @@ function Get-HardeningWindowsADMX {
         [string]$LogDirectory
     )
 
-    $downloadPageId = "108542"
-    $detailsUrl     = "https://www.microsoft.com/en-us/download/details.aspx?id=$downloadPageId"
+    # Last-known-good MSI URL — update when Microsoft releases a new version.
+    $fallbackPageId = "108394"
+    $fallbackMsiUrl = "https://download.microsoft.com/download/f35d3000-b6c9-4ca6-bedc-5e4ec15a6b7a/Administrative%20Templates%20(admx)%20for%20Windows%2011%20Sep%202025%20Update.msi"
 
-    Write-HardeningLog -Message "Querying Microsoft Download Center for latest Windows Administrative Templates (ID: $downloadPageId)..." -Level Info -LogDirectory $LogDirectory
-
-    $page   = Invoke-WebRequest -Uri $detailsUrl -UseBasicParsing -ErrorAction Stop
-    $msiUrl = [regex]::Match($page.Content, 'https://download\.microsoft\.com/download/[^"''<>]+\.msi').Value
-    if (-not $msiUrl) {
-        throw "No MSI download link found on details page (ID $downloadPageId). The page structure may have changed."
+    $downloadPageId = try {
+        Find-LatestWindowsADMXPageId -LogDirectory $LogDirectory
+    }
+    catch {
+        Write-HardeningLog -Message "Auto-detection of latest ADMX page ID failed: $_ — using last known ID ($fallbackPageId)." -Level Warning -LogDirectory $LogDirectory
+        $fallbackPageId
     }
 
-    # Encode spaces and special characters in the filename portion of the URL
-    $msiUrlEncoded = [System.Uri]::EscapeUriString($msiUrl)
-    Write-HardeningLog -Message "Download URL: $msiUrl" -Level Info -LogDirectory $LogDirectory
+    Write-HardeningLog -Message "Querying Microsoft Download Center (ID: $downloadPageId)..." -Level Info -LogDirectory $LogDirectory
+
+    # Microsoft now loads the download button URL via JavaScript, so basic HTML scraping
+    # often finds nothing. Try both the confirmation and details pages, then fall back to
+    # the hardcoded last-known-good URL rather than failing the whole task.
+    $downloadUrl = $null
+    foreach ($pageUrl in @(
+        "https://www.microsoft.com/en-us/download/confirmation.aspx?id=$downloadPageId",
+        "https://www.microsoft.com/en-us/download/details.aspx?id=$downloadPageId"
+    )) {
+        try {
+            $page = Invoke-WebRequest -Uri $pageUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+            $downloadUrl = [regex]::Match($page.Content,
+                'https://download\.microsoft\.com/download/[^"''<>\s]+\.msi').Value
+            if ($downloadUrl) { break }
+        }
+        catch { }
+    }
+
+    if (-not $downloadUrl) {
+        Write-HardeningLog -Message "MSI URL not found in page HTML (Microsoft loads it via JS). Using last-known-good URL — update `$fallbackMsiUrl in the module when a newer version is released." -Level Warning -LogDirectory $LogDirectory
+        $downloadUrl = $fallbackMsiUrl
+    }
+
+    Write-HardeningLog -Message "Download URL: $downloadUrl" -Level Info -LogDirectory $LogDirectory
 
     $tempDir    = Join-Path $env:TEMP "LOCKmeAD_ADMX_$(Get-Date -Format 'yyyyMMddHHmmss')"
     $msiPath    = Join-Path $tempDir "AdminTemplates.msi"
@@ -1122,7 +1173,7 @@ function Get-HardeningWindowsADMX {
         New-Item -Path $extractDir -ItemType Directory -Force | Out-Null
 
         Write-HardeningLog -Message "Downloading ADMX package..." -Level Info -LogDirectory $LogDirectory
-        Invoke-WebRequest -Uri $msiUrlEncoded -OutFile $msiPath -ErrorAction Stop
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $msiPath -ErrorAction Stop
 
         Write-HardeningLog -Message "Extracting package (msiexec admin install)..." -Level Info -LogDirectory $LogDirectory
         $proc = Start-Process -FilePath "msiexec.exe" `

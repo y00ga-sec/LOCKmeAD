@@ -744,6 +744,45 @@
           "Description": "Append a random 6-digit suffix to the account name on each rotation: 0=No (default), 1=Yes. Requires Windows 11 24H2 / Server 2025."
         }
       ]
+    },
+    {
+      "Name": "SEC-Kerberos-Armoring-DC",
+      "Description": "Enable KDC support for claims, compound authentication and Kerberos armoring on Domain Controllers (Always provide claims)",
+      "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
+      "LinkTargets": null,
+      "RegistrySettings": [
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\KDC\\Parameters",
+          "ValueName": "EnableCbacAndArmor",
+          "Value": 1,
+          "Type": "DWord",
+          "Description": "Enables the KDC support for claims policy (1=enabled, 0=disabled). Must be paired with CbacAndArmorLevel to select the behavior."
+        },
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\KDC\\Parameters",
+          "ValueName": "CbacAndArmorLevel",
+          "Value": 2,
+          "Type": "DWord",
+          "Description": "KDC armoring level: 0=Not supported, 1=Supported (mix mode), 2=Always provide claims, 3=Fail unarmored authentication requests"
+        }
+      ]
+    },
+    {
+      "Name": "SEC-Kerberos-Armoring-Client",
+      "Description": "Enable Kerberos client support for claims, compound authentication and Kerberos armoring on domain-joined computers",
+      "Enabled": true,
+      "GpoStatus": "UserSettingsDisabled",
+      "LinkTargets": null,
+      "RegistrySettings": [
+        {
+          "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\Kerberos\\Parameters",
+          "ValueName": "EnableCbacAndArmor",
+          "Value": 1,
+          "Type": "DWord",
+          "Description": "Kerberos client support for claims, compound authentication and Kerberos armoring: 0=Disabled, 1=Enabled"
+        }
+      ]
     }
   ]
 }

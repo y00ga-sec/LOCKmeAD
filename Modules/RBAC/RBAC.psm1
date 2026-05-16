@@ -332,6 +332,9 @@ function Set-RBACNTFSPermission {
     $propagationFlags = $Permission.PropagationFlags
     $accessControlType = $Permission.AccessControlType
 
+    $shareName  = $Permission.ShareName
+    $shareRight = $Permission.ShareRight
+
     if ($PSCmdlet.ShouldProcess("$path", "Apply NTFS ACE ($rights) for '$GroupName'")) {
         if (-not (Test-Path $path)) {
             Write-RBACLog -Message "Path '$path' is inaccessible or does not exist." -Level Error -LogDirectory $LogDirectory
@@ -358,9 +361,33 @@ function Set-RBACNTFSPermission {
             Write-RBACLog -Message "Error applying NTFS ACE on '$path': $_" -Level Error -LogDirectory $LogDirectory
             throw
         }
+
+        if ($shareName) {
+            if ($path -notmatch '^\\\\([^\\]+)') {
+                Write-RBACLog -Message "SMB share permission skipped: path '$path' is not a UNC path. Use \\server\share format." -Level Warning -LogDirectory $LogDirectory
+            }
+            else {
+                $fileServer = $Matches[1]
+                $identity   = (Get-ADDomain @serverParam).NetBIOSName + "\$GroupName"
+                try {
+                    Invoke-Command -ComputerName $fileServer -ScriptBlock {
+                        param($sn, $acct, $right)
+                        Grant-SmbShareAccess -Name $sn -AccountName $acct -AccessRight $right -Force -ErrorAction Stop
+                    } -ArgumentList $shareName, $identity, $shareRight -ErrorAction Stop
+                    Write-RBACLog -Message "SMB share permission '$shareRight' applied on '\\$fileServer\$shareName' for '$GroupName'." -Level Success -LogDirectory $LogDirectory
+                }
+                catch {
+                    Write-RBACLog -Message "Error applying SMB share permission on '\\$fileServer\$shareName': $_" -Level Error -LogDirectory $LogDirectory
+                    throw
+                }
+            }
+        }
     }
     else {
         Write-RBACLog -Message "[WhatIf] NTFS ACE '$rights' would be applied on '$path' for '$GroupName'." -Level Info -LogDirectory $LogDirectory
+        if ($shareName) {
+            Write-RBACLog -Message "[WhatIf] SMB share permission '$shareRight' would be applied on share '$shareName' for '$GroupName'." -Level Info -LogDirectory $LogDirectory
+        }
     }
 }
 
@@ -547,7 +574,7 @@ function Set-RBACADCSPermission {
 
             # Restart CertSvc service to apply changes
             Write-RBACLog -Message "Restarting CertSvc service on '$caHostname'..." -Level Info -LogDirectory $LogDirectory
-            Get-Service -ComputerName $caHostname -Name CertSvc | Restart-Service -Force
+            Invoke-Command -ComputerName $caHostname -ScriptBlock { Restart-Service -Name CertSvc -Force }
 
             Write-RBACLog -Message "ADCS right '$right' applied on '$caConfig' for '$GroupName'." -Level Success -LogDirectory $LogDirectory
         }
@@ -561,6 +588,195 @@ function Set-RBACADCSPermission {
     }
 }
 
+function Export-RBACDeploymentReport {
+    <#
+    .SYNOPSIS
+        Parses an RBAC deployment log file and exports a CSV summary report.
+    .PARAMETER LogPath
+        Full path to the RBAC_*.log file to parse.
+    .PARAMETER OutputPath
+        Optional CSV output path. Defaults to the same directory as the log file with a .csv extension.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$LogPath,
+
+        [string]$OutputPath
+    )
+
+    if (-not (Test-Path $LogPath)) {
+        Write-RBACLog -Message "Log file not found: '$LogPath'. Cannot generate CSV report." -Level Warning
+        return $null
+    }
+
+    if (-not $OutputPath) {
+        $OutputPath = [System.IO.Path]::ChangeExtension($LogPath, '.csv')
+    }
+
+    $rows = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $logPattern = '^\[(?<ts>[^\]]+)\] \[(?<level>[^\]]+)\] (?<msg>.+)$'
+
+    foreach ($line in (Get-Content $LogPath -Encoding UTF8)) {
+        if ($line -notmatch $logPattern) { continue }
+        $ts    = $Matches['ts']
+        $level = $Matches['level']
+        $msg   = $Matches['msg']
+
+        $isWhatIf = $msg -match '^\[WhatIf\] '
+        if ($isWhatIf) { $msg = $msg -replace '^\[WhatIf\] ', '' }
+
+        $row = $null
+
+        if ($msg -match "^Group '(?<name>[^']+)' \((?<scope>Global|DomainLocal)\) (?:created|would be created) in '(?<ou>[^']+)'") {
+            $row = [PSCustomObject]@{
+                Timestamp = $ts
+                Category  = 'GroupCreated'
+                Status    = if ($isWhatIf) { 'Simulated' } else { 'Created' }
+                Name      = $Matches['name']
+                Scope     = $Matches['scope']
+                Target    = $Matches['ou']
+                Details   = ''
+            }
+        }
+        elseif ($msg -match "^Group '(?<name>[^']+)' already exists in '(?<dn>[^']+)'") {
+            $row = [PSCustomObject]@{
+                Timestamp = $ts
+                Category  = 'GroupCreated'
+                Status    = 'AlreadyExists'
+                Name      = $Matches['name']
+                Scope     = ''
+                Target    = $Matches['dn']
+                Details   = ''
+            }
+        }
+        elseif ($msg -match "^'(?<member>[^']+)' (?:added as|would be added as) member of '(?<target>[^']+)'") {
+            $row = [PSCustomObject]@{
+                Timestamp = $ts
+                Category  = 'MembershipSet'
+                Status    = if ($isWhatIf) { 'Simulated' } else { 'Added' }
+                Name      = $Matches['member']
+                Scope     = ''
+                Target    = $Matches['target']
+                Details   = ''
+            }
+        }
+        elseif ($msg -match "^'(?<member>[^']+)' is already a member of '(?<target>[^']+)'") {
+            $row = [PSCustomObject]@{
+                Timestamp = $ts
+                Category  = 'MembershipSet'
+                Status    = 'AlreadyExists'
+                Name      = $Matches['member']
+                Scope     = ''
+                Target    = $Matches['target']
+                Details   = ''
+            }
+        }
+        elseif ($msg -match "^NTFS ACE '(?<rights>[^']+)' (?:applied|would be applied) on '(?<path>[^']+)' for '(?<group>[^']+)'") {
+            $row = [PSCustomObject]@{
+                Timestamp = $ts
+                Category  = 'NTFSPermission'
+                Status    = if ($isWhatIf) { 'Simulated' } else { 'Applied' }
+                Name      = $Matches['group']
+                Scope     = ''
+                Target    = $Matches['path']
+                Details   = $Matches['rights']
+            }
+        }
+        elseif ($msg -match "^AD delegation '(?<rights>[^']+)' (?:applied|would be applied) on '(?<ou>[^']+)' for '(?<group>[^']+)'") {
+            $row = [PSCustomObject]@{
+                Timestamp = $ts
+                Category  = 'ADDelegation'
+                Status    = if ($isWhatIf) { 'Simulated' } else { 'Applied' }
+                Name      = $Matches['group']
+                Scope     = ''
+                Target    = $Matches['ou']
+                Details   = $Matches['rights']
+            }
+        }
+        elseif ($msg -match "^ADCS right '(?<right>[^']+)' (?:applied|would be applied) on '(?<ca>[^']+)' for '(?<group>[^']+)'") {
+            $row = [PSCustomObject]@{
+                Timestamp = $ts
+                Category  = 'ADCSPermission'
+                Status    = if ($isWhatIf) { 'Simulated' } else { 'Applied' }
+                Name      = $Matches['group']
+                Scope     = ''
+                Target    = $Matches['ca']
+                Details   = $Matches['right']
+            }
+        }
+        elseif ($level -eq 'Error') {
+            $row = [PSCustomObject]@{
+                Timestamp = $ts
+                Category  = 'Error'
+                Status    = 'Error'
+                Name      = ''
+                Scope     = ''
+                Target    = ''
+                Details   = $msg
+            }
+        }
+
+        if ($null -ne $row) { $rows.Add($row) }
+    }
+
+    $rows | Export-Csv -Path $OutputPath -NoTypeInformation -Encoding UTF8
+    Write-RBACLog -Message "CSV report generated: '$OutputPath' ($($rows.Count) entries)." -Level Success
+    return $OutputPath
+}
+
+function Set-RBACSharePermission {
+    <#
+    .SYNOPSIS
+        Applies an SMB share permission for a group on a remote file server.
+    .PARAMETER GroupName
+        Name of the group to grant permissions to.
+    .PARAMETER Permission
+        Permission object containing ShareServer, ShareName, ShareRight.
+    .PARAMETER Server
+        Target DC for AD queries (avoids replication lag).
+    .PARAMETER LogDirectory
+        Log directory.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)]
+        [string]$GroupName,
+
+        [Parameter(Mandatory)]
+        [PSCustomObject]$Permission,
+
+        [string]$Server,
+
+        [string]$LogDirectory
+    )
+
+    $serverParam  = @{}
+    if ($Server) { $serverParam.Server = $Server }
+
+    $fileServer = $Permission.ShareServer
+    $shareName  = $Permission.ShareName
+    $shareRight = $Permission.ShareRight
+
+    if ($PSCmdlet.ShouldProcess("\\$fileServer\$shareName", "Apply SMB share permission ($shareRight) for '$GroupName'")) {
+        $identity = (Get-ADDomain @serverParam).NetBIOSName + "\$GroupName"
+        try {
+            Invoke-Command -ComputerName $fileServer -ScriptBlock {
+                param($sn, $acct, $right)
+                Grant-SmbShareAccess -Name $sn -AccountName $acct -AccessRight $right -Force -ErrorAction Stop
+            } -ArgumentList $shareName, $identity, $shareRight -ErrorAction Stop
+            Write-RBACLog -Message "SMB share permission '$shareRight' applied on '\\$fileServer\$shareName' for '$GroupName'." -Level Success -LogDirectory $LogDirectory
+        }
+        catch {
+            Write-RBACLog -Message "Error applying SMB share permission on '\\$fileServer\$shareName': $_" -Level Error -LogDirectory $LogDirectory
+            throw
+        }
+    }
+    else {
+        Write-RBACLog -Message "[WhatIf] SMB share permission '$shareRight' would be applied on '\\$fileServer\$shareName' for '$GroupName'." -Level Info -LogDirectory $LogDirectory
+    }
+}
+
 # Export module functions
 Export-ModuleMember -Function @(
     'Write-RBACLog',
@@ -569,6 +785,8 @@ Export-ModuleMember -Function @(
     'New-RBACGroup',
     'Add-RBACGroupMember',
     'Set-RBACNTFSPermission',
+    'Set-RBACSharePermission',
     'Set-RBACADPermission',
-    'Set-RBACADCSPermission'
+    'Set-RBACADCSPermission',
+    'Export-RBACDeploymentReport'
 )
