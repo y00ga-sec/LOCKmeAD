@@ -95,6 +95,25 @@ catch {
 }
 
 # ============================================================================
+# Load GUID resolution maps
+# ============================================================================
+
+Write-Host ""
+Write-Host "--- Loading GUID maps ---" -ForegroundColor White
+Write-Host ""
+
+try {
+    Get-RBACGuidMap -Server $targetServer
+    Get-RBACExtendedRightMap -Server $targetServer
+    Write-RBACLog -Message "GUID maps loaded (schema attributes + extended rights)." -Level Success -LogDirectory $logDir
+}
+catch {
+    Write-RBACLog -Message "Could not load GUID maps: $_. ObjectType/InheritedObjectType fields must contain raw GUIDs." -Level Warning -LogDirectory $logDir
+}
+
+$backupDir = Join-Path $logDir "Backups"
+
+# ============================================================================
 # Configuration summary
 # ============================================================================
 
@@ -261,6 +280,7 @@ foreach ($role in $config.Roles) {
                                              -Permission $perm `
                                              -Server $targetServer `
                                              -LogDirectory $logDir `
+                                             -BackupDirectory $backupDir `
                                              -WhatIf:$WhatIfPreference
                         $stats.ADPermissionsSet++
                     }

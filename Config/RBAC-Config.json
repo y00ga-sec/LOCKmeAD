@@ -258,6 +258,49 @@
           "Description": "DL T0 - DNS record management on the forest.lol zone",
           "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
           "Permissions": []
+        },
+        {
+          "Name": "DL_T0_GPOLink",
+          "Description": "DL T0 - GPO linking on T0 production and admin OUs",
+          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
+          "Permissions": [
+            {
+              "Type": "AD",
+              "TargetOU": "OU=T0-Prod,DC=forest,DC=lol",
+              "ADRights": "WriteProperty",
+              "ObjectType": "gPLink",
+              "InheritanceType": "All",
+              "InheritedObjectType": "",
+              "AccessControlType": "Allow"
+            },
+            {
+              "Type": "AD",
+              "TargetOU": "OU=T0-Prod,DC=forest,DC=lol",
+              "ADRights": "WriteProperty",
+              "ObjectType": "gPOptions",
+              "InheritanceType": "All",
+              "InheritedObjectType": "",
+              "AccessControlType": "Allow"
+            },
+            {
+              "Type": "AD",
+              "TargetOU": "OU=Admin,DC=forest,DC=lol",
+              "ADRights": "WriteProperty",
+              "ObjectType": "gPLink",
+              "InheritanceType": "All",
+              "InheritedObjectType": "",
+              "AccessControlType": "Allow"
+            },
+            {
+              "Type": "AD",
+              "TargetOU": "OU=Admin,DC=forest,DC=lol",
+              "ADRights": "WriteProperty",
+              "ObjectType": "gPOptions",
+              "InheritanceType": "All",
+              "InheritedObjectType": "",
+              "AccessControlType": "Allow"
+            }
+          ]
         }
       ]
     },
@@ -405,6 +448,65 @@
           "Description": "DL T1 - Admin account management in OU=UsersT1,OU=Admin",
           "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=forest,DC=lol",
           "Permissions": []
+        },
+        {
+          "Name": "DL_T1_GPOLink",
+          "Description": "DL T1 - GPO linking on T1 server and admin user OUs",
+          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=forest,DC=lol",
+          "Permissions": [
+            {
+              "Type": "AD",
+              "TargetOU": "OU=Servers,OU=T1-Prod,DC=forest,DC=lol",
+              "ADRights": "WriteProperty",
+              "ObjectType": "gPLink",
+              "InheritanceType": "All",
+              "InheritedObjectType": "",
+              "AccessControlType": "Allow"
+            },
+            {
+              "Type": "AD",
+              "TargetOU": "OU=Servers,OU=T1-Prod,DC=forest,DC=lol",
+              "ADRights": "WriteProperty",
+              "ObjectType": "gPOptions",
+              "InheritanceType": "All",
+              "InheritedObjectType": "",
+              "AccessControlType": "Allow"
+            },
+            {
+              "Type": "AD",
+              "TargetOU": "OU=UsersT1,OU=Admin,DC=forest,DC=lol",
+              "ADRights": "WriteProperty",
+              "ObjectType": "gPLink",
+              "InheritanceType": "All",
+              "InheritedObjectType": "",
+              "AccessControlType": "Allow"
+            },
+            {
+              "Type": "AD",
+              "TargetOU": "OU=UsersT1,OU=Admin,DC=forest,DC=lol",
+              "ADRights": "WriteProperty",
+              "ObjectType": "gPOptions",
+              "InheritanceType": "All",
+              "InheritedObjectType": "",
+              "AccessControlType": "Allow"
+            }
+          ]
+        },
+        {
+          "Name": "DL_T1_Servers_BitLocker",
+          "Description": "DL T1 - BitLocker recovery key read on T1 servers",
+          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=forest,DC=lol",
+          "Permissions": [
+            {
+              "Type": "AD",
+              "TargetOU": "OU=Servers,OU=T1-Prod,DC=forest,DC=lol",
+              "ADRights": "GenericAll",
+              "ObjectType": "",
+              "InheritanceType": "Descendents",
+              "InheritedObjectType": "ms-FVE-RecoveryInformation",
+              "AccessControlType": "Allow"
+            }
+          ]
         }
       ]
     },
@@ -587,6 +689,65 @@
           "Description": "DL T2 - Account unlock for users in OU=Users,OU=T2-Prod",
           "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=forest,DC=lol",
           "Permissions": []
+        },
+        {
+          "Name": "DL_T2_GPOLink",
+          "Description": "DL T2 - GPO linking on T2 user and workstation OUs",
+          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=forest,DC=lol",
+          "Permissions": [
+            {
+              "Type": "AD",
+              "TargetOU": "OU=Users,OU=T2-Prod,DC=forest,DC=lol",
+              "ADRights": "WriteProperty",
+              "ObjectType": "gPLink",
+              "InheritanceType": "All",
+              "InheritedObjectType": "",
+              "AccessControlType": "Allow"
+            },
+            {
+              "Type": "AD",
+              "TargetOU": "OU=Users,OU=T2-Prod,DC=forest,DC=lol",
+              "ADRights": "WriteProperty",
+              "ObjectType": "gPOptions",
+              "InheritanceType": "All",
+              "InheritedObjectType": "",
+              "AccessControlType": "Allow"
+            },
+            {
+              "Type": "AD",
+              "TargetOU": "OU=Workstations,OU=T2-Prod,DC=forest,DC=lol",
+              "ADRights": "WriteProperty",
+              "ObjectType": "gPLink",
+              "InheritanceType": "All",
+              "InheritedObjectType": "",
+              "AccessControlType": "Allow"
+            },
+            {
+              "Type": "AD",
+              "TargetOU": "OU=Workstations,OU=T2-Prod,DC=forest,DC=lol",
+              "ADRights": "WriteProperty",
+              "ObjectType": "gPOptions",
+              "InheritanceType": "All",
+              "InheritedObjectType": "",
+              "AccessControlType": "Allow"
+            }
+          ]
+        },
+        {
+          "Name": "DL_T2_BitLocker",
+          "Description": "DL T2 - BitLocker recovery key read on T2 workstations",
+          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=forest,DC=lol",
+          "Permissions": [
+            {
+              "Type": "AD",
+              "TargetOU": "OU=Workstations,OU=T2-Prod,DC=forest,DC=lol",
+              "ADRights": "GenericAll",
+              "ObjectType": "",
+              "InheritanceType": "Descendents",
+              "InheritedObjectType": "ms-FVE-RecoveryInformation",
+              "AccessControlType": "Allow"
+            }
+          ]
         }
       ]
     }

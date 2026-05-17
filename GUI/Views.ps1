@@ -573,6 +573,11 @@ function Get-MainWindowXaml {
                                         Background="#FCE8E8" Foreground="#A93226"
                                         BorderThickness="0" Padding="12,6" FontSize="12"
                                         Cursor="Hand" HorizontalAlignment="Stretch" Margin="0,4,0,0"/>
+                                <Separator Margin="0,8,0,4" Background="#E0E0E0"/>
+                                <Button Name="BtnRestoreACL" Content="Restore AD ACL..."
+                                        Background="#FEF9E7" Foreground="#B7950B"
+                                        BorderThickness="1" BorderBrush="#F0D060" Padding="12,6" FontSize="12"
+                                        Cursor="Hand" HorizontalAlignment="Stretch"/>
                             </StackPanel>
                             <Border Style="{StaticResource Card}" Padding="0">
                                 <ListBox Name="RBACRoleList" Background="Transparent" BorderThickness="0"

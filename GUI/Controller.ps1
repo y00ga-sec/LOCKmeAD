@@ -2661,6 +2661,43 @@ function Update-DeployOrderHint {
 # RBAC Dialogs & Helpers
 # ============================================================================
 
+$script:GuidToNameMap = @{}
+
+function Build-GuidToNameMap {
+    if ($script:GuidToNameMap.Count -gt 0) { return }
+    try {
+        $rootDse = Get-ADRootDSE -ErrorAction Stop
+        Get-ADObject -SearchBase $rootDse.schemaNamingContext `
+                     -LDAPFilter "(schemaidguid=*)" `
+                     -Properties lDAPDisplayName, schemaIDGUID `
+                     -ErrorAction Stop |
+            ForEach-Object {
+                $g = [System.Guid]$_.schemaIDGUID
+                $script:GuidToNameMap[$g.ToString().ToLower()] = $_.lDAPDisplayName
+            }
+        Get-ADObject -SearchBase $rootDse.configurationNamingContext `
+                     -LDAPFilter "(&(objectclass=controlAccessRight)(rightsguid=*))" `
+                     -Properties displayName, rightsGuid `
+                     -ErrorAction Stop |
+            ForEach-Object {
+                $g = [System.Guid]$_.rightsGuid
+                $script:GuidToNameMap[$g.ToString().ToLower()] = $_.displayName
+            }
+    }
+    catch { }
+}
+
+function Resolve-GuidToDisplayName([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
+    if ($Value -eq "00000000-0000-0000-0000-000000000000") { return "" }
+    if ($Value -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+        Build-GuidToNameMap
+        $name = $script:GuidToNameMap[$Value.ToLower()]
+        if ($name) { return $name }
+    }
+    return $Value
+}
+
 function Show-ADGroupSearchDialog {
     $searchXaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -3294,6 +3331,106 @@ function Show-PickExistingDLDialog($currentRole) {
     return $result
 }
 
+function Show-ADSchemaSearchDialog {
+    $searchXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Search AD Schema" Width="500" Height="500"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        Background="#F5F5F5" FontFamily="Segoe UI">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <TextBox Name="FilterBox" Grid.Row="0" Padding="8,6" FontSize="13"
+                 BorderBrush="#D0D0D0" BorderThickness="1" Margin="0,0,0,10"/>
+        <ListBox Name="ResultList" Grid.Row="1" FontSize="12" Padding="4"
+                 BorderBrush="#D0D0D0" BorderThickness="1"/>
+        <TextBlock Name="StatusText" Grid.Row="2" Margin="0,8,0,0"
+                   FontSize="11" Foreground="#888888"
+                   Text="Loading schema from AD..."/>
+    </Grid>
+</Window>
+"@
+    [xml]$searchDoc = $searchXaml
+    $searchReader   = [System.Xml.XmlNodeReader]::new($searchDoc)
+    $searchWindow   = [System.Windows.Markup.XamlReader]::Load($searchReader)
+    $searchWindow.Owner = $script:Window
+
+    $filterBox  = $searchWindow.FindName("FilterBox")
+    $resultList = $searchWindow.FindName("ResultList")
+    $statusText = $searchWindow.FindName("StatusText")
+
+    $searchWindow.Tag = $null
+    $allItems = [System.Collections.Generic.List[PSCustomObject]]::new()
+
+    try {
+        $rootDse = Get-ADRootDSE -ErrorAction Stop
+
+        Get-ADObject -SearchBase $rootDse.schemaNamingContext `
+                     -LDAPFilter "(schemaidguid=*)" `
+                     -Properties lDAPDisplayName, objectClass `
+                     -ErrorAction Stop |
+            ForEach-Object {
+                $type = if ('classSchema' -in $_.objectClass) { 'Class' } else { 'Attribute' }
+                $allItems.Add([PSCustomObject]@{ Name = $_.lDAPDisplayName; Type = $type })
+            }
+
+        Get-ADObject -SearchBase $rootDse.configurationNamingContext `
+                     -LDAPFilter "(&(objectclass=controlAccessRight)(rightsguid=*))" `
+                     -Properties displayName `
+                     -ErrorAction Stop |
+            ForEach-Object {
+                $allItems.Add([PSCustomObject]@{ Name = $_.displayName; Type = 'ExtendedRight' })
+            }
+
+        $sorted = $allItems | Sort-Object Type, Name
+
+        foreach ($entry in $sorted) {
+            $item = [System.Windows.Controls.ListBoxItem]::new()
+            $item.Content = "$($entry.Name)  [$($entry.Type)]"
+            $item.Tag     = $entry.Name
+            $resultList.Items.Add($item) | Out-Null
+        }
+
+        $count = $resultList.Items.Count
+        $statusText.Text = if ($count -eq 0) { "No schema items found." }
+                           else { "$count item(s). Type to filter, double-click to select." }
+    }
+    catch {
+        $statusText.Text = "Error: $($_.Exception.Message)"
+        $sorted = @()
+    }
+
+    $capturedItems = $sorted
+    $filterBox.Add_TextChanged({
+        $filter = $filterBox.Text.Trim().ToLower()
+        $resultList.Items.Clear()
+        $filtered = if ([string]::IsNullOrWhiteSpace($filter)) { $capturedItems }
+                    else { $capturedItems | Where-Object { $_.Name.ToLower().Contains($filter) } }
+        foreach ($entry in $filtered) {
+            $item = [System.Windows.Controls.ListBoxItem]::new()
+            $item.Content = "$($entry.Name)  [$($entry.Type)]"
+            $item.Tag     = $entry.Name
+            $resultList.Items.Add($item) | Out-Null
+        }
+        $count = $resultList.Items.Count
+        $statusText.Text = "$count item(s). Double-click to select."
+    }.GetNewClosure())
+
+    $resultList.Add_MouseDoubleClick({
+        $selected = $resultList.SelectedItem
+        if ($selected -and $selected.Tag) {
+            $searchWindow.Tag = $selected.Tag
+            $searchWindow.DialogResult = $true
+        }
+    }.GetNewClosure())
+
+    $searchWindow.ShowDialog() | Out-Null
+    return $searchWindow.Tag
+}
+
 function Show-PermissionDialog($existingPerm) {
     $dialogXaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -3337,17 +3474,32 @@ function Show-PermissionDialog($existingPerm) {
                 <ComboBoxItem Content="Deny"/>
             </ComboBox>
 
-            <Expander Header="Advanced GUID Options" Margin="0,14,0,0" FontSize="12" IsExpanded="False">
+            <Expander Header="Object Type / Inheritance Scope" Margin="0,14,0,0" FontSize="12" IsExpanded="True">
                 <StackPanel Margin="0,8,0,0">
-                    <TextBlock Text="ObjectType (GUID)" FontSize="12" Foreground="#555" Margin="0,0,0,4"/>
-                    <TextBlock Text="Targets a specific property, extended right, or child object class. Leave default for broad permissions (e.g. GenericAll)." FontSize="10" Foreground="#999" TextWrapping="Wrap" Margin="0,0,0,6"/>
-                    <TextBox Name="ADObjectType" FontSize="13" Padding="8,6" BorderBrush="#DDD"
-                             Text="00000000-0000-0000-0000-000000000000"/>
-                    <TextBlock Text="InheritedObjectType (GUID)" FontSize="12" Foreground="#555" Margin="0,12,0,4"/>
-                    <TextBlock Text="Restricts inheritance to a specific child object type. Leave default to apply to all child objects." FontSize="10" Foreground="#999" TextWrapping="Wrap" Margin="0,0,0,6"/>
-                    <TextBox Name="ADInheritedObjectType" FontSize="13" Padding="8,6" BorderBrush="#DDD"
-                             Text="00000000-0000-0000-0000-000000000000"/>
-                    <TextBlock Text="See Config/AD-GUIDs-Reference.md for common GUIDs." FontSize="10" Foreground="#0078D4" Margin="0,8,0,0"/>
+                    <TextBlock Text="ObjectType" FontSize="12" Foreground="#555" Margin="0,0,0,4"/>
+                    <TextBlock Text="Targets a specific attribute, extended right, or object class. Leave empty for broad permissions (e.g. GenericAll)." FontSize="10" Foreground="#999" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox Name="ADObjectType" Grid.Column="0" FontSize="13" Padding="6,4" BorderBrush="#DDD"/>
+                        <Button Name="BtnSearchObjectType" Grid.Column="1" Content="Search AD" Margin="8,0,0,0"
+                                Background="#F0F0F0" BorderBrush="#CCC" BorderThickness="1"
+                                FontSize="12" Padding="10,6" Cursor="Hand"/>
+                    </Grid>
+                    <TextBlock Text="InheritedObjectType" FontSize="12" Foreground="#555" Margin="0,12,0,4"/>
+                    <TextBlock Text="Restricts inheritance to a specific child object class. Leave empty to apply to all child objects." FontSize="10" Foreground="#999" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox Name="ADInheritedObjectType" Grid.Column="0" FontSize="13" Padding="6,4" BorderBrush="#DDD"/>
+                        <Button Name="BtnSearchInheritedObjectType" Grid.Column="1" Content="Search AD" Margin="8,0,0,0"
+                                Background="#F0F0F0" BorderBrush="#CCC" BorderThickness="1"
+                                FontSize="12" Padding="10,6" Cursor="Hand"/>
+                    </Grid>
                 </StackPanel>
             </Expander>
         </StackPanel>
@@ -3606,6 +3758,21 @@ function Show-PermissionDialog($existingPerm) {
         }
     })
 
+    # AD schema search for ObjectType
+    $objTypeBox      = $dlg.FindName("ADObjectType")
+    $inheritedTypeBox = $dlg.FindName("ADInheritedObjectType")
+    $schemaSearchFn  = ${function:Show-ADSchemaSearchDialog}
+
+    $dlg.FindName("BtnSearchObjectType").Add_Click({
+        $selected = & $schemaSearchFn
+        if ($selected) { $objTypeBox.Text = $selected }
+    }.GetNewClosure())
+
+    $dlg.FindName("BtnSearchInheritedObjectType").Add_Click({
+        $selected = & $schemaSearchFn
+        if ($selected) { $inheritedTypeBox.Text = $selected }
+    }.GetNewClosure())
+
     # Pre-fill if editing
     if ($existingPerm) {
         switch ($existingPerm.Type) {
@@ -3613,8 +3780,8 @@ function Show-PermissionDialog($existingPerm) {
                 $cmbType.SelectedIndex = 0
                 $dlg.FindName("ADTargetOU").Text = $existingPerm.TargetOU
                 $dlg.FindName("ADADRights").Text = $existingPerm.ADRights
-                $dlg.FindName("ADObjectType").Text = $existingPerm.ObjectType
-                $dlg.FindName("ADInheritedObjectType").Text = $existingPerm.InheritedObjectType
+                $dlg.FindName("ADObjectType").Text = Resolve-GuidToDisplayName $existingPerm.ObjectType
+                $dlg.FindName("ADInheritedObjectType").Text = Resolve-GuidToDisplayName $existingPerm.InheritedObjectType
                 foreach ($item in $dlg.FindName("ADInheritanceType").Items) {
                     if ($item.Content -eq $existingPerm.InheritanceType) { $item.IsSelected = $true }
                 }
@@ -4393,6 +4560,163 @@ function Register-GUIEvents {
     # Console clear
     $UI.BtnClearConsole.Add_Click({
         $UI.ConsoleOutput.Document.Blocks.Clear()
+    })
+
+    # RBAC restore ACL
+    $UI.BtnRestoreACL.Add_Click({
+        $projectRoot = Split-Path (Split-Path $script:ConfigPaths.RBAC -Parent) -Parent
+        $logDir = $script:Configs.RBAC.Settings.LogDirectory
+        if (-not [System.IO.Path]::IsPathRooted($logDir)) {
+            $logDir = Join-Path $projectRoot $logDir
+        }
+
+        # Find run folders that contain at least one ACL backup
+        $runFolders = @()
+        if (Test-Path $logDir) {
+            $runFolders = @(Get-ChildItem -Path $logDir -Directory -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $bp = Join-Path $_.FullName "Backups"
+                    (Test-Path $bp) -and (@(Get-ChildItem -Path $bp -Filter "ACL_*.xml" -ErrorAction SilentlyContinue).Count -gt 0)
+                } | Sort-Object Name -Descending)
+        }
+
+        if ($runFolders.Count -eq 0) {
+            [System.Windows.MessageBox]::Show(
+                "No deployment backups found under:`n$logDir`n`nBackups are created automatically when AD permissions are deployed.",
+                "No Backups",
+                [System.Windows.MessageBoxButton]::OK,
+                [System.Windows.MessageBoxImage]::Information
+            ) | Out-Null
+            return
+        }
+
+        $bW = New-Object System.Windows.Window
+        $bW.Title  = "Restore AD ACL — $($runFolders.Count) deployment run(s)"
+        $bW.Width  = 680
+        $bW.Height = 420
+        $bW.WindowStartupLocation = "CenterOwner"
+        $bW.Owner  = $script:Window
+        $bW.Background = Get-WPFBrush "#F5F5F5"
+        $bW.FontFamily = New-Object System.Windows.Media.FontFamily("Segoe UI")
+
+        $sp = New-Object System.Windows.Controls.StackPanel
+        $sp.Margin = [System.Windows.Thickness]::new(16)
+
+        $hdr = New-Object System.Windows.Controls.TextBlock
+        $hdr.Text = "Select a deployment run to roll back"
+        $hdr.FontSize = 15
+        $hdr.FontWeight = "SemiBold"
+        $hdr.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
+        $sp.Children.Add($hdr) | Out-Null
+
+        $sub = New-Object System.Windows.Controls.TextBlock
+        $sub.Text = "All ACL backups from the selected run will be restored at once."
+        $sub.FontSize = 11
+        $sub.Foreground = Get-WPFBrush "#666666"
+        $sub.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
+        $sp.Children.Add($sub) | Out-Null
+
+        $warn = New-Object System.Windows.Controls.TextBlock
+        $warn.Text = "Warning: each OU's current ACL will be fully replaced. Permissions added after the backup will be removed."
+        $warn.FontSize = 11
+        $warn.Foreground = Get-WPFBrush "#B7950B"
+        $warn.TextWrapping = "Wrap"
+        $warn.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+        $sp.Children.Add($warn) | Out-Null
+
+        $lb = New-Object System.Windows.Controls.ListBox
+        $lb.Height = 200
+        $lb.FontSize = 12
+        $lb.BorderBrush = Get-WPFBrush "#D0D0D0"
+        $lb.BorderThickness = [System.Windows.Thickness]::new(1)
+        $lb.Padding = [System.Windows.Thickness]::new(4)
+
+        foreach ($folder in $runFolders) {
+            $files = @(Get-ChildItem -Path (Join-Path $folder.FullName "Backups") -Filter "ACL_*.xml" -ErrorAction SilentlyContinue)
+            $ouLines = foreach ($f in $files) {
+                try { (Import-Clixml -Path $f.FullName).OU } catch { $f.Name }
+            }
+            $it = New-Object System.Windows.Controls.ListBoxItem
+            $it.Content = "$($folder.Name)   ($($files.Count) OU(s))"
+            $it.Tag     = $folder.FullName
+            $it.Padding = [System.Windows.Thickness]::new(10, 7, 10, 7)
+            $it.ToolTip = "OUs:`n" + ($ouLines -join "`n")
+            $lb.Items.Add($it) | Out-Null
+        }
+        $sp.Children.Add($lb) | Out-Null
+
+        $btnRestore = New-Object System.Windows.Controls.Button
+        $btnRestore.Content = "Restore Run"
+        $btnRestore.Width = 120
+        $btnRestore.Height = 32
+        $btnRestore.Margin = [System.Windows.Thickness]::new(0, 14, 0, 0)
+        $btnRestore.Background = Get-WPFBrush "#D68910"
+        $btnRestore.Foreground = "White"
+        $btnRestore.BorderThickness = [System.Windows.Thickness]::new(0)
+        $btnRestore.FontWeight = "SemiBold"
+        $btnRestore.Cursor = "Hand"
+        $btnRestore.HorizontalAlignment = "Right"
+
+        $capturedLb     = $lb
+        $capturedBW     = $bW
+        $capturedModule = Join-Path $projectRoot "Modules\RBAC\RBAC.psm1"
+
+        $btnRestore.Add_Click({
+            $selected = $capturedLb.SelectedItem
+            if (-not $selected -or [string]::IsNullOrWhiteSpace($selected.Tag)) {
+                [System.Windows.MessageBox]::Show("Select a deployment run first.", "No Selection",
+                    [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning) | Out-Null
+                return
+            }
+
+            $runPath = [string]$selected.Tag
+            $files = @(Get-ChildItem -Path (Join-Path $runPath "Backups") -Filter "ACL_*.xml" -ErrorAction SilentlyContinue)
+            if ($files.Count -eq 0) {
+                [System.Windows.MessageBox]::Show("No backup files found in this run folder.", "Error",
+                    [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error) | Out-Null
+                return
+            }
+
+            $runName = [System.IO.Path]::GetFileName($runPath)
+            $confirm = [System.Windows.MessageBox]::Show(
+                "Restore $($files.Count) ACL backup(s) from run '$runName'?`n`nEach OU's current ACL will be fully replaced.",
+                "Confirm Restore",
+                [System.Windows.MessageBoxButton]::YesNo,
+                [System.Windows.MessageBoxImage]::Warning
+            )
+            if ($confirm -ne "Yes") { return }
+
+            try {
+                Import-Module $capturedModule -Force
+                $okCount   = 0
+                $failMsgs  = @()
+                foreach ($f in $files) {
+                    try {
+                        Restore-RBACAdPermission -BackupFile $f.FullName | Out-Null
+                        $okCount++
+                    } catch {
+                        $failMsgs += "$($f.Name): $($_.Exception.Message)"
+                    }
+                }
+                $summary = "$okCount of $($files.Count) ACL(s) restored."
+                if ($failMsgs.Count -gt 0) {
+                    $summary += "`n`nFailed:`n" + ($failMsgs -join "`n")
+                    [System.Windows.MessageBox]::Show($summary, "Restore Completed with Errors",
+                        [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning) | Out-Null
+                } else {
+                    [System.Windows.MessageBox]::Show($summary, "Restore Complete",
+                        [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information) | Out-Null
+                    $capturedBW.Close()
+                }
+            } catch {
+                [System.Windows.MessageBox]::Show("Error: $($_.Exception.Message)", "Restore Failed",
+                    [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error) | Out-Null
+            }
+        }.GetNewClosure())
+
+        $sp.Children.Add($btnRestore) | Out-Null
+        $bW.Content = $sp
+        $bW.ShowDialog() | Out-Null
     })
 
     # RBAC add role

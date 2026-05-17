@@ -7,6 +7,10 @@
 # Module variable for the current log file path
 $script:LogFilePath = $null
 
+# GUID resolution maps — populated by Get-RBACGuidMap / Get-RBACExtendedRightMap
+$script:GuidMap         = @{}
+$script:ExtendedRightMap = @{}
+
 function Write-RBACLog {
     <#
     .SYNOPSIS
@@ -391,6 +395,248 @@ function Set-RBACNTFSPermission {
     }
 }
 
+function Backup-RBACAdPermission {
+    <#
+    .SYNOPSIS
+        Snapshots the current ACL of an AD object to an XML file before modification.
+    .PARAMETER TargetOU
+        Distinguished name of the OU whose ACL will be backed up.
+    .PARAMETER BackupDirectory
+        Directory where the backup XML file will be written.
+    .OUTPUTS
+        Full path of the created backup file, or $null on failure.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$TargetOU,
+
+        [Parameter(Mandatory)]
+        [string]$BackupDirectory
+    )
+
+    if (-not (Test-Path $BackupDirectory)) {
+        New-Item -Path $BackupDirectory -ItemType Directory -Force | Out-Null
+    }
+
+    try {
+        $acl       = Get-Acl -Path "AD:\$TargetOU" -ErrorAction Stop
+        $sddl      = $acl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access)
+        $sanitized = $TargetOU -replace '[\\/:*?"<>|,=]', '_'
+        $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+        $backupFile = Join-Path $BackupDirectory "ACL_${timestamp}_${sanitized}.xml"
+
+        @{
+            OU        = $TargetOU
+            Timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+            User      = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+            SDDL      = $sddl
+        } | Export-Clixml -Path $backupFile -Force
+
+        return $backupFile
+    }
+    catch {
+        Write-Warning "Backup-RBACAdPermission: failed to back up ACL for '$TargetOU': $_"
+        return $null
+    }
+}
+
+function Restore-RBACAdPermission {
+    <#
+    .SYNOPSIS
+        Restores the ACL of an AD object from a backup XML file.
+    .DESCRIPTION
+        Fully replaces the current DACL with the one captured at backup time.
+        Any ACEs added after the backup are removed. This is intentionally destructive.
+    .PARAMETER BackupFile
+        Full path to the XML backup file produced by Backup-RBACAdPermission.
+    .PARAMETER LogDirectory
+        Log directory.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)]
+        [string]$BackupFile,
+
+        [string]$LogDirectory
+    )
+
+    if ([string]::IsNullOrWhiteSpace($BackupFile)) {
+        throw "Backup file path is null or empty."
+    }
+    if (-not (Test-Path $BackupFile)) {
+        throw "Backup file not found: '$BackupFile'"
+    }
+
+    try {
+        $data = Import-Clixml -Path $BackupFile
+
+        # Resolve SDDL: new backups store SDDL directly; legacy backups stored the ACL object
+        # which PowerShell serializes with a Sddl NoteProperty we can still read.
+        $sddl = if ($data.SDDL) {
+            $data.SDDL
+        } elseif ($data.ACL -and $data.ACL.PSObject.Properties['Sddl'] -and $data.ACL.Sddl) {
+            $data.ACL.Sddl
+        } else {
+            throw "Backup file '$BackupFile' is in an unsupported format (no SDDL). Re-deploy to generate a new backup."
+        }
+
+        $targetPath = "AD:\$($data.OU)"
+
+        if ($PSCmdlet.ShouldProcess($data.OU, "Restore AD ACL from '$BackupFile' (taken $($data.Timestamp) by $($data.User))")) {
+            $acl = Get-Acl -Path $targetPath -ErrorAction Stop
+            $acl.SetSecurityDescriptorSddlForm($sddl)
+            Set-Acl -Path $targetPath -AclObject $acl -ErrorAction Stop
+            Write-RBACLog -Message "ACL restored on '$($data.OU)' from '$BackupFile' (backup: $($data.Timestamp), user: $($data.User))." -Level Success -LogDirectory $LogDirectory
+            return $true
+        }
+        else {
+            Write-RBACLog -Message "[WhatIf] ACL would be restored on '$($data.OU)' from '$BackupFile'." -Level Info -LogDirectory $LogDirectory
+            return $false
+        }
+    }
+    catch {
+        Write-RBACLog -Message "Error restoring ACL from '$BackupFile': $_" -Level Error -LogDirectory $LogDirectory
+        throw
+    }
+}
+
+function Get-RBACGuidMap {
+    <#
+    .SYNOPSIS
+        Builds a name→GUID map from the AD schema (attributes and classes).
+    .PARAMETER Server
+        Target DC for all AD operations.
+    #>
+    [CmdletBinding()]
+    param([string]$Server)
+
+    $serverParam = @{}
+    if ($Server) { $serverParam.Server = $Server }
+
+    $script:GuidMap = @{}
+    $script:DefaultServer = $Server
+    $schemaNamingContext = (Get-ADRootDSE @serverParam).schemaNamingContext
+
+    Get-ADObject -SearchBase $schemaNamingContext `
+                 -LDAPFilter "(|(objectClass=classSchema)(objectClass=attributeSchema))" `
+                 -Properties lDAPDisplayName, schemaIDGUID @serverParam |
+        ForEach-Object {
+            if ($_.lDAPDisplayName -and $_.schemaIDGUID) {
+                try {
+                    $script:GuidMap[$_.lDAPDisplayName.ToLower()] = [System.Guid][byte[]]$_.schemaIDGUID
+                } catch { }
+            }
+        }
+}
+
+function Get-RBACExtendedRightMap {
+    <#
+    .SYNOPSIS
+        Builds a name→GUID map from the AD configuration partition (extended rights).
+    .PARAMETER Server
+        Target DC for all AD operations.
+    #>
+    [CmdletBinding()]
+    param([string]$Server)
+
+    $serverParam = @{}
+    if ($Server) { $serverParam.Server = $Server }
+
+    $script:ExtendedRightMap = @{}
+    $configNamingContext = (Get-ADRootDSE @serverParam).configurationNamingContext
+
+    Get-ADObject -SearchBase $configNamingContext `
+                 -LDAPFilter "(&(objectclass=controlAccessRight)(rightsguid=*))" `
+                 -Properties displayName, rightsGuid @serverParam |
+        ForEach-Object {
+            if ($_.displayName -and $_.rightsGuid) {
+                try {
+                    $script:ExtendedRightMap[$_.displayName.ToLower()] = [System.Guid]$_.rightsGuid
+                } catch { }
+            }
+        }
+}
+
+function Resolve-RBACNameToGuid {
+    <#
+    .SYNOPSIS
+        Resolves an attribute/class name or extended right name to its AD GUID.
+    .DESCRIPTION
+        Looks up the name in the schema map (Get-RBACGuidMap) then the extended rights
+        map (Get-RBACExtendedRightMap). If the input is already a valid GUID it is
+        returned as-is. If empty or the all-zeros GUID, returns the all-zeros GUID.
+        Requires the maps to be populated first.
+    .PARAMETER Name
+        Human-readable name (e.g. "user", "ms-Mcs-AdmPwd", "Reset Password")
+        or a raw GUID string.
+    #>
+    [CmdletBinding()]
+    param([string]$Name)
+
+    $nullGuid = [Guid]::Empty.ToString()
+
+    if ([string]::IsNullOrWhiteSpace($Name) -or $Name -eq $nullGuid) {
+        return $nullGuid
+    }
+
+    # Pass-through: input is already a GUID
+    if ($Name -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+        return $Name.ToLower()
+    }
+
+    $key = $Name.Trim().ToLower()
+
+    if ($script:GuidMap.ContainsKey($key)) {
+        return $script:GuidMap[$key].ToString()
+    }
+
+    if ($script:ExtendedRightMap.ContainsKey($key)) {
+        return $script:ExtendedRightMap[$key].ToString()
+    }
+
+    # Cache miss — query AD directly as fallback
+    try {
+        $rootDseParams = @{ ErrorAction = 'Stop' }
+        if ($script:DefaultServer) { $rootDseParams['Server'] = $script:DefaultServer }
+        $rootDse = Get-ADRootDSE @rootDseParams
+
+        $schemaParams = @{
+            SearchBase  = $rootDse.schemaNamingContext
+            LDAPFilter  = "(lDAPDisplayName=$Name)"
+            Properties  = @('schemaIDGUID')
+            ErrorAction = 'Stop'
+        }
+        if ($script:DefaultServer) { $schemaParams['Server'] = $script:DefaultServer }
+
+        $schemaObj = Get-ADObject @schemaParams | Select-Object -First 1
+        if ($schemaObj -and $schemaObj.schemaIDGUID) {
+            $guid = [System.Guid][byte[]]$schemaObj.schemaIDGUID
+            $script:GuidMap[$key] = $guid
+            return $guid.ToString()
+        }
+
+        $rightParams = @{
+            SearchBase  = $rootDse.configurationNamingContext
+            LDAPFilter  = "(&(objectclass=controlAccessRight)(displayName=$Name))"
+            Properties  = @('rightsGuid')
+            ErrorAction = 'Stop'
+        }
+        if ($script:DefaultServer) { $rightParams['Server'] = $script:DefaultServer }
+
+        $rightObj = Get-ADObject @rightParams | Select-Object -First 1
+        if ($rightObj -and $rightObj.rightsGuid) {
+            $guid = [System.Guid]$rightObj.rightsGuid
+            $script:ExtendedRightMap[$key] = $guid
+            return $guid.ToString()
+        }
+    }
+    catch { }
+
+    Write-Warning "Resolve-RBACNameToGuid: '$Name' not found in AD schema or extended rights. The class/attribute may not exist in this environment."
+    return $null
+}
+
 function Set-RBACADPermission {
     <#
     .SYNOPSIS
@@ -414,18 +660,37 @@ function Set-RBACADPermission {
 
         [string]$Server,
 
-        [string]$LogDirectory
+        [string]$LogDirectory,
+
+        [string]$BackupDirectory
     )
 
     $serverParam = @{}
     if ($Server) { $serverParam.Server = $Server }
 
-    $targetOU = $Permission.TargetOU
-    $adRights = $Permission.ADRights
-    $objectType = $Permission.ObjectType
-    $inheritanceType = $Permission.InheritanceType
-    $inheritedObjectType = $Permission.InheritedObjectType
-    $accessControlType = $Permission.AccessControlType
+    $targetOU            = $Permission.TargetOU
+    $adRights            = $Permission.ADRights
+    $inheritanceType     = $Permission.InheritanceType
+    $accessControlType   = $Permission.AccessControlType
+
+    $objectType          = Resolve-RBACNameToGuid -Name $Permission.ObjectType
+    $inheritedObjectType = Resolve-RBACNameToGuid -Name $Permission.InheritedObjectType
+
+    # Fail fast: a named type that couldn't be resolved would produce a null-GUID ACE
+    # (= applies to ALL object types), which is dangerously overbroad.
+    if ($null -eq $objectType) {
+        throw "Cannot apply AD permission on '$targetOU': ObjectType '$($Permission.ObjectType)' could not be resolved. The schema class/attribute may not exist in this environment."
+    }
+    if ($null -eq $inheritedObjectType) {
+        throw "Cannot apply AD permission on '$targetOU': InheritedObjectType '$($Permission.InheritedObjectType)' could not be resolved. The schema class may not exist in this environment."
+    }
+
+    if ($BackupDirectory) {
+        $backupFile = Backup-RBACAdPermission -TargetOU $targetOU -BackupDirectory $BackupDirectory
+        if ($backupFile) {
+            Write-RBACLog -Message "ACL backup created: '$backupFile'." -Level Info -LogDirectory $LogDirectory
+        }
+    }
 
     if ($PSCmdlet.ShouldProcess("$targetOU", "Apply AD delegation ($adRights) for '$GroupName'")) {
         try {
@@ -782,6 +1047,11 @@ Export-ModuleMember -Function @(
     'Write-RBACLog',
     'Import-RBACConfiguration',
     'Get-RBACEnvironmentInfo',
+    'Get-RBACGuidMap',
+    'Get-RBACExtendedRightMap',
+    'Resolve-RBACNameToGuid',
+    'Backup-RBACAdPermission',
+    'Restore-RBACAdPermission',
     'New-RBACGroup',
     'Add-RBACGroupMember',
     'Set-RBACNTFSPermission',
