@@ -632,6 +632,7 @@ function Populate-GPOTab {
         $secOptCount = if ($gpo.SecurityOptions) { $gpo.SecurityOptions.Count } else { 0 }
         $uraCount = if ($gpo.UserRightsAssignments) { $gpo.UserRightsAssignments.Count } else { 0 }
         $svcCount = if ($gpo.SystemServices) { $gpo.SystemServices.Count } else { 0 }
+        $scriptCount = if ($gpo.Scripts) { $gpo.Scripts.Count } else { 0 }
         $isLapsGPO = [bool]($gpo.RegistrySettings | Where-Object { $_.Key -like "*LAPS*" })
 
         $textStack = New-Object System.Windows.Controls.StackPanel
@@ -930,6 +931,53 @@ function Populate-GPOTab {
 
             $svcExpander.Content = $svcStack
             [void]$outerStack.Children.Add($svcExpander)
+        }
+
+        # Scripts expander (read-only, Startup/Shutdown)
+        if ($scriptCount -gt 0) {
+            $scriptsExpander = New-Object System.Windows.Controls.Expander
+            $scriptsExpander.Header = "Scripts (Startup/Shutdown)"
+            $scriptsExpander.Margin = [System.Windows.Thickness]::new(58, 8, 0, 0)
+            $scriptsExpander.FontSize = 12
+
+            $scriptsStack = New-Object System.Windows.Controls.StackPanel
+            $scriptsStack.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+
+            foreach ($s in $gpo.Scripts) {
+                $scriptRow = New-Object System.Windows.Controls.DockPanel
+                $scriptRow.Margin = [System.Windows.Thickness]::new(0, 2, 0, 2)
+
+                $typeLabel = New-Object System.Windows.Controls.TextBlock
+                $typeLabel.Text = "[$($s.Type)]"
+                $typeLabel.FontSize = 11
+                $typeLabel.FontWeight = "SemiBold"
+                $typeLabel.Foreground = Get-WPFBrush "#1A5276"
+                $typeLabel.MinWidth = 80
+                [System.Windows.Controls.DockPanel]::SetDock($typeLabel, "Left")
+
+                $nameLabel = New-Object System.Windows.Controls.TextBlock
+                $nameLabel.Text = $s.ScriptName
+                $nameLabel.FontSize = 11
+                $nameLabel.FontWeight = "SemiBold"
+                $nameLabel.Foreground = Get-WPFBrush "#117A65"
+                $nameLabel.MinWidth = 160
+                $nameLabel.ToolTip = if ($s.Description) { $s.Description } else { $s.ScriptName }
+                [System.Windows.Controls.DockPanel]::SetDock($nameLabel, "Left")
+
+                $descLabel = New-Object System.Windows.Controls.TextBlock
+                $descLabel.Text = if ($s.Description) { $s.Description } else { "" }
+                $descLabel.FontSize = 11
+                $descLabel.Foreground = Get-WPFBrush "#666"
+                $descLabel.TextTrimming = "CharacterEllipsis"
+
+                [void]$scriptRow.Children.Add($typeLabel)
+                [void]$scriptRow.Children.Add($nameLabel)
+                [void]$scriptRow.Children.Add($descLabel)
+                [void]$scriptsStack.Children.Add($scriptRow)
+            }
+
+            $scriptsExpander.Content = $scriptsStack
+            [void]$outerStack.Children.Add($scriptsExpander)
         }
 
         # User Rights Assignments expander (editable groups)

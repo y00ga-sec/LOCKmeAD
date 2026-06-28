@@ -115,9 +115,10 @@ function Import-GPOConfiguration {
         $hasRG = $gpo.RestrictedGroups -and $gpo.RestrictedGroups.Count -gt 0
         $hasSecOpt = $gpo.SecurityOptions -and $gpo.SecurityOptions.Count -gt 0
         $hasSysSvc = $gpo.SystemServices -and $gpo.SystemServices.Count -gt 0
+        $hasScripts = $gpo.Scripts -and $gpo.Scripts.Count -gt 0
 
-        if (-not $hasRegistry -and -not $hasRegPref -and -not $hasURA -and -not $hasRG -and -not $hasSecOpt -and -not $hasSysSvc) {
-            throw "GPO '$($gpo.Name)' has no 'RegistrySettings', 'RegistryPreferences', 'SecurityOptions', 'UserRightsAssignments', 'RestrictedGroups', or 'SystemServices' defined."
+        if (-not $hasRegistry -and -not $hasRegPref -and -not $hasURA -and -not $hasRG -and -not $hasSecOpt -and -not $hasSysSvc -and -not $hasScripts) {
+            throw "GPO '$($gpo.Name)' has no 'RegistrySettings', 'RegistryPreferences', 'SecurityOptions', 'UserRightsAssignments', 'RestrictedGroups', 'SystemServices', or 'Scripts' defined."
         }
 
         # Validate registry settings
@@ -162,7 +163,7 @@ function Import-GPOConfiguration {
                 if (-not $assignment.Right) {
                     throw "GPO '$($gpo.Name)': a User Rights Assignment is missing the 'Right' property."
                 }
-                if (-not $assignment.Groups -or $assignment.Groups.Count -eq 0) {
+                if ($gpo.Enabled -and (-not $assignment.Groups -or $assignment.Groups.Count -eq 0)) {
                     throw "GPO '$($gpo.Name)': User Rights Assignment '$($assignment.Right)' has no 'Groups' defined."
                 }
             }
@@ -195,7 +196,7 @@ function Import-GPOConfiguration {
                 if (-not $rg.Group) {
                     throw "GPO '$($gpo.Name)': a RestrictedGroup entry is missing the 'Group' property."
                 }
-                if (-not $rg.Members -or $rg.Members.Count -eq 0) {
+                if ($gpo.Enabled -and (-not $rg.Members -or $rg.Members.Count -eq 0)) {
                     throw "GPO '$($gpo.Name)': RestrictedGroup '$($rg.Group)' has no 'Members' defined."
                 }
             }
@@ -210,6 +211,22 @@ function Import-GPOConfiguration {
                 }
                 if ($null -eq $svc.StartupType -or $svc.StartupType -notin $validStartupTypes) {
                     throw "GPO '$($gpo.Name)': SystemService '$($svc.Name)' has an invalid 'StartupType'. Valid values: 2 (Automatic), 3 (Manual), 4 (Disabled)"
+                }
+            }
+        }
+
+        # Validate Scripts
+        if ($hasScripts) {
+            $validScriptTypes = @('Startup', 'Shutdown')
+            foreach ($s in $gpo.Scripts) {
+                if (-not $s.Type -or $s.Type -notin $validScriptTypes) {
+                    throw "GPO '$($gpo.Name)': a Script entry has an invalid 'Type'. Valid values: Startup, Shutdown."
+                }
+                if (-not $s.ScriptName) {
+                    throw "GPO '$($gpo.Name)': a Script entry is missing the 'ScriptName' property."
+                }
+                if (-not $s.ScriptPath) {
+                    throw "GPO '$($gpo.Name)': Script '$($s.ScriptName)' is missing the 'ScriptPath' property."
                 }
             }
         }
@@ -1406,6 +1423,166 @@ function Set-GPOSystemServices {
     }
 }
 
+# ============================================================================
+# Scripts (Computer Configuration > Windows Settings > Scripts)
+# ============================================================================
+
+function Set-GPOScript {
+    <#
+    .SYNOPSIS
+        Deploys PowerShell scripts to a GPO via SYSVOL (Startup or Shutdown).
+    .DESCRIPTION
+        Writes each script's Content to the GPO's SYSVOL Machine\Scripts\<Type>
+        directory, updates psscripts.ini with the ordered entries, registers the
+        Scripts CSE on the GPO AD object, and increments the version number so
+        Group Policy processes the change on next refresh.
+    .PARAMETER GPOName
+        Name of an existing GPO to configure.
+    .PARAMETER Scripts
+        Array of script objects with Type (Startup|Shutdown), ScriptName, ScriptPath
+        (path relative to the tool root), optional Parameters, and optional Description.
+    .PARAMETER Server
+        Target DC for all AD operations (avoids replication lag).
+    .PARAMETER LogDirectory
+        Log directory.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)]
+        [string]$GPOName,
+
+        [Parameter(Mandatory)]
+        [array]$Scripts,
+
+        [string]$Server,
+
+        [string]$LogDirectory
+    )
+
+    $serverParam = @{}
+    if ($Server) { $serverParam.Server = $Server }
+
+    $target = "$GPOName ($($Scripts.Count) script(s))"
+
+    if ($PSCmdlet.ShouldProcess($target, "Deploy PowerShell scripts to SYSVOL")) {
+        try {
+            $gpo = Get-GPO -Name $GPOName @serverParam -ErrorAction Stop
+            $gpoGuid = "{$($gpo.Id.ToString().ToUpper())}"
+            $domainDNS = (Get-ADDomain @serverParam).DNSRoot
+            $domainDN = (Get-ADDomain @serverParam).DistinguishedName
+
+            $sysvolBase = "\\$domainDNS\SYSVOL\$domainDNS\Policies\$gpoGuid"
+            $machineScriptsPath = "$sysvolBase\Machine\Scripts"
+
+            # Resolve tool root: Modules\GPO\ -> tool root (two levels up)
+            $toolRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+
+            # Group scripts by type, preserving declaration order
+            $scriptsByType = [ordered]@{}
+            foreach ($s in $Scripts) {
+                if (-not $scriptsByType.Contains($s.Type)) { $scriptsByType[$s.Type] = @() }
+                $scriptsByType[$s.Type] += $s
+            }
+
+            # Copy script files and build psscripts.ini content
+            $iniLines = [System.Collections.Generic.List[string]]::new()
+            $isFirst = $true
+
+            foreach ($type in $scriptsByType.Keys) {
+                # Script goes in Machine\Scripts\<Type>\ inside the GPO policy folder
+                # This directory is cached locally on each machine — accessible at Shutdown
+                # without network, and treated as a local path by PowerShell (no execution
+                # policy restriction on unsigned scripts).
+                $typeDir = "$machineScriptsPath\$type"
+                if (-not (Test-Path $typeDir)) {
+                    New-Item -Path $typeDir -ItemType Directory -Force | Out-Null
+                    Write-GPOLog -Message "  Created GPO scripts directory: '$typeDir'" -Level Info -LogDirectory $LogDirectory
+                }
+
+                if (-not $isFirst) { $iniLines.Add("") }
+                $iniLines.Add("[$type]")
+
+                $scriptIdx = 0
+                foreach ($s in $scriptsByType[$type]) {
+                    # Resolve source path and copy to GPO policy folder
+                    $sourcePath = if ([System.IO.Path]::IsPathRooted($s.ScriptPath)) {
+                        $s.ScriptPath
+                    } else {
+                        Join-Path $toolRoot $s.ScriptPath
+                    }
+                    if (-not (Test-Path $sourcePath)) {
+                        throw "Script source not found: '$sourcePath'"
+                    }
+                    $destPath = "$typeDir\$($s.ScriptName)"
+                    Copy-Item -Path $sourcePath -Destination $destPath -Force
+                    Write-GPOLog -Message "  Copied '$sourcePath' -> '$destPath'" -Level Success -LogDirectory $LogDirectory
+
+                    # psscripts.ini uses just the filename — gpscript.exe resolves it
+                    # relative to the GPO's local cached scripts folder
+                    $params = if ($s.Parameters) { $s.Parameters } else { "" }
+                    $iniLines.Add("${scriptIdx}CmdLine=$($s.ScriptName)")
+                    $iniLines.Add("${scriptIdx}Parameters=$params")
+                    $scriptIdx++
+                }
+                $isFirst = $false
+            }
+
+            # Write psscripts.ini in Machine\Scripts\ (Unicode as required by GPO engine)
+            if (-not (Test-Path $machineScriptsPath)) {
+                New-Item -Path $machineScriptsPath -ItemType Directory -Force | Out-Null
+            }
+            $iniContent = ($iniLines -join "`r`n") + "`r`n"
+            [System.IO.File]::WriteAllText("$machineScriptsPath\psscripts.ini", $iniContent, [System.Text.Encoding]::Unicode)
+            Write-GPOLog -Message "  psscripts.ini written to '$machineScriptsPath'" -Level Info -LogDirectory $LogDirectory
+
+            # Update gPCMachineExtensionNames to include Scripts CSE
+            $scriptsCse = "[{42B5FAAE-6536-11D2-AE5A-0000F87571E3}{40B6664F-4972-11D1-A7CA-0000F87571E3}]"
+            $gpoDN = "CN=$gpoGuid,CN=Policies,CN=System,$domainDN"
+            $gpoAD = Get-ADObject -Identity $gpoDN -Properties gPCMachineExtensionNames, versionNumber @serverParam
+            $currentExt = if ($gpoAD.gPCMachineExtensionNames) { $gpoAD.gPCMachineExtensionNames } else { "" }
+
+            if ($currentExt -notlike "*42B5FAAE*") {
+                $newExt = $currentExt + $scriptsCse
+                Set-ADObject -Identity $gpoDN -Replace @{ gPCMachineExtensionNames = $newExt } @serverParam
+                Write-GPOLog -Message "  Updated gPCMachineExtensionNames with Scripts CSE." -Level Info -LogDirectory $LogDirectory
+            }
+
+            # Increment machine version (lower 16 bits)
+            $currentVersion = if ($gpoAD.versionNumber) { [int]$gpoAD.versionNumber } else { 0 }
+            $userVersion = ($currentVersion -shr 16) -band 0xFFFF
+            $machineVersion = ($currentVersion -band 0xFFFF) + 1
+            $newVersion = ($userVersion -shl 16) -bor $machineVersion
+            Set-ADObject -Identity $gpoDN -Replace @{ versionNumber = $newVersion } @serverParam
+
+            # Update GPT.INI version to match
+            $gptIniPath = "$sysvolBase\GPT.INI"
+            if (Test-Path $gptIniPath) {
+                $gptContent = Get-Content $gptIniPath -Raw
+                $gptContent = $gptContent -replace 'Version=\d+', "Version=$newVersion"
+                Set-Content -Path $gptIniPath -Value $gptContent -Encoding ASCII
+            }
+
+            foreach ($s in $Scripts) {
+                $desc = if ($s.Description) { " ($($s.Description))" } else { "" }
+                Write-GPOLog -Message "  Script [$($s.Type)]: $($s.ScriptName)$desc" -Level Success -LogDirectory $LogDirectory
+            }
+
+            Write-GPOLog -Message "Scripts applied to GPO '$GPOName'." -Level Success -LogDirectory $LogDirectory
+        }
+        catch {
+            Write-GPOLog -Message "Error deploying scripts to GPO '$GPOName': $_" -Level Error -LogDirectory $LogDirectory
+            throw
+        }
+    }
+    else {
+        Write-GPOLog -Message "[WhatIf] Scripts would be deployed to GPO '$GPOName':" -Level Info -LogDirectory $LogDirectory
+        foreach ($s in $Scripts) {
+            $desc = if ($s.Description) { " - $($s.Description)" } else { "" }
+            Write-GPOLog -Message "  [WhatIf] [$($s.Type)] $($s.ScriptName)$desc" -Level Info -LogDirectory $LogDirectory
+        }
+    }
+}
+
 # Export module functions
 Export-ModuleMember -Function @(
     'Write-GPOLog',
@@ -1416,6 +1593,7 @@ Export-ModuleMember -Function @(
     'Remove-GPOAuthenticatedUsers',
     'New-GPOSecurityPolicy',
     'Set-GPORegistryPreferences',
+    'Set-GPOScript',
     'Set-GPOUserRightsAssignment',
     'Set-GPORestrictedGroups',
     'Set-GPOSecurityOptions',

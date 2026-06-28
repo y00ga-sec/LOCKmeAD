@@ -149,6 +149,7 @@ foreach ($gpo in $config.GPOs) {
     $uraCount = if ($gpo.UserRightsAssignments) { $gpo.UserRightsAssignments.Count } else { 0 }
     $rgCount = if ($gpo.RestrictedGroups) { $gpo.RestrictedGroups.Count } else { 0 }
     $svcCount = if ($gpo.SystemServices) { $gpo.SystemServices.Count } else { 0 }
+    $scriptCount = if ($gpo.Scripts) { $gpo.Scripts.Count } else { 0 }
     $linkCount = if ($gpo.LinkTargets) { $gpo.LinkTargets.Count } else { 0 }
 
     $parts = @()
@@ -158,6 +159,7 @@ foreach ($gpo in $config.GPOs) {
     if ($uraCount -gt 0) { $parts += "$uraCount URA" }
     if ($rgCount -gt 0) { $parts += "$rgCount RG" }
     if ($svcCount -gt 0) { $parts += "$svcCount SVC" }
+    if ($scriptCount -gt 0) { $parts += "$scriptCount script" }
     $parts += "$linkCount links"
     $detail = $parts -join ', '
 
@@ -309,6 +311,21 @@ foreach ($gpo in $config.GPOs) {
         }
         catch {
             Write-GPOLog -Message "System Services for '$($gpo.Name)' failed: $_" -Level Error -LogDirectory $logDir
+            $stats.Errors++
+        }
+    }
+
+    # Deploy Scripts (Startup / Shutdown)
+    if ($gpo.Scripts -and $gpo.Scripts.Count -gt 0) {
+        try {
+            Set-GPOScript -GPOName $gpo.Name `
+                           -Scripts $gpo.Scripts `
+                           -Server $targetServer `
+                           -LogDirectory $logDir `
+                           -WhatIf:$WhatIfPreference
+        }
+        catch {
+            Write-GPOLog -Message "Scripts for '$($gpo.Name)' failed: $_" -Level Error -LogDirectory $logDir
             $stats.Errors++
         }
     }

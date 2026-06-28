@@ -74,13 +74,13 @@
       "Enabled": true,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
-      "RegistryPreferences": [
+      "Scripts": [
         {
-          "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Dnscache\\Parameters",
-          "ValueName": "EnableNetbios",
-          "Value": 0,
-          "Type": "DWord",
-          "Description": "Disable NetBIOS name resolution via DNS client"
+          "Type": "Shutdown",
+          "ScriptName": "Disable-NBTNS.ps1",
+          "ScriptPath": "GPO\\Scripts\\Disable-NBTNS.ps1",
+          "Parameters": "",
+          "Description": "Disable NetBIOS over TCP/IP per network adapter (NetbiosOptions=2)"
         }
       ]
     },
@@ -333,9 +333,9 @@
         {
           "Key": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters",
           "ValueName": "DisabledComponents",
-          "Value": 32,
+          "Value": 255,
           "Type": "DWord",
-          "Description": "Disable IPv6 on all non-tunnel interfaces (0x20)"
+          "Description": "Disable all IPv6 components (0xff)"
         }
       ]
     },
@@ -457,22 +457,6 @@
       ]
     },
     {
-      "Name": "SEC-Enable-SMBSigning-Client",
-      "Description": "Enable SMB signing on clients when server supports it (opportunistic signing)",
-      "Enabled": true,
-      "GpoStatus": "UserSettingsDisabled",
-      "LinkTargets": null,
-      "SecurityOptions": [
-        {
-          "Key": "MACHINE\\System\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters",
-          "ValueName": "EnableSecuritySignature",
-          "Value": 1,
-          "Type": "DWord",
-          "Description": "Microsoft network client: Digitally sign communications (if server agrees)"
-        }
-      ]
-    },
-    {
       "Name": "SEC-Require-SMBSigning-Client",
       "Description": "Require SMB signing on clients for all connections to prevent SMB relay attacks",
       "Enabled": true,
@@ -489,8 +473,8 @@
       ]
     },
     {
-      "Name": "SEC-Enable-SMBSigning-Server",
-      "Description": "Enable SMB signing on servers when client supports it (opportunistic signing)",
+      "Name": "SEC-Require-SMBSigning-Server",
+      "Description": "Require SMB signing on servers for all connections to prevent SMB relay attacks",
       "Enabled": true,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
@@ -501,16 +485,7 @@
           "Value": 1,
           "Type": "DWord",
           "Description": "Microsoft network server: Digitally sign communications (if client agrees)"
-        }
-      ]
-    },
-    {
-      "Name": "SEC-Require-SMBSigning-Server",
-      "Description": "Require SMB signing on servers for all connections to prevent SMB relay attacks",
-      "Enabled": true,
-      "GpoStatus": "UserSettingsDisabled",
-      "LinkTargets": null,
-      "SecurityOptions": [
+        },
         {
           "Key": "MACHINE\\System\\CurrentControlSet\\Services\\LanmanServer\\Parameters",
           "ValueName": "RequireSecuritySignature",
