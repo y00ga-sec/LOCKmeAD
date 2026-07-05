@@ -573,7 +573,7 @@ function Update-GPOFilteringOUWarning {
         $UI.GPOFilteringOUWarning.Visibility = "Collapsed"
     }
     elseif ($text -notmatch '(?i)(tier|t)[-_. ]?(0|zero)') {
-        $UI.GPOFilteringOUWarning.Text = "Warning: This OU does not reference a Tier 0 location (e.g. T0, Tier0, Tier-0...). Filtering groups will not be deployed."
+        $UI.GPOFilteringOUWarning.Text = "Warning: This OU does not reference a Tier 0 location. Filtering groups will still be deployed, but consider using a Tier 0 OU for proper security boundaries."
         $UI.GPOFilteringOUWarning.Foreground = Get-WPFBrush "#D35400"
         $UI.GPOFilteringOUWarning.Visibility = "Visible"
     }

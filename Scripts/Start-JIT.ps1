@@ -29,6 +29,7 @@ Add-Type -AssemblyName WindowsBase
 $script:LogFilePath = $null
 $script:EnvInfo = $null
 $script:LogDirectory = Join-Path (Split-Path $PSScriptRoot -Parent) "Logs"
+$script:StateFile    = Join-Path $script:LogDirectory "JIT_State.json"
 
 # ============================================================================
 # Functions
@@ -483,6 +484,63 @@ function Show-SearchDialog {
         return $script:SearchDialogResult
     }
     return $null
+}
+
+# ============================================================================
+# Session persistence
+# ============================================================================
+
+function Load-PreviousActivityLog {
+    if (-not (Test-Path $script:LogDirectory)) { return }
+
+    $logFiles = Get-ChildItem -Path $script:LogDirectory -Filter "JIT_*.log" -ErrorAction SilentlyContinue |
+        Sort-Object -Property LastWriteTime -Descending |
+        Select-Object -First 3
+
+    if (-not $logFiles) { return }
+
+    # Display oldest-first so the most recent sits closest to the current session separator
+    [array]::Reverse($logFiles)
+
+    foreach ($file in $logFiles) {
+        $lines = Get-Content -Path $file.FullName -ErrorAction SilentlyContinue
+        if (-not $lines) { continue }
+        $sessionDate = $file.BaseName -replace '^JIT_', ''
+        $ui['ActivityLog'].AppendText("--- Session $sessionDate ---`r`n")
+        foreach ($line in $lines) {
+            $ui['ActivityLog'].AppendText("$line`r`n")
+        }
+    }
+
+    $ui['ActivityLog'].AppendText("--- Current session ---`r`n")
+    $ui['ActivityLog'].ScrollToEnd()
+}
+
+function Save-SessionState {
+    try {
+        if (-not (Test-Path $script:LogDirectory)) {
+            New-Item -Path $script:LogDirectory -ItemType Directory -Force | Out-Null
+        }
+        [PSCustomObject]@{ Groups = @($script:SessionGroups) } |
+            ConvertTo-Json -Compress |
+            Out-File -FilePath $script:StateFile -Encoding UTF8 -Force
+    }
+    catch { }
+}
+
+function Load-SessionState {
+    if (-not (Test-Path $script:StateFile)) { return }
+    try {
+        $state = Get-Content -Path $script:StateFile -Raw -ErrorAction Stop | ConvertFrom-Json
+        if ($state.Groups) {
+            foreach ($group in $state.Groups) {
+                if (-not [string]::IsNullOrWhiteSpace($group)) {
+                    $script:SessionGroups.Add($group) | Out-Null
+                }
+            }
+        }
+    }
+    catch { }
 }
 
 # ============================================================================
@@ -1033,6 +1091,7 @@ function Load-GroupMembers {
         $members = Get-JITGroupTTLMembers -GroupName $GroupName -Server $script:TargetServer
         $script:CurrentViewGroup = $GroupName
         $script:SessionGroups.Add($GroupName) | Out-Null
+        Save-SessionState
 
         if ($members -and $members.Count -gt 0) {
             foreach ($m in $members) {
@@ -1188,7 +1247,13 @@ $window.Add_Loaded({
     $ui['UntilDatePicker'].SelectedDate = (Get-Date).AddHours(4).Date
     $ui['UntilTimeBox'].Text = (Get-Date).AddHours(4).ToString("HH:mm")
     Update-DurationLabel
+    Load-SessionState
+    Load-PreviousActivityLog
     Initialize-Environment
+})
+
+$window.Add_Closed({
+    Save-SessionState
 })
 
 # ============================================================================
@@ -1322,6 +1387,7 @@ $ui['AddMemberBtn'].Add_Click({
                                       -LogDirectory $script:LogDirectory
         Append-ActivityLog $result
         $script:SessionGroups.Add($groupName) | Out-Null
+        Save-SessionState
 
         if ($script:ViewAllMode) {
             Load-AllTTLMembers

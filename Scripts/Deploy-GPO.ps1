@@ -108,21 +108,18 @@ $filteringEnabled = -not [string]::IsNullOrWhiteSpace($filteringOU)
 if ($filteringEnabled) {
     if ($filteringOU -notmatch '(?i)(tier|t)[-_. ]?(0|zero)') {
         Write-Host ""
-        Write-Host "  [ERROR] FilteringGroupsOU '$filteringOU' does not reference a Tier 0 OU (e.g. T0, Tier0, Tier-0, TierZero...). Filtering groups will NOT be deployed." -ForegroundColor Red
-        Write-GPOLog -Message "FilteringGroupsOU '$filteringOU' does not reference a Tier 0 OU. Skipping filtering group deployment." -Level Error -LogDirectory $logDir
-        $filteringEnabled = $false
+        Write-Host "  [WARNING] FilteringGroupsOU '$filteringOU' does not reference a Tier 0 location. Consider placing filtering groups in a Tier 0 OU for proper security boundaries." -ForegroundColor Yellow
+        Write-GPOLog -Message "FilteringGroupsOU '$filteringOU' does not reference a Tier 0 location. Filtering groups will still be deployed." -Level Warning -LogDirectory $logDir
     }
-    else {
-        # Verify the OU exists in AD (target PDC to avoid replication lag when Tiering just created it)
-        try {
-            Get-ADOrganizationalUnit -Identity $filteringOU -Server $targetServer -ErrorAction Stop | Out-Null
-        }
-        catch {
-            Write-Host ""
-            Write-Host "  [ERROR] FilteringGroupsOU '$filteringOU' not found in AD. Filtering groups will NOT be deployed." -ForegroundColor Red
-            Write-GPOLog -Message "FilteringGroupsOU '$filteringOU' not found in AD (queried $targetServer). Skipping filtering group deployment." -Level Error -LogDirectory $logDir
-            $filteringEnabled = $false
-        }
+    # Verify the OU exists in AD (target PDC to avoid replication lag when Tiering just created it)
+    try {
+        Get-ADOrganizationalUnit -Identity $filteringOU -Server $targetServer -ErrorAction Stop | Out-Null
+    }
+    catch {
+        Write-Host ""
+        Write-Host "  [ERROR] FilteringGroupsOU '$filteringOU' not found in AD. Filtering groups will NOT be deployed." -ForegroundColor Red
+        Write-GPOLog -Message "FilteringGroupsOU '$filteringOU' not found in AD (queried $targetServer). Skipping filtering group deployment." -Level Error -LogDirectory $logDir
+        $filteringEnabled = $false
     }
 }
 
