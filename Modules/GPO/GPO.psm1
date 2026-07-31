@@ -1,11 +1,66 @@
-#Requires -Modules ActiveDirectory, GroupPolicy
-
 # ============================================================================
 # GPO Module - Functions for deploying security GPOs from JSON templates
 # ============================================================================
+# No #Requires -Modules here (ActiveDirectory/GroupPolicy) -- every entry point
+# (LOCKmeAD.ps1, each Scripts\Deploy-*.ps1, Web\Start-LOCKmeADWeb.ps1) already
+# checks for these before importing this module, and Pode's internal per-runspace
+# module re-import (Import-PodeModulesInternal) fails this module's own #Requires
+# check in a fresh worker runspace even though GroupPolicy is genuinely installed --
+# confirmed by the same Import-Module succeeding moments earlier in the main script.
+
+Import-Module (Join-Path $PSScriptRoot "..\Common\Connection.psm1") -Force
 
 # Module variable for the current log file path
 $script:LogFilePath = $null
+
+function Get-GPOWithRetry {
+    <#
+    .SYNOPSIS
+        Resolves a GPO's Id (GUID) by display name, via its AD container object.
+    .DESCRIPTION
+        Get-GPO cannot be used here when an explicit credential is in play: the
+        GroupPolicy module's cmdlets (Get-GPO, New-GPO, Set-GPRegistryValue, etc.)
+        have no -Credential parameter at all -- confirmed against Microsoft's own
+        cmdlet reference -- unlike the ActiveDirectory module. So a GPO lookup that
+        must work off-domain goes through Get-ADObject instead, reading the GPO's
+        groupPolicyContainer object directly: its Name (== CN) is the GUID, in
+        "{GUID}" form, which System.Guid parses as-is.
+
+        When called right after creation, the GPO was written via New-GPO's GPMC
+        API inside a separate remote (WinRM) session -- a fresh LDAP query issued
+        immediately afterward from this session has occasionally not observed it
+        yet, so a short retry absorbs that instead of failing outright.
+    .PARAMETER Name
+        Display name of the GPO to look up.
+    .PARAMETER ConnParam
+        Splat hashtable with Server/Credential, as built by the caller.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Name,
+
+        [hashtable]$ConnParam = @{}
+    )
+
+    $domainDN = (Get-ADDomain @ConnParam).DistinguishedName
+
+    $attempts = 5
+    for ($i = 1; $i -le $attempts; $i++) {
+        $container = Get-ADObject -SearchBase "CN=Policies,CN=System,$domainDN" -SearchScope OneLevel `
+                        -Filter { objectClass -eq 'groupPolicyContainer' -and displayName -eq $Name } `
+                        -Properties displayName @ConnParam -ErrorAction SilentlyContinue
+        if ($container) {
+            return [PSCustomObject]@{
+                Id          = [guid]$container.Name
+                DisplayName = $container.DisplayName
+            }
+        }
+        if ($i -lt $attempts) { Start-Sleep -Milliseconds 500 }
+    }
+
+    throw "GPO '$Name' could not be found (no groupPolicyContainer object with that displayName under CN=Policies,CN=System,$domainDN, after $attempts attempt(s))."
+}
 
 function Write-GPOLog {
     <#
@@ -243,15 +298,26 @@ function Get-GPOEnvironmentInfo {
     <#
     .SYNOPSIS
         Retrieves Active Directory environment information.
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     .OUTPUTS
         PSCustomObject with environment information.
     #>
     [CmdletBinding()]
-    param()
+    param(
+        [string]$Server,
+        [PSCredential]$Credential
+    )
+
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     try {
-        $domain = Get-ADDomain
-        $forest = Get-ADForest
+        $domain = Get-ADDomain @serverParam
+        $forest = Get-ADForest @serverParam
         $currentDC = $env:COMPUTERNAME
         $pdcEmulator = $domain.PDCEmulator
 
@@ -304,11 +370,14 @@ function New-GPOFilteringGroup {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     # Check if group already exists
     try {
@@ -375,25 +444,29 @@ function Set-GPOFilteringPermission {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     # Apply Group Policy extended right GUID
     $applyGPORight = [guid]"edacfd8f-ffb3-11d1-b41d-00a0c968f939"
 
     if ($PSCmdlet.ShouldProcess($GPOName, "Set filtering ACEs (Apply: $ApplyGroupName, Deny: $DenyGroupName)")) {
         try {
-            $gpo      = Get-GPO -Name $GPOName @serverParam -ErrorAction Stop
+            $gpo      = Get-GPOWithRetry -Name $GPOName -ConnParam $serverParam
             $adDomain = Get-ADDomain @serverParam
             $domainDN = $adDomain.DistinguishedName
             $domainName = $adDomain.DNSRoot
             $gpoDN    = "CN={$($gpo.Id.ToString().ToUpper())},CN=Policies,CN=System,$domainDN"
             $gpoGuid  = $gpo.Id.ToString().ToUpper()
+            $adDrive  = Get-LOCKmeADDrive -Server $Server -Credential $Credential
 
-            $acl = Get-Acl -Path "AD:\$gpoDN"
+            $acl = Get-Acl -Path "${adDrive}\$gpoDN"
 
             # --- Remove Authenticated Users (S-1-5-11) from security filtering ---
             $authUsersSID = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-11")
@@ -445,11 +518,12 @@ function Set-GPOFilteringPermission {
             Write-GPOLog -Message "  ACE: Deny Apply Group Policy -> $DenyGroupName" -Level Success -LogDirectory $LogDirectory
 
             # Commit AD ACL
-            Set-Acl -Path "AD:\$gpoDN" -AclObject $acl
+            Set-Acl -Path "${adDrive}\$gpoDN" -AclObject $acl
             Write-GPOLog -Message "Filtering permissions applied to GPO '$GPOName' (AD object)." -Level Success -LogDirectory $LogDirectory
 
             # --- Sync SYSVOL folder ACL ---
-            $sysvolPath = "\\$domainName\SYSVOL\$domainName\Policies\{$gpoGuid}"
+            $sysvolRoot = Get-LOCKmeADSysvolDrive -DomainDNSRoot $domainName -Credential $Credential
+            $sysvolPath = "$sysvolRoot\$domainName\Policies\{$gpoGuid}"
             if (Test-Path $sysvolPath) {
                 $sysvolAcl = Get-Acl -Path $sysvolPath
 
@@ -511,22 +585,26 @@ function Remove-GPOAuthenticatedUsers {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     if ($PSCmdlet.ShouldProcess($GPOName, "Remove Authenticated Users from security filtering")) {
         try {
-            $gpo        = Get-GPO -Name $GPOName @serverParam -ErrorAction Stop
+            $gpo        = Get-GPOWithRetry -Name $GPOName -ConnParam $serverParam
             $adDomain   = Get-ADDomain @serverParam
             $domainDN   = $adDomain.DistinguishedName
             $domainName = $adDomain.DNSRoot
             $gpoGuid    = $gpo.Id.ToString().ToUpper()
             $gpoDN      = "CN={$gpoGuid},CN=Policies,CN=System,$domainDN"
+            $adDrive    = Get-LOCKmeADDrive -Server $Server -Credential $Credential
 
-            $acl          = Get-Acl -Path "AD:\$gpoDN"
+            $acl          = Get-Acl -Path "${adDrive}\$gpoDN"
             $authUsersSID = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-11")
             $rulesToRemove = @($acl.Access | Where-Object {
                 $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq $authUsersSID.Value
@@ -536,7 +614,7 @@ function Remove-GPOAuthenticatedUsers {
                 foreach ($rule in $rulesToRemove) {
                     $acl.RemoveAccessRule($rule) | Out-Null
                 }
-                Set-Acl -Path "AD:\$gpoDN" -AclObject $acl
+                Set-Acl -Path "${adDrive}\$gpoDN" -AclObject $acl
                 Write-GPOLog -Message "Removed Authenticated Users from GPO '$GPOName' AD object ($($rulesToRemove.Count) ACE(s))." -Level Success -LogDirectory $LogDirectory
             }
             else {
@@ -544,7 +622,8 @@ function Remove-GPOAuthenticatedUsers {
             }
 
             # --- Sync SYSVOL folder ACL ---
-            $sysvolPath = "\\$domainName\SYSVOL\$domainName\Policies\{$gpoGuid}"
+            $sysvolRoot = Get-LOCKmeADSysvolDrive -DomainDNSRoot $domainName -Credential $Credential
+            $sysvolPath = "$sysvolRoot\$domainName\Policies\{$gpoGuid}"
             if (Test-Path $sysvolPath) {
                 $sysvolAcl = Get-Acl -Path $sysvolPath
                 $sysvolAuthRules = @($sysvolAcl.Access | Where-Object {
@@ -612,13 +691,25 @@ function New-GPOSecurityPolicy {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
-    $existingGPO = Get-GPO -Name $Name @serverParam -ErrorAction SilentlyContinue
+    # Get-GPO/New-GPO/Set-GPRegistryValue have no -Credential parameter at all (unlike
+    # the ActiveDirectory module) -- route them through a remote WinRM session against
+    # -Server when an explicit credential is in play.
+    $gpoServer = if ($Credential) { $null } else { $Server }
+    $existingGPO = Invoke-LOCKmeADRemote -Server $Server -Credential $Credential -ArgumentList $Name, $gpoServer -ScriptBlock {
+        param($Name, $Server)
+        $p = @{}
+        if ($Server) { $p.Server = $Server }
+        Get-GPO -Name $Name @p -ErrorAction SilentlyContinue
+    }
     $action = if ($existingGPO) { "Update" } else { "Create" }
 
     if ($existingGPO) {
@@ -630,7 +721,12 @@ function New-GPOSecurityPolicy {
     if ($PSCmdlet.ShouldProcess($Name, "$action security GPO ($settingLabel)")) {
         try {
             if (-not $existingGPO) {
-                New-GPO -Name $Name -Comment $Description @serverParam | Out-Null
+                $existingGPO = Invoke-LOCKmeADRemote -Server $Server -Credential $Credential -ArgumentList $Name, $Description, $gpoServer -ScriptBlock {
+                    param($Name, $Description, $Server)
+                    $p = @{}
+                    if ($Server) { $p.Server = $Server }
+                    New-GPO -Name $Name -Comment $Description @p
+                }
                 Write-GPOLog -Message "GPO '$Name' created." -Level Success -LogDirectory $LogDirectory
             }
 
@@ -644,7 +740,10 @@ function New-GPOSecurityPolicy {
                     'AllSettingsDisabled'       = 3
                 }
                 $targetFlags = $flagsMap[$GpoStatus]
-                $gpoObj = Get-GPO -Name $Name @serverParam
+                $gpoObj = $existingGPO
+                if (-not $gpoObj) {
+                    $gpoObj = Get-GPOWithRetry -Name $Name -ConnParam $serverParam
+                }
                 $gpoGuid = "{$($gpoObj.Id.ToString().ToUpper())}"
                 $domainDN = (Get-ADDomain @serverParam).DistinguishedName
                 $gpoDN = "CN=$gpoGuid,CN=Policies,CN=System,$domainDN"
@@ -656,12 +755,12 @@ function New-GPOSecurityPolicy {
             }
 
             foreach ($setting in $RegistrySettings) {
-                Set-GPRegistryValue -Name $Name `
-                                    -Key $setting.Key `
-                                    -ValueName $setting.ValueName `
-                                    -Value $setting.Value `
-                                    -Type $setting.Type `
-                                    @serverParam | Out-Null
+                Invoke-LOCKmeADRemote -Server $Server -Credential $Credential -ArgumentList $Name, $setting.Key, $setting.ValueName, $setting.Value, $setting.Type, $gpoServer -ScriptBlock {
+                    param($Name, $Key, $ValueName, $Value, $Type, $Server)
+                    $p = @{}
+                    if ($Server) { $p.Server = $Server }
+                    Set-GPRegistryValue -Name $Name -Key $Key -ValueName $ValueName -Value $Value -Type $Type @p | Out-Null
+                } | Out-Null
 
                 $desc = if ($setting.Description) { " ($($setting.Description))" } else { "" }
                 Write-GPOLog -Message "  Set: $($setting.ValueName) = $($setting.Value)$desc" -Level Success -LogDirectory $LogDirectory
@@ -719,28 +818,32 @@ function Set-GPORegistryPreferences {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $target = "$GPOName ($($RegistryPreferences.Count) registry preference(s))"
+    $gpoServer = if ($Credential) { $null } else { $Server }
 
     if ($PSCmdlet.ShouldProcess($target, "Set Registry Preferences via GPO Preferences")) {
         try {
             $order = 1
             foreach ($setting in $RegistryPreferences) {
                 $action = if ($setting.Action) { $setting.Action } else { "Replace" }
-                Set-GPPrefRegistryValue -Name $GPOName `
-                                         -Context Computer `
-                                         -Action $action `
-                                         -Key $setting.Key `
-                                         -ValueName $setting.ValueName `
-                                         -Value $setting.Value `
-                                         -Type $setting.Type `
-                                         -Order $order `
-                                         @serverParam | Out-Null
+                Invoke-LOCKmeADRemote -Server $Server -Credential $Credential `
+                    -ArgumentList $GPOName, $action, $setting.Key, $setting.ValueName, $setting.Value, $setting.Type, $order, $gpoServer `
+                    -ScriptBlock {
+                        param($GPOName, $Action, $Key, $ValueName, $Value, $Type, $Order, $Server)
+                        $p = @{}
+                        if ($Server) { $p.Server = $Server }
+                        Set-GPPrefRegistryValue -Name $GPOName -Context Computer -Action $Action `
+                            -Key $Key -ValueName $ValueName -Value $Value -Type $Type -Order $Order @p | Out-Null
+                    } | Out-Null
 
                 $desc = if ($setting.Description) { " ($($setting.Description))" } else { "" }
                 Write-GPOLog -Message "  Pref [$action]: $($setting.ValueName) = $($setting.Value)$desc" -Level Success -LogDirectory $LogDirectory
@@ -789,15 +892,28 @@ function Set-GPOLink {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+
+    # Get-GPInheritance/New-GPLink have no -Credential parameter at all (unlike the
+    # ActiveDirectory module) -- route them through a remote WinRM session against
+    # -Server when an explicit credential is in play.
+    $gpoServer = if ($Credential) { $null } else { $Server }
 
     # Check if link already exists
     try {
-        $inheritance = Get-GPInheritance -Target $TargetOU @serverParam
+        $inheritance = Invoke-LOCKmeADRemote -Server $Server -Credential $Credential -ArgumentList $TargetOU, $gpoServer -ScriptBlock {
+            param($TargetOU, $Server)
+            $p = @{}
+            if ($Server) { $p.Server = $Server }
+            Get-GPInheritance -Target $TargetOU @p
+        }
         $existingLink = $inheritance.GpoLinks | Where-Object { $_.DisplayName -eq $GPOName }
         if ($existingLink) {
             Write-GPOLog -Message "GPO '$GPOName' is already linked to '$TargetOU'." -Level Warning -LogDirectory $LogDirectory
@@ -811,7 +927,12 @@ function Set-GPOLink {
 
     if ($PSCmdlet.ShouldProcess($TargetOU, "Link GPO '$GPOName'")) {
         try {
-            New-GPLink -Name $GPOName -Target $TargetOU -LinkEnabled Yes @serverParam | Out-Null
+            Invoke-LOCKmeADRemote -Server $Server -Credential $Credential -ArgumentList $GPOName, $TargetOU, $gpoServer -ScriptBlock {
+                param($GPOName, $TargetOU, $Server)
+                $p = @{}
+                if ($Server) { $p.Server = $Server }
+                New-GPLink -Name $GPOName -Target $TargetOU -LinkEnabled Yes @p | Out-Null
+            } | Out-Null
             Write-GPOLog -Message "GPO '$GPOName' linked to '$TargetOU'." -Level Success -LogDirectory $LogDirectory
         }
         catch {
@@ -935,11 +1056,14 @@ function Set-GPOUserRightsAssignment {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     # Resolve group names to SIDs
     $privilegeLines = @()
@@ -963,13 +1087,14 @@ function Set-GPOUserRightsAssignment {
     if ($PSCmdlet.ShouldProcess($target, "Set User Rights Assignments via GptTmpl.inf")) {
         try {
             # Get GPO details
-            $gpo = Get-GPO -Name $GPOName @serverParam -ErrorAction Stop
+            $gpo = Get-GPOWithRetry -Name $GPOName -ConnParam $serverParam
             $gpoGuid = "{$($gpo.Id.ToString().ToUpper())}"
             $domainDNS = (Get-ADDomain @serverParam).DNSRoot
             $domainDN = (Get-ADDomain @serverParam).DistinguishedName
 
             # Build SYSVOL path
-            $sysvolBase = "\\$domainDNS\SYSVOL\$domainDNS\Policies\$gpoGuid"
+            $sysvolRoot = Get-LOCKmeADSysvolDrive -DomainDNSRoot $domainDNS -Credential $Credential
+            $sysvolBase = "$sysvolRoot\$domainDNS\Policies\$gpoGuid"
             $infPath = "$sysvolBase\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
 
             # Write [Privilege Rights] section (merges with existing sections)
@@ -1056,11 +1181,14 @@ function Set-GPORestrictedGroups {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     # Well-known local group SID lookup
     $wellKnownSIDs = @{
@@ -1117,13 +1245,14 @@ function Set-GPORestrictedGroups {
     if ($PSCmdlet.ShouldProcess($target, "Set Restricted Groups via GptTmpl.inf")) {
         try {
             # Get GPO details
-            $gpo = Get-GPO -Name $GPOName @serverParam -ErrorAction Stop
+            $gpo = Get-GPOWithRetry -Name $GPOName -ConnParam $serverParam
             $gpoGuid = "{$($gpo.Id.ToString().ToUpper())}"
             $domainDNS = (Get-ADDomain @serverParam).DNSRoot
             $domainDN = (Get-ADDomain @serverParam).DistinguishedName
 
             # Build SYSVOL path
-            $sysvolBase = "\\$domainDNS\SYSVOL\$domainDNS\Policies\$gpoGuid"
+            $sysvolRoot = Get-LOCKmeADSysvolDrive -DomainDNSRoot $domainDNS -Credential $Credential
+            $sysvolBase = "$sysvolRoot\$domainDNS\Policies\$gpoGuid"
             $infPath = "$sysvolBase\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
 
             # Write [Group Membership] section (merges with existing sections)
@@ -1208,11 +1337,14 @@ function Set-GPOSecurityOptions {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     # Map friendly type names to GptTmpl.inf numeric codes
     $typeMap = @{
@@ -1247,13 +1379,14 @@ function Set-GPOSecurityOptions {
     if ($PSCmdlet.ShouldProcess($target, "Set Security Options via GptTmpl.inf")) {
         try {
             # Get GPO details
-            $gpo = Get-GPO -Name $GPOName @serverParam -ErrorAction Stop
+            $gpo = Get-GPOWithRetry -Name $GPOName -ConnParam $serverParam
             $gpoGuid = "{$($gpo.Id.ToString().ToUpper())}"
             $domainDNS = (Get-ADDomain @serverParam).DNSRoot
             $domainDN = (Get-ADDomain @serverParam).DistinguishedName
 
             # Build SYSVOL path
-            $sysvolBase = "\\$domainDNS\SYSVOL\$domainDNS\Policies\$gpoGuid"
+            $sysvolRoot = Get-LOCKmeADSysvolDrive -DomainDNSRoot $domainDNS -Credential $Credential
+            $sysvolBase = "$sysvolRoot\$domainDNS\Policies\$gpoGuid"
             $infPath = "$sysvolBase\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
 
             # Write [Registry Values] section (merges with existing sections)
@@ -1341,11 +1474,14 @@ function Set-GPOSystemServices {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $startupLabels = @{ 2 = 'Automatic'; 3 = 'Manual'; 4 = 'Disabled' }
 
@@ -1361,13 +1497,14 @@ function Set-GPOSystemServices {
     if ($PSCmdlet.ShouldProcess($target, "Set System Services via GptTmpl.inf")) {
         try {
             # Get GPO details
-            $gpo = Get-GPO -Name $GPOName @serverParam -ErrorAction Stop
+            $gpo = Get-GPOWithRetry -Name $GPOName -ConnParam $serverParam
             $gpoGuid = "{$($gpo.Id.ToString().ToUpper())}"
             $domainDNS = (Get-ADDomain @serverParam).DNSRoot
             $domainDN = (Get-ADDomain @serverParam).DistinguishedName
 
             # Build SYSVOL path
-            $sysvolBase = "\\$domainDNS\SYSVOL\$domainDNS\Policies\$gpoGuid"
+            $sysvolRoot = Get-LOCKmeADSysvolDrive -DomainDNSRoot $domainDNS -Credential $Credential
+            $sysvolBase = "$sysvolRoot\$domainDNS\Policies\$gpoGuid"
             $infPath = "$sysvolBase\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
 
             # Write [Service General Setting] section (merges with existing sections)
@@ -1456,22 +1593,26 @@ function Set-GPOScript {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $target = "$GPOName ($($Scripts.Count) script(s))"
 
     if ($PSCmdlet.ShouldProcess($target, "Deploy PowerShell scripts to SYSVOL")) {
         try {
-            $gpo = Get-GPO -Name $GPOName @serverParam -ErrorAction Stop
+            $gpo = Get-GPOWithRetry -Name $GPOName -ConnParam $serverParam
             $gpoGuid = "{$($gpo.Id.ToString().ToUpper())}"
             $domainDNS = (Get-ADDomain @serverParam).DNSRoot
             $domainDN = (Get-ADDomain @serverParam).DistinguishedName
 
-            $sysvolBase = "\\$domainDNS\SYSVOL\$domainDNS\Policies\$gpoGuid"
+            $sysvolRoot = Get-LOCKmeADSysvolDrive -DomainDNSRoot $domainDNS -Credential $Credential
+            $sysvolBase = "$sysvolRoot\$domainDNS\Policies\$gpoGuid"
             $machineScriptsPath = "$sysvolBase\Machine\Scripts"
 
             # Resolve tool root: Modules\GPO\ -> tool root (two levels up)

@@ -12,16 +12,29 @@
     Path to the JSON configuration file. Default: .\Config\Hardening-Config.json
 .PARAMETER WhatIf
     Simulation mode: displays actions without executing them.
+.PARAMETER Server
+    Explicit target domain controller. Required when this host is not domain-joined
+    and no domain controller can be located automatically.
+.PARAMETER Credential
+    Explicit domain credential. Prompted for interactively when this host is not
+    domain-joined and no credential is supplied.
+.PARAMETER RememberConnection
+    Persists the resolved -Server/-Credential (DPAPI-protected, current user only)
+    for reuse on the next run.
 .EXAMPLE
     .\Deploy-Hardening.ps1
     .\Deploy-Hardening.ps1 -ConfigPath "C:\Config\custom-hardening.json"
     .\Deploy-Hardening.ps1 -WhatIf
+    .\Deploy-Hardening.ps1 -Server dc01.forest.lol -Credential (Get-Credential)
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\Hardening-Config.json"),
-    [switch]$NoConfirm
+    [switch]$NoConfirm,
+    [string]$Server,
+    [PSCredential]$Credential,
+    [switch]$RememberConnection
 )
 
 # ============================================================================
@@ -38,6 +51,9 @@ if (-not (Test-Path $modulePath)) {
     exit 1
 }
 Import-Module $modulePath -Force
+Import-Module (Join-Path $rootDir "Modules\Common\Connection.psm1") -Force
+
+$connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
 
 # ============================================================================
 # Load configuration
@@ -73,7 +89,8 @@ Write-Host "--- Environment Information ---" -ForegroundColor White
 Write-Host ""
 
 try {
-    $envInfo = Get-HardeningEnvironmentInfo
+    $envInfo = Get-HardeningEnvironmentInfo -Server $connection.Server -Credential $connection.Credential
+    $targetServer = if ($connection.Server) { $connection.Server } else { $envInfo.PDCEmulator }
 
     Write-Host "  Current DC        : $($envInfo.CurrentDC)" -ForegroundColor Cyan
     if ($envInfo.IsPDC) {
@@ -82,6 +99,7 @@ try {
     else {
         Write-Host "  PDC Role          : NO (PDC = $($envInfo.PDCEmulator))" -ForegroundColor Yellow
     }
+    Write-Host "  Target DC         : $targetServer" -ForegroundColor Cyan
     Write-Host "  Domain            : $($envInfo.DomainName)" -ForegroundColor Cyan
     Write-Host "  Domain DN         : $($envInfo.DomainDN)" -ForegroundColor Cyan
     Write-Host "  Forest            : $($envInfo.ForestName)" -ForegroundColor Cyan
@@ -168,29 +186,35 @@ foreach ($task in $config.Tasks) {
     try {
         switch ($task.Name) {
             'SetMachineAccountQuota' {
-                Set-HardeningMachineAccountQuota -LogDirectory $logDir `
+                Set-HardeningMachineAccountQuota -Server $targetServer -Credential $connection.Credential `
+                                                  -LogDirectory $logDir `
                                                   -WhatIf:$WhatIfPreference
             }
             'RaiseDomainFunctionalLevel' {
                 Set-HardeningDomainFunctionalLevel -TargetDomainLevel $task.Parameters.TargetDomainLevel `
+                                                    -Server $targetServer -Credential $connection.Credential `
                                                     -LogDirectory $logDir `
                                                     -WhatIf:$WhatIfPreference
             }
             'RaiseForestFunctionalLevel' {
                 Set-HardeningForestFunctionalLevel -TargetForestLevel $task.Parameters.TargetForestLevel `
+                                                    -Server $targetServer -Credential $connection.Credential `
                                                     -LogDirectory $logDir `
                                                     -WhatIf:$WhatIfPreference
             }
             'EnableRecycleBin' {
-                Enable-HardeningRecycleBin -LogDirectory $logDir `
+                Enable-HardeningRecycleBin -Server $targetServer -Credential $connection.Credential `
+                                            -LogDirectory $logDir `
                                             -WhatIf:$WhatIfPreference
             }
             'EnablePAMFeature' {
-                Enable-HardeningPAMFeature -LogDirectory $logDir `
+                Enable-HardeningPAMFeature -Server $targetServer -Credential $connection.Credential `
+                                            -LogDirectory $logDir `
                                             -WhatIf:$WhatIfPreference
             }
             'DisableAnonymousAccess' {
-                Disable-HardeningAnonymousAccess -LogDirectory $logDir `
+                Disable-HardeningAnonymousAccess -Server $targetServer -Credential $connection.Credential `
+                                                  -LogDirectory $logDir `
                                                   -WhatIf:$WhatIfPreference
             }
             'DeployT0AuthPolicy' {
@@ -201,48 +225,59 @@ foreach ($task in $config.Tasks) {
                                            -SiloName $task.Parameters.SiloName `
                                            -TGTLifetimeMinutes $tgtLifetime `
                                            -Enforce $enforce `
+                                           -Server $targetServer -Credential $connection.Credential `
                                            -LogDirectory $logDir `
                                            -WhatIf:$WhatIfPreference
             }
             'EnableReplicationNotify' {
-                Set-HardeningReplicationNotify -LogDirectory $logDir `
+                Set-HardeningReplicationNotify -Server $targetServer -Credential $connection.Credential `
+                                                -LogDirectory $logDir `
                                                -WhatIf:$WhatIfPreference
             }
             'ConfigureCentralStore' {
-                Set-HardeningCentralStore -LogDirectory $logDir `
+                Set-HardeningCentralStore -Server $targetServer -Credential $connection.Credential `
+                                           -LogDirectory $logDir `
                                            -WhatIf:$WhatIfPreference
             }
             'ExtendLAPSSchema' {
-                Update-HardeningLAPSSchema -LogDirectory $logDir `
+                Update-HardeningLAPSSchema -Server $targetServer -Credential $connection.Credential `
+                                            -LogDirectory $logDir `
                                             -WhatIf:$WhatIfPreference
             }
             'ConfigureLAPSADPermissions' {
+                # Set-HardeningLAPSADPermissions only accepts -Server (the Set-LapsAD*
+                # cmdlets don't support delegated credentials — see the function's docs).
                 Set-HardeningLAPSADPermissions `
                     -SelfPermissionOUs       @($task.Parameters.SelfPermissionOUs) `
                     -ReadPasswordOUs         @($task.Parameters.ReadPasswordOUs) `
                     -ReadPasswordPrincipals  @($task.Parameters.ReadPasswordPrincipals) `
                     -ResetPasswordOUs        @($task.Parameters.ResetPasswordOUs) `
                     -ResetPasswordPrincipals @($task.Parameters.ResetPasswordPrincipals) `
+                    -Server $targetServer `
                     -LogDirectory $logDir `
                     -WhatIf:$WhatIfPreference
             }
             'RestrictDNSDynamicUpdate' {
-                Set-HardeningDNSDynamicUpdate -LogDirectory $logDir `
+                Set-HardeningDNSDynamicUpdate -Server $targetServer -Credential $connection.Credential `
+                                               -LogDirectory $logDir `
                                                -WhatIf:$WhatIfPreference
             }
             'AddDNSSecurityRecords' {
                 Set-HardeningDNSSecurityRecords -ZoneName $task.Parameters.ZoneName `
                                                 -WpadIPAddress $task.Parameters.WpadIPAddress `
                                                 -WildcardTXTValue $task.Parameters.WildcardTXTValue `
+                                                -Server $targetServer -Credential $connection.Credential `
                                                 -LogDirectory $logDir `
                                                 -WhatIf:$WhatIfPreference
             }
             'FixDNSRecordOwnership' {
-                Set-HardeningDNSRecordOwnership -LogDirectory $logDir `
+                Set-HardeningDNSRecordOwnership -Server $targetServer -Credential $connection.Credential `
+                                                -LogDirectory $logDir `
                                                 -WhatIf:$WhatIfPreference
             }
             'ResetADObjectOwnership' {
-                Set-HardeningADObjectOwnership -LogDirectory $logDir `
+                Set-HardeningADObjectOwnership -Server $targetServer -Credential $connection.Credential `
+                                               -LogDirectory $logDir `
                                                -WhatIf:$WhatIfPreference
             }
         }

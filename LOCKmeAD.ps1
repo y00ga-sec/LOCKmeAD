@@ -13,17 +13,31 @@
     Accepts a comma-separated list (e.g. -Module Tiering,GPO).
 .PARAMETER WhatIf
     Simulation mode: passed through to deployment scripts.
+.PARAMETER Server
+    Explicit target domain controller. Required when this host is not domain-joined
+    and no domain controller can be located automatically. Resolved once and passed
+    to every selected deployment script.
+.PARAMETER Credential
+    Explicit domain credential. Prompted for interactively when this host is not
+    domain-joined and no credential is supplied.
+.PARAMETER RememberConnection
+    Persists the resolved -Server/-Credential (DPAPI-protected, current user only)
+    for reuse on the next run.
 .EXAMPLE
     .\LOCKmeAD.ps1
     .\LOCKmeAD.ps1 -Module GUI
     .\LOCKmeAD.ps1 -Module Hardening -WhatIf
     .\LOCKmeAD.ps1 -Module Tiering,GPO
+    .\LOCKmeAD.ps1 -Module All -Server dc01.forest.lol -Credential (Get-Credential)
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [ValidateSet("Hardening", "GPO", "Tiering", "RBAC", "PSO", "Silo", "All", "GUI", "JIT")]
-    [string[]]$Module
+    [string[]]$Module,
+    [string]$Server,
+    [PSCredential]$Credential,
+    [switch]$RememberConnection
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,6 +51,12 @@ if ($missingModules) {
     Write-Host "  Import-Module $($missingModules -join ', ')`n" -ForegroundColor Cyan
     exit 1
 }
+
+# Resolve the AD connection once (implicit if domain-joined, otherwise explicit
+# -Server/-Credential or an interactive prompt) so an off-domain operator is only
+# asked once, regardless of how many modules are selected.
+Import-Module (Join-Path $PSScriptRoot "Modules\Common\Connection.psm1") -Force
+$script:Connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
 
 # ============================================================================
 # Display logo
@@ -86,7 +106,7 @@ function Start-SelectedDeployments([string[]]$Selected) {
             Write-Host "  ============================================" -ForegroundColor White
             Write-Host "  Deploying: $($mod.Name)" -ForegroundColor Cyan
             Write-Host "  ============================================" -ForegroundColor White
-            & $path -WhatIf:$WhatIfPreference
+            & $path -Server $script:Connection.Server -Credential $script:Connection.Credential -WhatIf:$WhatIfPreference
         }
         else {
             Write-Host "  [ERROR] Script not found: $path" -ForegroundColor Red
@@ -101,7 +121,7 @@ function Start-SelectedDeployments([string[]]$Selected) {
 if ($Module) {
     Show-Logo
     if ($Module -contains "GUI") {
-        & "$PSScriptRoot\Launch-GUI.ps1"
+        & "$PSScriptRoot\Launch-GUI.ps1" -Server $script:Connection.Server -Credential $script:Connection.Credential
         return
     }
     $selected = @($Module | ForEach-Object { if ($_ -eq "All") { "Hardening","Tiering","RBAC","PSO","Silo","GPO","JIT" } else { $_ } }) | Select-Object -Unique
@@ -260,6 +280,6 @@ switch ($action) {
             Start-SelectedDeployments $selected
         }
     }
-    "gui" { & "$PSScriptRoot\Launch-GUI.ps1" }
+    "gui" { & "$PSScriptRoot\Launch-GUI.ps1" -Server $script:Connection.Server -Credential $script:Connection.Credential }
     "quit" { Write-Host "  Exiting." -ForegroundColor DarkGray }
 }

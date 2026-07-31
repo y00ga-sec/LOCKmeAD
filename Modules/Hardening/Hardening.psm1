@@ -1,8 +1,14 @@
-#Requires -Modules ActiveDirectory
-
 # ============================================================================
 # Hardening Module - Functions for deploying AD hardening remediation tasks
 # ============================================================================
+# No #Requires -Modules ActiveDirectory here -- every entry point (LOCKmeAD.ps1,
+# each Scripts\Deploy-*.ps1, Web\Start-LOCKmeADWeb.ps1) already checks for it
+# before importing this module, and Pode's internal per-runspace module re-import
+# (Import-PodeModulesInternal) can fail a module's own #Requires check in a fresh
+# worker runspace even when the module is genuinely installed (confirmed against
+# GPO.psm1/JIT.psm1's GroupPolicy requirement) -- removed here too for consistency.
+
+Import-Module (Join-Path $PSScriptRoot "..\Common\Connection.psm1") -Force
 
 # Module variable for the current log file path
 $script:LogFilePath = $null
@@ -146,15 +152,26 @@ function Get-HardeningEnvironmentInfo {
     <#
     .SYNOPSIS
         Retrieves Active Directory environment information.
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     .OUTPUTS
         PSCustomObject with environment information.
     #>
     [CmdletBinding()]
-    param()
+    param(
+        [string]$Server,
+        [PSCredential]$Credential
+    )
+
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     try {
-        $domain = Get-ADDomain
-        $forest = Get-ADForest
+        $domain = Get-ADDomain @serverParam
+        $forest = Get-ADForest @serverParam
         $currentDC = $env:COMPUTERNAME
         $pdcEmulator = $domain.PDCEmulator
 
@@ -186,14 +203,25 @@ function Test-HardeningDomainFunctionalLevelPrerequisites {
         Checks all prerequisites before raising the domain functional level.
     .PARAMETER TargetDomainLevel
         Target domain functional level (e.g. Windows2016Domain).
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     .OUTPUTS
         Array of PSCustomObject with Name, Passed, Message properties.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [string]$TargetDomainLevel
+        [string]$TargetDomainLevel,
+
+        [string]$Server,
+        [PSCredential]$Credential
     )
+
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $results = [System.Collections.Generic.List[PSCustomObject]]::new()
 
@@ -224,7 +252,7 @@ function Test-HardeningDomainFunctionalLevelPrerequisites {
     # --- Check 1: AD connectivity ---
     $domain = $null
     try {
-        $domain = Get-ADDomain
+        $domain = Get-ADDomain @serverParam
         $results.Add([PSCustomObject]@{
             Name    = "Active Directory connectivity"
             Passed  = $true
@@ -305,7 +333,7 @@ function Test-HardeningDomainFunctionalLevelPrerequisites {
     $minBuild = $minBuildMap[$TargetDomainLevel]
     if ($null -ne $minBuild) {
         try {
-            $dcs = @(Get-ADDomainController -Filter *)
+            $dcs = @(Get-ADDomainController -Filter * @serverParam)
             $nonCompliant = @()
             $unknownBuild = @()
 
@@ -355,21 +383,42 @@ function Test-HardeningDomainFunctionalLevelPrerequisites {
 
     # --- Check 5: Domain Admins membership ---
     try {
-        $identity          = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-        $domainAdminsGroup = Get-ADGroup "Domain Admins"
-        $isDomainAdmin     = $identity.Groups.Value -contains $domainAdminsGroup.SID.Value
+        $domainAdminsGroup = Get-ADGroup "Domain Admins" @serverParam
+        if ($Credential) {
+            # Running with an explicit credential (e.g. not domain-joined): the local
+            # Windows logon token does not reflect the AD account's own group membership,
+            # so resolve it directly from AD via the tokenGroups constructed attribute
+            # (also correctly resolves nested group membership).
+            $identityName    = $Credential.UserName
+            $accountName     = $Credential.UserName -replace '^.*[\\@]', ''
+            $userDN          = (Get-ADUser -Identity $accountName @serverParam).DistinguishedName
+            # tokenGroups is a constructed attribute: it can only be read via an explicit
+            # base-scope search (Get-ADUser/-Object -Identity does not reliably issue one
+            # remotely, and fails with "only supported for base searches").
+            $userTokenGroups = (Get-ADObject -SearchBase $userDN -SearchScope Base -Filter * -Properties tokenGroups @serverParam).tokenGroups
+            $sidValues       = foreach ($tg in $userTokenGroups) {
+                if ($tg -is [System.Security.Principal.SecurityIdentifier]) { $tg.Value }
+                else { ([System.Security.Principal.SecurityIdentifier]::new([byte[]]$tg, 0)).Value }
+            }
+            $isDomainAdmin = $domainAdminsGroup.SID.Value -in $sidValues
+        }
+        else {
+            $identity      = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+            $identityName  = $identity.Name
+            $isDomainAdmin = $identity.Groups.Value -contains $domainAdminsGroup.SID.Value
+        }
         if ($isDomainAdmin) {
             $results.Add([PSCustomObject]@{
                 Name    = "Domain Admins membership"
                 Passed  = $true
-                Message = "Running as '$($identity.Name)' — member of Domain Admins"
+                Message = "Running as '$identityName' — member of Domain Admins"
             })
         }
         else {
             $results.Add([PSCustomObject]@{
                 Name    = "Domain Admins membership"
                 Passed  = $false
-                Message = "Running as '$($identity.Name)' — NOT a member of Domain Admins (required for Set-ADDomainMode)"
+                Message = "Running as '$identityName' — NOT a member of Domain Admins (required for Set-ADDomainMode)"
             })
         }
     }
@@ -385,9 +434,25 @@ function Test-HardeningDomainFunctionalLevelPrerequisites {
     try {
         $pdcNetBIOS  = ($domain.PDCEmulator -split '\.')[0]
         $dfsrSubPath = "CN=SYSVOL Subscription,CN=Domain System Volume,CN=DFSR-LocalSettings,CN=$pdcNetBIOS,OU=Domain Controllers,$($domain.DistinguishedName)"
-        $dfsrSub     = Get-ADObject -Identity $dfsrSubPath -Properties "msDFSR-Enabled" -ErrorAction SilentlyContinue
-        $frsService  = Get-Service -Name "NtFrs" -ErrorAction SilentlyContinue
-        $frsRunning  = $frsService -and ($frsService.Status -eq "Running")
+        $dfsrSub     = Get-ADObject -Identity $dfsrSubPath -Properties "msDFSR-Enabled" @serverParam -ErrorAction SilentlyContinue
+        # Query the PDC's FRS service remotely via CIM (not the local machine — this task
+        # may run from an admin workstation, not the DC itself) using the same explicit
+        # credential when supplied.
+        # Get-CimInstance doesn't accept -ComputerName and -Credential together — route
+        # through an explicit CIM session (over WinRM) when an explicit credential is used.
+        $cimParam = @{ ErrorAction = 'SilentlyContinue' }
+        if ($Credential) {
+            $cimSession = New-LOCKmeADCimSession -ComputerName $domain.PDCEmulator -Credential $Credential
+            if (-not $cimSession) {
+                throw "Could not establish a CIM session to PDC Emulator '$($domain.PDCEmulator)' with the supplied credential — ensure WinRM (5985/5986) is reachable there."
+            }
+            $cimParam.CimSession = $cimSession
+        }
+        else {
+            $cimParam.ComputerName = $domain.PDCEmulator
+        }
+        $frsService  = Get-CimInstance -ClassName Win32_Service -Filter "Name='NtFrs'" @cimParam
+        $frsRunning  = $frsService -and ($frsService.State -eq "Running")
 
         if ($frsRunning) {
             $results.Add([PSCustomObject]@{
@@ -434,14 +499,25 @@ function Test-HardeningForestFunctionalLevelPrerequisites {
         Checks all prerequisites before raising the forest functional level.
     .PARAMETER TargetForestLevel
         Target forest functional level (e.g. Windows2016Forest).
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     .OUTPUTS
         Array of PSCustomObject with Name, Passed, Message properties.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [string]$TargetForestLevel
+        [string]$TargetForestLevel,
+
+        [string]$Server,
+        [PSCredential]$Credential
     )
+
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $results = [System.Collections.Generic.List[PSCustomObject]]::new()
 
@@ -472,8 +548,8 @@ function Test-HardeningForestFunctionalLevelPrerequisites {
     $domain = $null
     $forest = $null
     try {
-        $domain = Get-ADDomain
-        $forest = Get-ADForest
+        $domain = Get-ADDomain @serverParam
+        $forest = Get-ADForest @serverParam
         $results.Add([PSCustomObject]@{
             Name    = "Active Directory connectivity"
             Passed  = $true
@@ -559,7 +635,7 @@ function Test-HardeningForestFunctionalLevelPrerequisites {
             $nonCompliantDomains = @()
             foreach ($domainDNS in $forestDomains) {
                 try {
-                    $d     = Get-ADDomain -Identity $domainDNS
+                    $d     = Get-ADDomain -Identity $domainDNS @serverParam
                     $dMode = $d.DomainMode.ToString()
                     $dOrder = $domainLevelOrder[$dMode]
                     if ($null -eq $dOrder -or $dOrder -lt $requiredDomainOrder) {
@@ -596,22 +672,42 @@ function Test-HardeningForestFunctionalLevelPrerequisites {
 
     # --- Check 5: Enterprise Admins membership ---
     try {
-        $identity              = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-        $forestRootDomain      = Get-ADDomain -Identity $forest.RootDomain
-        $enterpriseAdminsGroup = Get-ADGroup "Enterprise Admins" -Server $forestRootDomain.PDCEmulator
-        $isEnterpriseAdmin     = $identity.Groups.Value -contains $enterpriseAdminsGroup.SID.Value
+        $forestRootDomain = Get-ADDomain -Identity $forest.RootDomain @serverParam
+        $rootParam        = $serverParam.Clone()
+        $rootParam.Server = $forestRootDomain.PDCEmulator
+        $enterpriseAdminsGroup = Get-ADGroup "Enterprise Admins" @rootParam
+        if ($Credential) {
+            # See Check 5 in Test-HardeningDomainFunctionalLevelPrerequisites for why this
+            # can't rely on the local Windows logon token when an explicit credential is used.
+            $identityName    = $Credential.UserName
+            $accountName     = $Credential.UserName -replace '^.*[\\@]', ''
+            $userDN          = (Get-ADUser -Identity $accountName @serverParam).DistinguishedName
+            # tokenGroups is a constructed attribute: it can only be read via an explicit
+            # base-scope search — see Check 5 in Test-HardeningDomainFunctionalLevelPrerequisites.
+            $userTokenGroups = (Get-ADObject -SearchBase $userDN -SearchScope Base -Filter * -Properties tokenGroups @rootParam).tokenGroups
+            $sidValues       = foreach ($tg in $userTokenGroups) {
+                if ($tg -is [System.Security.Principal.SecurityIdentifier]) { $tg.Value }
+                else { ([System.Security.Principal.SecurityIdentifier]::new([byte[]]$tg, 0)).Value }
+            }
+            $isEnterpriseAdmin = $enterpriseAdminsGroup.SID.Value -in $sidValues
+        }
+        else {
+            $identity          = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+            $identityName      = $identity.Name
+            $isEnterpriseAdmin = $identity.Groups.Value -contains $enterpriseAdminsGroup.SID.Value
+        }
         if ($isEnterpriseAdmin) {
             $results.Add([PSCustomObject]@{
                 Name    = "Enterprise Admins membership"
                 Passed  = $true
-                Message = "Running as '$($identity.Name)' — member of Enterprise Admins"
+                Message = "Running as '$identityName' — member of Enterprise Admins"
             })
         }
         else {
             $results.Add([PSCustomObject]@{
                 Name    = "Enterprise Admins membership"
                 Passed  = $false
-                Message = "Running as '$($identity.Name)' — NOT a member of Enterprise Admins (required for Set-ADForestMode)"
+                Message = "Running as '$identityName' — NOT a member of Enterprise Admins (required for Set-ADForestMode)"
             })
         }
     }
@@ -627,9 +723,22 @@ function Test-HardeningForestFunctionalLevelPrerequisites {
     try {
         $pdcNetBIOS  = ($domain.PDCEmulator -split '\.')[0]
         $dfsrSubPath = "CN=SYSVOL Subscription,CN=Domain System Volume,CN=DFSR-LocalSettings,CN=$pdcNetBIOS,OU=Domain Controllers,$($domain.DistinguishedName)"
-        $dfsrSub     = Get-ADObject -Identity $dfsrSubPath -Properties "msDFSR-Enabled" -ErrorAction SilentlyContinue
-        $frsService  = Get-Service -Name "NtFrs" -ErrorAction SilentlyContinue
-        $frsRunning  = $frsService -and ($frsService.Status -eq "Running")
+        $dfsrSub     = Get-ADObject -Identity $dfsrSubPath -Properties "msDFSR-Enabled" @serverParam -ErrorAction SilentlyContinue
+        # Get-CimInstance doesn't accept -ComputerName and -Credential together — route
+        # through an explicit CIM session (over WinRM) when an explicit credential is used.
+        $cimParam = @{ ErrorAction = 'SilentlyContinue' }
+        if ($Credential) {
+            $cimSession = New-LOCKmeADCimSession -ComputerName $domain.PDCEmulator -Credential $Credential
+            if (-not $cimSession) {
+                throw "Could not establish a CIM session to PDC Emulator '$($domain.PDCEmulator)' with the supplied credential — ensure WinRM (5985/5986) is reachable there."
+            }
+            $cimParam.CimSession = $cimSession
+        }
+        else {
+            $cimParam.ComputerName = $domain.PDCEmulator
+        }
+        $frsService  = Get-CimInstance -ClassName Win32_Service -Filter "Name='NtFrs'" @cimParam
+        $frsRunning  = $frsService -and ($frsService.State -eq "Running")
 
         if ($frsRunning) {
             $results.Add([PSCustomObject]@{
@@ -680,16 +789,26 @@ function Set-HardeningMachineAccountQuota {
         Sets ms-DS-MachineAccountQuota to 0.
     .PARAMETER LogDirectory
         Log directory.
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [string]$LogDirectory
+        [string]$LogDirectory,
+        [string]$Server,
+        [PSCredential]$Credential
     )
 
-    $Quota = 0
-    $domainDN = (Get-ADDomain).DistinguishedName
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
-    $currentQuota = (Get-ADObject -Identity $domainDN -Properties "ms-DS-MachineAccountQuota")."ms-DS-MachineAccountQuota"
+    $Quota = 0
+    $domainDN = (Get-ADDomain @serverParam).DistinguishedName
+
+    $currentQuota = (Get-ADObject -Identity $domainDN -Properties "ms-DS-MachineAccountQuota" @serverParam)."ms-DS-MachineAccountQuota"
     if ($currentQuota -eq $Quota) {
         Write-HardeningLog -Message "ms-DS-MachineAccountQuota is already set to 0." -Level Warning -LogDirectory $LogDirectory
         return
@@ -697,7 +816,7 @@ function Set-HardeningMachineAccountQuota {
 
     if ($PSCmdlet.ShouldProcess($domainDN, "Set ms-DS-MachineAccountQuota to 0 (current: $currentQuota)")) {
         try {
-            Set-ADDomain -Identity $domainDN -Replace @{ "ms-DS-MachineAccountQuota" = $Quota }
+            Set-ADDomain -Identity $domainDN -Replace @{ "ms-DS-MachineAccountQuota" = $Quota } @serverParam
             Write-HardeningLog -Message "ms-DS-MachineAccountQuota set to 0 (was $currentQuota)." -Level Success -LogDirectory $LogDirectory
         }
         catch {
@@ -722,16 +841,26 @@ function Set-HardeningDomainFunctionalLevel {
         Target domain functional level (e.g. Windows2016Domain).
     .PARAMETER LogDirectory
         Log directory.
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)]
         [string]$TargetDomainLevel,
 
-        [string]$LogDirectory
+        [string]$LogDirectory,
+        [string]$Server,
+        [PSCredential]$Credential
     )
 
-    $prereqResults = Test-HardeningDomainFunctionalLevelPrerequisites -TargetDomainLevel $TargetDomainLevel
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+
+    $prereqResults = Test-HardeningDomainFunctionalLevelPrerequisites -TargetDomainLevel $TargetDomainLevel -Server $Server -Credential $Credential
     $failedChecks  = @($prereqResults | Where-Object { -not $_.Passed })
     if ($failedChecks.Count -gt 0) {
         foreach ($check in $failedChecks) {
@@ -741,7 +870,7 @@ function Set-HardeningDomainFunctionalLevel {
         throw "Prerequisites for RaiseDomainFunctionalLevel not met ($($failedChecks.Count) check(s) failed). Task aborted."
     }
 
-    $domain            = Get-ADDomain
+    $domain            = Get-ADDomain @serverParam
     $currentDomainMode = $domain.DomainMode.ToString()
 
     if ($currentDomainMode -eq $TargetDomainLevel) {
@@ -749,7 +878,7 @@ function Set-HardeningDomainFunctionalLevel {
     }
     elseif ($PSCmdlet.ShouldProcess($domain.DistinguishedName, "Raise domain functional level to '$TargetDomainLevel' (current: $currentDomainMode)")) {
         try {
-            Set-ADDomainMode -Identity $domain.DistinguishedName -DomainMode $TargetDomainLevel -Confirm:$false
+            Set-ADDomainMode -Identity $domain.DistinguishedName -DomainMode $TargetDomainLevel -Confirm:$false @serverParam
             Write-HardeningLog -Message "Domain functional level raised to '$TargetDomainLevel' (was '$currentDomainMode')." -Level Success -LogDirectory $LogDirectory
         }
         catch {
@@ -770,16 +899,26 @@ function Set-HardeningForestFunctionalLevel {
         Target forest functional level (e.g. Windows2016Forest).
     .PARAMETER LogDirectory
         Log directory.
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)]
         [string]$TargetForestLevel,
 
-        [string]$LogDirectory
+        [string]$LogDirectory,
+        [string]$Server,
+        [PSCredential]$Credential
     )
 
-    $prereqResults = Test-HardeningForestFunctionalLevelPrerequisites -TargetForestLevel $TargetForestLevel
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+
+    $prereqResults = Test-HardeningForestFunctionalLevelPrerequisites -TargetForestLevel $TargetForestLevel -Server $Server -Credential $Credential
     $failedChecks  = @($prereqResults | Where-Object { -not $_.Passed })
     if ($failedChecks.Count -gt 0) {
         foreach ($check in $failedChecks) {
@@ -789,7 +928,7 @@ function Set-HardeningForestFunctionalLevel {
         throw "Prerequisites for RaiseForestFunctionalLevel not met ($($failedChecks.Count) check(s) failed). Task aborted."
     }
 
-    $forest            = Get-ADForest
+    $forest            = Get-ADForest @serverParam
     $currentForestMode = $forest.ForestMode.ToString()
 
     if ($currentForestMode -eq $TargetForestLevel) {
@@ -797,7 +936,7 @@ function Set-HardeningForestFunctionalLevel {
     }
     elseif ($PSCmdlet.ShouldProcess($forest.Name, "Raise forest functional level to '$TargetForestLevel' (current: $currentForestMode)")) {
         try {
-            Set-ADForestMode -Identity $forest.Name -ForestMode $TargetForestLevel -Confirm:$false
+            Set-ADForestMode -Identity $forest.Name -ForestMode $TargetForestLevel -Confirm:$false @serverParam
             Write-HardeningLog -Message "Forest functional level raised to '$TargetForestLevel' (was '$currentForestMode')." -Level Success -LogDirectory $LogDirectory
         }
         catch {
@@ -820,18 +959,30 @@ function Enable-HardeningRecycleBin {
         Enables the Active Directory Recycle Bin optional feature.
     .PARAMETER LogDirectory
         Log directory.
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [string]$LogDirectory
+        [string]$LogDirectory,
+        [string]$Server,
+        [PSCredential]$Credential
     )
 
-    $forest = Get-ADForest
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+
+    $forest = Get-ADForest @serverParam
     $featureName = "Recycle Bin Feature"
-    $targetServer = (Get-ADDomain -Identity $forest.RootDomain).PDCEmulator
+    $targetServer = (Get-ADDomain -Identity $forest.RootDomain @serverParam).PDCEmulator
+    $rootParam = $serverParam.Clone()
+    $rootParam.Server = $targetServer
 
     # Check if already enabled
-    $feature = Get-ADOptionalFeature -Filter { Name -eq "Recycle Bin Feature" } -Server $targetServer
+    $feature = Get-ADOptionalFeature -Filter { Name -eq "Recycle Bin Feature" } @rootParam
     if ($feature.EnabledScopes.Count -gt 0) {
         Write-HardeningLog -Message "AD Recycle Bin is already enabled." -Level Warning -LogDirectory $LogDirectory
         return
@@ -839,7 +990,7 @@ function Enable-HardeningRecycleBin {
 
     if ($PSCmdlet.ShouldProcess($forest.Name, "Enable AD Recycle Bin (via $targetServer)")) {
         try {
-            Enable-ADOptionalFeature -Identity $featureName -Scope ForestOrConfigurationSet -Target $forest.Name -Server $targetServer -Confirm:$false
+            Enable-ADOptionalFeature -Identity $featureName -Scope ForestOrConfigurationSet -Target $forest.Name -Confirm:$false @rootParam
             Write-HardeningLog -Message "AD Recycle Bin enabled on forest '$($forest.Name)' (via $targetServer)." -Level Success -LogDirectory $LogDirectory
         }
         catch {
@@ -862,18 +1013,30 @@ function Enable-HardeningPAMFeature {
         Enables the Privileged Access Management (PAM) optional feature.
     .PARAMETER LogDirectory
         Log directory.
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [string]$LogDirectory
+        [string]$LogDirectory,
+        [string]$Server,
+        [PSCredential]$Credential
     )
 
-    $forest = Get-ADForest
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+
+    $forest = Get-ADForest @serverParam
     $featureName = "Privileged Access Management Feature"
-    $targetServer = (Get-ADDomain -Identity $forest.RootDomain).PDCEmulator
+    $targetServer = (Get-ADDomain -Identity $forest.RootDomain @serverParam).PDCEmulator
+    $rootParam = $serverParam.Clone()
+    $rootParam.Server = $targetServer
 
     # Check if already enabled
-    $feature = Get-ADOptionalFeature -Filter { Name -eq "Privileged Access Management Feature" } -Server $targetServer
+    $feature = Get-ADOptionalFeature -Filter { Name -eq "Privileged Access Management Feature" } @rootParam
     if ($feature.EnabledScopes.Count -gt 0) {
         Write-HardeningLog -Message "AD PAM Feature is already enabled." -Level Warning -LogDirectory $LogDirectory
         return
@@ -881,7 +1044,7 @@ function Enable-HardeningPAMFeature {
 
     if ($PSCmdlet.ShouldProcess($forest.Name, "Enable AD PAM Feature (via $targetServer)")) {
         try {
-            Enable-ADOptionalFeature -Identity $featureName -Scope ForestOrConfigurationSet -Target $forest.Name -Server $targetServer -Confirm:$false
+            Enable-ADOptionalFeature -Identity $featureName -Scope ForestOrConfigurationSet -Target $forest.Name -Confirm:$false @rootParam
             Write-HardeningLog -Message "AD PAM Feature enabled on forest '$($forest.Name)' (via $targetServer)." -Level Success -LogDirectory $LogDirectory
         }
         catch {
@@ -904,18 +1067,28 @@ function Disable-HardeningAnonymousAccess {
         Removes ANONYMOUS LOGON (S-1-5-7) from the Pre-Windows 2000 Compatible Access group.
     .PARAMETER LogDirectory
         Log directory.
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [string]$LogDirectory
+        [string]$LogDirectory,
+        [string]$Server,
+        [PSCredential]$Credential
     )
+
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $groupName = "Pre-Windows 2000 Compatible Access"
     $anonymousSID = "S-1-5-7"
 
     # Check if ANONYMOUS LOGON is a member
     try {
-        $members = Get-ADGroupMember -Identity $groupName -ErrorAction Stop
+        $members = Get-ADGroupMember -Identity $groupName @serverParam -ErrorAction Stop
         $anonymousMember = $members | Where-Object { $_.SID.Value -eq $anonymousSID }
     }
     catch {
@@ -930,7 +1103,7 @@ function Disable-HardeningAnonymousAccess {
 
     if ($PSCmdlet.ShouldProcess($groupName, "Remove ANONYMOUS LOGON (S-1-5-7)")) {
         try {
-            Remove-ADGroupMember -Identity $groupName -Members $anonymousMember -Confirm:$false
+            Remove-ADGroupMember -Identity $groupName -Members $anonymousMember -Confirm:$false @serverParam
             Write-HardeningLog -Message "ANONYMOUS LOGON removed from '$groupName'." -Level Success -LogDirectory $LogDirectory
         }
         catch {
@@ -961,6 +1134,10 @@ function New-HardeningT0AuthPolicy {
         Whether to enforce the policy (default: true).
     .PARAMETER LogDirectory
         Log directory.
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -974,11 +1151,17 @@ function New-HardeningT0AuthPolicy {
 
         [bool]$Enforce = $false,
 
-        [string]$LogDirectory
+        [string]$LogDirectory,
+        [string]$Server,
+        [PSCredential]$Credential
     )
 
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+
     # --- Authentication Policy ---
-    $existingPolicy = Get-ADAuthenticationPolicy -Filter { Name -eq $PolicyName } -ErrorAction SilentlyContinue
+    $existingPolicy = Get-ADAuthenticationPolicy -Filter { Name -eq $PolicyName } @serverParam -ErrorAction SilentlyContinue
     if ($existingPolicy) {
         Write-HardeningLog -Message "Authentication Policy '$PolicyName' already exists." -Level Warning -LogDirectory $LogDirectory
     }
@@ -989,7 +1172,8 @@ function New-HardeningT0AuthPolicy {
                                        -UserTGTLifetimeMins $TGTLifetimeMinutes `
                                        -UserAllowedToAuthenticateFrom $siloCondition `
                                        -Enforce:$Enforce `
-                                       -ProtectedFromAccidentalDeletion $true
+                                       -ProtectedFromAccidentalDeletion $true `
+                                       @serverParam
             Write-HardeningLog -Message "Authentication Policy '$PolicyName' created (TGT=${TGTLifetimeMinutes}min, Enforce=$Enforce, Silo condition='$SiloName')." -Level Success -LogDirectory $LogDirectory
         }
         catch {
@@ -1002,7 +1186,7 @@ function New-HardeningT0AuthPolicy {
     }
 
     # --- Authentication Policy Silo ---
-    $existingSilo = Get-ADAuthenticationPolicySilo -Filter { Name -eq $SiloName } -ErrorAction SilentlyContinue
+    $existingSilo = Get-ADAuthenticationPolicySilo -Filter { Name -eq $SiloName } @serverParam -ErrorAction SilentlyContinue
     if ($existingSilo) {
         Write-HardeningLog -Message "Authentication Policy Silo '$SiloName' already exists." -Level Warning -LogDirectory $LogDirectory
     }
@@ -1013,7 +1197,8 @@ function New-HardeningT0AuthPolicy {
                                            -ComputerAuthenticationPolicy $PolicyName `
                                            -ServiceAuthenticationPolicy $PolicyName `
                                            -Enforce:$Enforce `
-                                           -ProtectedFromAccidentalDeletion $true
+                                           -ProtectedFromAccidentalDeletion $true `
+                                           @serverParam
             Write-HardeningLog -Message "Authentication Policy Silo '$SiloName' created and linked to '$PolicyName'." -Level Success -LogDirectory $LogDirectory
         }
         catch {
@@ -1036,14 +1221,24 @@ function Set-HardeningReplicationNotify {
         Enables the Change Notification flag (USE_NOTIFY) on all inter-site replication links.
     .PARAMETER LogDirectory
         Log directory.
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [string]$LogDirectory
+        [string]$LogDirectory,
+        [string]$Server,
+        [PSCredential]$Credential
     )
 
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+
     try {
-        $siteLinks = Get-ADReplicationSiteLink -Filter * -Properties Options
+        $siteLinks = Get-ADReplicationSiteLink -Filter * -Properties Options @serverParam
     }
     catch {
         Write-HardeningLog -Message "Error retrieving replication site links: $_" -Level Error -LogDirectory $LogDirectory
@@ -1068,7 +1263,7 @@ function Set-HardeningReplicationNotify {
 
         if ($PSCmdlet.ShouldProcess($link.Name, "Enable Change Notification (Options: $currentOptions -> $newOptions)")) {
             try {
-                Set-ADReplicationSiteLink -Identity $link -Replace @{ Options = $newOptions }
+                Set-ADReplicationSiteLink -Identity $link -Replace @{ Options = $newOptions } @serverParam
                 Write-HardeningLog -Message "Change Notification enabled on site link '$($link.Name)' (Options: $currentOptions -> $newOptions)." -Level Success -LogDirectory $LogDirectory
             }
             catch {
@@ -1212,14 +1407,25 @@ function Set-HardeningCentralStore {
         local PolicyDefinitions only.
     .PARAMETER LogDirectory
         Log directory.
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [string]$LogDirectory
+        [string]$LogDirectory,
+        [string]$Server,
+        [PSCredential]$Credential
     )
 
-    $domainDNS        = (Get-ADDomain).DNSRoot
-    $centralStorePath = "\\$domainDNS\SYSVOL\$domainDNS\Policies\PolicyDefinitions"
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+
+    $domainDNS  = (Get-ADDomain @serverParam).DNSRoot
+    $sysvolRoot = Get-LOCKmeADSysvolDrive -DomainDNSRoot $domainDNS -Credential $Credential
+    $centralStorePath = "$sysvolRoot\$domainDNS\Policies\PolicyDefinitions"
     $sourcePath       = "$env:SystemRoot\PolicyDefinitions"
 
     if (-not (Test-Path $sourcePath)) {
@@ -1273,15 +1479,31 @@ function Update-HardeningLAPSSchema {
         Extends the Active Directory schema for Windows LAPS.
     .PARAMETER LogDirectory
         Log directory.
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. NOTE: the LAPS PowerShell module's
+        cmdlets (Update-LapsADSchema, Set-LapsAD*) only accept -Server, not -Credential —
+        when running off-domain this task still needs the *process* to be running under
+        the target identity (e.g. launched via runas /netonly) for schema/permission writes
+        to succeed, even though -Server lets it target an explicit DC.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [string]$LogDirectory
+        [string]$LogDirectory,
+        [string]$Server,
+        [PSCredential]$Credential
     )
 
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+    $lapsServerParam = @{}
+    if ($Server) { $lapsServerParam.Server = $Server }
+
     # Check if schema is already extended by looking for the ms-LAPS-Password attribute
-    $schemaNC = (Get-ADRootDSE).schemaNamingContext
-    $lapsAttribute = Get-ADObject -SearchBase $schemaNC -Filter { Name -eq "ms-LAPS-Password" } -ErrorAction SilentlyContinue
+    $schemaNC = (Get-ADRootDSE @serverParam).schemaNamingContext
+    $lapsAttribute = Get-ADObject -SearchBase $schemaNC -Filter { Name -eq "ms-LAPS-Password" } @serverParam -ErrorAction SilentlyContinue
 
     if ($lapsAttribute) {
         Write-HardeningLog -Message "LAPS schema extension is already present (ms-LAPS-Password attribute exists)." -Level Warning -LogDirectory $LogDirectory
@@ -1290,7 +1512,7 @@ function Update-HardeningLAPSSchema {
 
     if ($PSCmdlet.ShouldProcess($schemaNC, "Extend schema for Windows LAPS")) {
         try {
-            Update-LapsADSchema -Confirm:$false
+            Update-LapsADSchema -Confirm:$false @lapsServerParam
             Write-HardeningLog -Message "AD schema extended for Windows LAPS." -Level Success -LogDirectory $LogDirectory
         }
         catch {
@@ -1338,6 +1560,10 @@ function Set-HardeningLAPSADPermissions {
         Must be fully qualified.
     .PARAMETER LogDirectory
         Log directory.
+    .PARAMETER Server
+        Target DC for all AD operations. NOTE: as with Update-HardeningLAPSSchema, the
+        Set-LapsAD* cmdlets only accept -Server, not -Credential — running fully
+        off-domain still requires the process itself to run under the target identity.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -1346,15 +1572,19 @@ function Set-HardeningLAPSADPermissions {
         [string[]]$ReadPasswordPrincipals  = @(),
         [string[]]$ResetPasswordOUs        = @(),
         [string[]]$ResetPasswordPrincipals = @(),
-        [string]$LogDirectory
+        [string]$LogDirectory,
+        [string]$Server
     )
+
+    $lapsServerParam = @{}
+    if ($Server) { $lapsServerParam.Server = $Server }
 
     # --- Set-LapsADComputerSelfPermission ---
     foreach ($ou in $SelfPermissionOUs) {
         if ([string]::IsNullOrWhiteSpace($ou)) { continue }
         if ($PSCmdlet.ShouldProcess($ou, "Set-LapsADComputerSelfPermission")) {
             try {
-                Set-LapsADComputerSelfPermission -Identity $ou
+                Set-LapsADComputerSelfPermission -Identity $ou @lapsServerParam
                 Write-HardeningLog -Message "Set LAPS computer self-permission on '$ou'." -Level Success -LogDirectory $LogDirectory
             }
             catch {
@@ -1374,7 +1604,7 @@ function Set-HardeningLAPSADPermissions {
             $principalList = $ReadPasswordPrincipals -join ', '
             if ($PSCmdlet.ShouldProcess($ou, "Set-LapsADReadPasswordPermission for: $principalList")) {
                 try {
-                    Set-LapsADReadPasswordPermission -Identity $ou -AllowedPrincipals $ReadPasswordPrincipals
+                    Set-LapsADReadPasswordPermission -Identity $ou -AllowedPrincipals $ReadPasswordPrincipals @lapsServerParam
                     Write-HardeningLog -Message "Set LAPS read permission on '$ou' for: $principalList." -Level Success -LogDirectory $LogDirectory
                 }
                 catch {
@@ -1398,7 +1628,7 @@ function Set-HardeningLAPSADPermissions {
             $principalList = $ResetPasswordPrincipals -join ', '
             if ($PSCmdlet.ShouldProcess($ou, "Set-LapsADResetPasswordPermission for: $principalList")) {
                 try {
-                    Set-LapsADResetPasswordPermission -Identity $ou -AllowedPrincipals $ResetPasswordPrincipals
+                    Set-LapsADResetPasswordPermission -Identity $ou -AllowedPrincipals $ResetPasswordPrincipals @lapsServerParam
                     Write-HardeningLog -Message "Set LAPS reset permission on '$ou' for: $principalList." -Level Success -LogDirectory $LogDirectory
                 }
                 catch {
@@ -1434,16 +1664,27 @@ function Set-HardeningDNSDynamicUpdate {
         DomainDNSZones and ForestDNSZones application partitions.
     .PARAMETER LogDirectory
         Log directory.
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [string]$LogDirectory
+        [string]$LogDirectory,
+        [string]$Server,
+        [PSCredential]$Credential
     )
+
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+    $adDrive = Get-LOCKmeADDrive -Server $Server -Credential $Credential
 
     # Authenticated Users: well-known SID S-1-5-11 (no domain resolution needed)
     $authenticatedUsersSid = [System.Security.Principal.SecurityIdentifier]::new("S-1-5-11")
 
-    $domain    = Get-ADDomain
+    $domain    = Get-ADDomain @serverParam
     $domainDN  = $domain.DistinguishedName
 
     # Domain Computers: RID 515, relative to the domain SID
@@ -1455,7 +1696,7 @@ function Set-HardeningDNSDynamicUpdate {
     )
 
     foreach ($containerDN in $containers) {
-        if (-not (Test-Path "AD:\$containerDN")) {
+        if (-not (Test-Path "${adDrive}\$containerDN")) {
             Write-HardeningLog -Message "DNS container not found: '$containerDN'. Skipping." -Level Warning -LogDirectory $LogDirectory
             continue
         }
@@ -1466,6 +1707,7 @@ function Set-HardeningDNSDynamicUpdate {
             $zones = Get-ADObject -SearchBase $containerDN `
                                    -Filter { objectClass -eq 'dnsZone' } `
                                    -SearchScope OneLevel `
+                                   @serverParam `
                                    -ErrorAction Stop
         }
         catch {
@@ -1479,7 +1721,7 @@ function Set-HardeningDNSDynamicUpdate {
         }
 
         foreach ($zone in $zones) {
-            $zonePath = "AD:\$($zone.DistinguishedName)"
+            $zonePath = "${adDrive}\$($zone.DistinguishedName)"
 
             try {
                 $acl = Get-Acl -Path $zonePath
@@ -1583,6 +1825,13 @@ function Set-HardeningDNSSecurityRecords {
         Text value for the wildcard TXT record. Default: ".".
     .PARAMETER LogDirectory
         Log directory.
+    .PARAMETER Server
+        DNS server to target. Required when not domain-joined (this task otherwise
+        targets the local machine's DNS Server role, which only makes sense when run
+        on a DC). Requires WinRM reachable on that server when paired with -Credential.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Used to open a remote CIM session
+        to -Server (the DnsServer module cmdlets don't accept -Credential directly).
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -1592,30 +1841,49 @@ function Set-HardeningDNSSecurityRecords {
 
         [string]$WildcardTXTValue = ".",
 
-        [string]$LogDirectory
+        [string]$LogDirectory,
+        [string]$Server,
+        [PSCredential]$Credential
     )
 
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+
+    # DnsServer cmdlets don't accept -Credential; route through an explicit CIM session instead.
+    $dnsCimParam = @{}
+    if ($Server -and $Credential) {
+        $dnsCimSession = New-LOCKmeADCimSession -ComputerName $Server -Credential $Credential
+        if (-not $dnsCimSession) {
+            throw "Could not establish a CIM session to '$Server' with the supplied credential — ensure WinRM (5985/5986) is reachable there."
+        }
+        $dnsCimParam.CimSession = $dnsCimSession
+    }
+    elseif ($Server) {
+        $dnsCimParam.ComputerName = $Server
+    }
+
     if ([string]::IsNullOrWhiteSpace($ZoneName)) {
-        $ZoneName = (Get-ADDomain).DNSRoot
+        $ZoneName = (Get-ADDomain @serverParam).DNSRoot
         Write-HardeningLog -Message "ZoneName not specified — using domain primary zone '$ZoneName'." -Level Info -LogDirectory $LogDirectory
     }
 
-    # Verify the zone exists on this DNS server
-    $zone = Get-DnsServerZone -Name $ZoneName -ErrorAction SilentlyContinue
+    # Verify the zone exists on the target DNS server
+    $zone = Get-DnsServerZone -Name $ZoneName @dnsCimParam -ErrorAction SilentlyContinue
     if (-not $zone) {
-        throw "DNS zone '$ZoneName' not found on this server. Verify the zone name and that this server is authoritative for it."
+        throw "DNS zone '$ZoneName' not found on the target DNS server. Verify the zone name, that the server is authoritative for it, and (when off-domain) that -Server points at a DNS server with WinRM reachable."
     }
 
     Write-HardeningLog -Message "Applying DNS security records to zone '$ZoneName'..." -Level Info -LogDirectory $LogDirectory
 
     # --- WPAD A record ---
-    $wpadExists = Get-DnsServerResourceRecord -ZoneName $ZoneName -Name "wpad" -RRType A -ErrorAction SilentlyContinue
+    $wpadExists = Get-DnsServerResourceRecord -ZoneName $ZoneName -Name "wpad" -RRType A @dnsCimParam -ErrorAction SilentlyContinue
     if ($wpadExists) {
         Write-HardeningLog -Message "WPAD A record already exists in '$ZoneName' — skipped." -Level Warning -LogDirectory $LogDirectory
     }
     elseif ($PSCmdlet.ShouldProcess($ZoneName, "Add WPAD A record -> $WpadIPAddress")) {
         try {
-            Add-DnsServerResourceRecord -ZoneName $ZoneName -Name "wpad" -A -IPv4Address $WpadIPAddress -ErrorAction Stop
+            Add-DnsServerResourceRecord -ZoneName $ZoneName -Name "wpad" -A -IPv4Address $WpadIPAddress @dnsCimParam -ErrorAction Stop
             Write-HardeningLog -Message "WPAD A record added: wpad.$ZoneName -> $WpadIPAddress" -Level Success -LogDirectory $LogDirectory
         }
         catch {
@@ -1628,13 +1896,13 @@ function Set-HardeningDNSSecurityRecords {
     }
 
     # --- Wildcard TXT record ---
-    $wildcardExists = Get-DnsServerResourceRecord -ZoneName $ZoneName -Name "*" -RRType TXT -ErrorAction SilentlyContinue
+    $wildcardExists = Get-DnsServerResourceRecord -ZoneName $ZoneName -Name "*" -RRType TXT @dnsCimParam -ErrorAction SilentlyContinue
     if ($wildcardExists) {
         Write-HardeningLog -Message "Wildcard TXT record already exists in '$ZoneName' — skipped." -Level Warning -LogDirectory $LogDirectory
     }
     elseif ($PSCmdlet.ShouldProcess($ZoneName, "Add wildcard TXT record -> '$WildcardTXTValue'")) {
         try {
-            Add-DnsServerResourceRecord -ZoneName $ZoneName -Name "*" -Txt -DescriptiveText $WildcardTXTValue -ErrorAction Stop
+            Add-DnsServerResourceRecord -ZoneName $ZoneName -Name "*" -Txt -DescriptiveText $WildcardTXTValue @dnsCimParam -ErrorAction Stop
             Write-HardeningLog -Message "Wildcard TXT record added: *.$ZoneName -> '$WildcardTXTValue'" -Level Success -LogDirectory $LogDirectory
         }
         catch {
@@ -1696,15 +1964,29 @@ function Set-HardeningDNSRecordOwnership {
         the function enables it automatically via P/Invoke.
     .PARAMETER LogDirectory
         Log directory.
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [string]$LogDirectory
+        [string]$LogDirectory,
+        [string]$Server,
+        [PSCredential]$Credential
     )
 
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+    $adDrive = Get-LOCKmeADDrive -Server $Server -Credential $Credential
+
     # Enable SeRestorePrivilege so we can set the owner of an AD object to an
-    # arbitrary account (not just the current user). The privilege is assigned
-    # to Domain Admins but is not enabled in the token by default.
+    # arbitrary account (not just the current user). This is a LOCAL Windows privilege
+    # on the process token running the script — granted by default to local
+    # Administrators (which #Requires -RunAsAdministrator already guarantees) — and is
+    # unrelated to the AD account used for the LDAP operations above, so it applies the
+    # same way whether running domain-joined or with an explicit -Credential.
     $privCSrc = @'
 using System;
 using System.Diagnostics;
@@ -1742,12 +2024,12 @@ public class LOCKmeAD_Priv {
     }
     [LOCKmeAD_Priv]::Enable("SeRestorePrivilege")
 
-    $domain   = Get-ADDomain
+    $domain   = Get-ADDomain @serverParam
     $domainDN = $domain.DistinguishedName
 
     Write-HardeningLog -Message "Loading domain computers..." -Level Info -LogDirectory $LogDirectory
     $computerMap = @{}
-    Get-ADComputer -Filter * -Properties SID | ForEach-Object {
+    Get-ADComputer -Filter * -Properties SID @serverParam | ForEach-Object {
         $computerMap[$_.Name.ToUpper()] = $_
     }
     Write-HardeningLog -Message "$($computerMap.Count) domain computer(s) loaded." -Level Info -LogDirectory $LogDirectory
@@ -1762,6 +2044,7 @@ public class LOCKmeAD_Priv {
     foreach ($containerDN in $zoneContainers) {
         $zones = Get-ADObject -SearchBase $containerDN -SearchScope OneLevel `
                               -Filter { objectClass -eq 'dnsZone' } `
+                              @serverParam `
                               -ErrorAction SilentlyContinue
         if (-not $zones) { continue }
 
@@ -1774,6 +2057,7 @@ public class LOCKmeAD_Priv {
             $nodes = Get-ADObject -SearchBase $zone.DistinguishedName -SearchScope OneLevel `
                                   -Filter { objectClass -eq 'dnsNode' } `
                                   -Properties dnsRecord `
+                                  @serverParam `
                                   -ErrorAction SilentlyContinue
             if (-not $nodes) { continue }
 
@@ -1800,7 +2084,7 @@ public class LOCKmeAD_Priv {
                 }
 
                 try {
-                    $aclPath = "AD:\$($node.DistinguishedName)"
+                    $aclPath = "${adDrive}\$($node.DistinguishedName)"
                     $acl     = Get-Acl -Path $aclPath -ErrorAction Stop
 
                     $currentOwnerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])
@@ -1854,11 +2138,22 @@ function Set-HardeningADObjectOwnership {
         is enabled automatically via P/Invoke.
     .PARAMETER LogDirectory
         Log directory.
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [string]$LogDirectory
+        [string]$LogDirectory,
+        [string]$Server,
+        [PSCredential]$Credential
     )
+
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+    $adDrive = Get-LOCKmeADDrive -Server $Server -Credential $Credential
 
     $privCSrc = @'
 using System;
@@ -1897,22 +2192,26 @@ public class LOCKmeAD_Priv {
     }
     [LOCKmeAD_Priv]::Enable("SeRestorePrivilege")
 
-    $domainAdminsGroup = Get-ADGroup "Domain Admins"
+    $domainAdminsGroup = Get-ADGroup "Domain Admins" @serverParam
     $domainAdminsSid   = [System.Security.Principal.SecurityIdentifier]::new($domainAdminsGroup.SID.Value)
-    $domainAdminsName  = $domainAdminsGroup.SID.Translate([System.Security.Principal.NTAccount]).Value
+    # SID.Translate(NTAccount) resolves via the local machine's LSA lookup, which requires
+    # domain join/trust and fails off-domain ("could not be translated"). Build the name
+    # from the AD query results instead, which we already have.
+    $domainNetBIOS     = (Get-ADDomain @serverParam).NetBIOSName
+    $domainAdminsName  = "$domainNetBIOS\$($domainAdminsGroup.SamAccountName)"
 
     Write-HardeningLog -Message "Target owner: '$domainAdminsName' ($($domainAdminsSid.Value))" -Level Info -LogDirectory $LogDirectory
 
     Write-HardeningLog -Message "Loading user and computer objects..." -Level Info -LogDirectory $LogDirectory
-    $objects  = @(Get-ADUser     -Filter *)
-    $objects += @(Get-ADComputer -Filter *)
+    $objects  = @(Get-ADUser     -Filter * @serverParam)
+    $objects += @(Get-ADComputer -Filter * @serverParam)
     Write-HardeningLog -Message "$($objects.Count) object(s) to process." -Level Info -LogDirectory $LogDirectory
 
     $stats = @{ Updated = 0; AlreadyCorrect = 0; Errors = 0 }
 
     foreach ($obj in $objects) {
         try {
-            $aclPath = "AD:\$($obj.DistinguishedName)"
+            $aclPath = "${adDrive}\$($obj.DistinguishedName)"
             $acl     = Get-Acl -Path $aclPath -ErrorAction Stop
 
             $currentOwnerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])
@@ -1960,44 +2259,52 @@ function New-HardeningCheckResult {
 function Test-HardeningTask {
     param(
         [Parameter(Mandatory)][string]$TaskName,
-        [object]$TaskParameters
+        [object]$TaskParameters,
+        [string]$Server,
+        [PSCredential]$Credential
     )
     switch ($TaskName) {
-        'SetMachineAccountQuota'     { Test-HardeningMachineAccountQuota }
-        'RaiseDomainFunctionalLevel' { Test-HardeningDomainFunctionalLevel }
-        'RaiseForestFunctionalLevel' { Test-HardeningForestFunctionalLevel }
-        'EnableRecycleBin'           { Test-HardeningRecycleBin }
-        'EnablePAMFeature'           { Test-HardeningPAMFeature }
-        'DisableAnonymousAccess'     { Test-HardeningAnonymousAccess }
-        'DeployT0AuthPolicy'         { Test-HardeningT0AuthPolicy }
-        'EnableReplicationNotify'    { Test-HardeningReplicationNotify }
-        'ConfigureCentralStore'      { Test-HardeningCentralStore }
-        'ExtendLAPSSchema'           { Test-HardeningLAPSSchema }
+        'SetMachineAccountQuota'     { Test-HardeningMachineAccountQuota -Server $Server -Credential $Credential }
+        'RaiseDomainFunctionalLevel' { Test-HardeningDomainFunctionalLevel -Server $Server -Credential $Credential }
+        'RaiseForestFunctionalLevel' { Test-HardeningForestFunctionalLevel -Server $Server -Credential $Credential }
+        'EnableRecycleBin'           { Test-HardeningRecycleBin -Server $Server -Credential $Credential }
+        'EnablePAMFeature'           { Test-HardeningPAMFeature -Server $Server -Credential $Credential }
+        'DisableAnonymousAccess'     { Test-HardeningAnonymousAccess -Server $Server -Credential $Credential }
+        'DeployT0AuthPolicy'         { Test-HardeningT0AuthPolicy -Server $Server -Credential $Credential }
+        'EnableReplicationNotify'    { Test-HardeningReplicationNotify -Server $Server -Credential $Credential }
+        'ConfigureCentralStore'      { Test-HardeningCentralStore -Server $Server -Credential $Credential }
+        'ExtendLAPSSchema'           { Test-HardeningLAPSSchema -Server $Server -Credential $Credential }
         'ConfigureLAPSADPermissions' {
             Test-HardeningLAPSADPermissions `
                 -SelfPermissionOUs      @($TaskParameters.SelfPermissionOUs) `
                 -ReadPasswordOUs        @($TaskParameters.ReadPasswordOUs) `
                 -ReadPasswordPrincipals @($TaskParameters.ReadPasswordPrincipals) `
                 -ResetPasswordOUs       @($TaskParameters.ResetPasswordOUs) `
-                -ResetPasswordPrincipals @($TaskParameters.ResetPasswordPrincipals)
+                -ResetPasswordPrincipals @($TaskParameters.ResetPasswordPrincipals) `
+                -Server $Server -Credential $Credential
         }
-        'RestrictDNSDynamicUpdate'   { Test-HardeningDNSDynamicUpdate }
+        'RestrictDNSDynamicUpdate'   { Test-HardeningDNSDynamicUpdate -Server $Server -Credential $Credential }
         'AddDNSSecurityRecords'      {
             Test-HardeningDNSSecurityRecords `
                 -ZoneName         $TaskParameters.ZoneName `
                 -WpadIPAddress    $TaskParameters.WpadIPAddress `
-                -WildcardTXTValue $TaskParameters.WildcardTXTValue
+                -WildcardTXTValue $TaskParameters.WildcardTXTValue `
+                -Server $Server -Credential $Credential
         }
-        'FixDNSRecordOwnership'      { Test-HardeningDNSRecordOwnership }
-        'ResetADObjectOwnership'     { Test-HardeningADObjectOwnership }
+        'FixDNSRecordOwnership'      { Test-HardeningDNSRecordOwnership -Server $Server -Credential $Credential }
+        'ResetADObjectOwnership'     { Test-HardeningADObjectOwnership -Server $Server -Credential $Credential }
         default { New-HardeningCheckResult -Status 'Error' -Message "Unknown task: $TaskName" }
     }
 }
 
 function Test-HardeningMachineAccountQuota {
+    param([string]$Server, [PSCredential]$Credential)
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
     try {
-        $domain = Get-ADDomain
-        $quota = (Get-ADObject $domain.DistinguishedName -Properties 'ms-DS-MachineAccountQuota').'ms-DS-MachineAccountQuota'
+        $domain = Get-ADDomain @serverParam
+        $quota = (Get-ADObject $domain.DistinguishedName -Properties 'ms-DS-MachineAccountQuota' @serverParam).'ms-DS-MachineAccountQuota'
         if ($quota -eq 0) {
             New-HardeningCheckResult -Status 'OK' -Message "ms-DS-MachineAccountQuota = 0"
         } else {
@@ -2007,22 +2314,34 @@ function Test-HardeningMachineAccountQuota {
 }
 
 function Test-HardeningDomainFunctionalLevel {
+    param([string]$Server, [PSCredential]$Credential)
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
     try {
-        $current = (Get-ADDomain).DomainMode.ToString()
+        $current = (Get-ADDomain @serverParam).DomainMode.ToString()
         New-HardeningCheckResult -Status 'Info' -Message "Domain functional level: $current"
     } catch { New-HardeningCheckResult -Status 'Error' -Message $_.Exception.Message }
 }
 
 function Test-HardeningForestFunctionalLevel {
+    param([string]$Server, [PSCredential]$Credential)
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
     try {
-        $current = (Get-ADForest).ForestMode.ToString()
+        $current = (Get-ADForest @serverParam).ForestMode.ToString()
         New-HardeningCheckResult -Status 'Info' -Message "Forest functional level: $current"
     } catch { New-HardeningCheckResult -Status 'Error' -Message $_.Exception.Message }
 }
 
 function Test-HardeningRecycleBin {
+    param([string]$Server, [PSCredential]$Credential)
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
     try {
-        $feature = Get-ADOptionalFeature -Filter { Name -eq 'Recycle Bin Feature' }
+        $feature = Get-ADOptionalFeature -Filter { Name -eq 'Recycle Bin Feature' } @serverParam
         if ($feature -and $feature.EnabledScopes.Count -gt 0) {
             New-HardeningCheckResult -Status 'OK' -Message "Recycle Bin is enabled"
         } else {
@@ -2032,8 +2351,12 @@ function Test-HardeningRecycleBin {
 }
 
 function Test-HardeningPAMFeature {
+    param([string]$Server, [PSCredential]$Credential)
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
     try {
-        $feature = Get-ADOptionalFeature -Filter { Name -eq 'Privileged Access Management Feature' }
+        $feature = Get-ADOptionalFeature -Filter { Name -eq 'Privileged Access Management Feature' } @serverParam
         if ($feature -and $feature.EnabledScopes.Count -gt 0) {
             New-HardeningCheckResult -Status 'OK' -Message "PAM feature is enabled"
         } else {
@@ -2043,8 +2366,12 @@ function Test-HardeningPAMFeature {
 }
 
 function Test-HardeningAnonymousAccess {
+    param([string]$Server, [PSCredential]$Credential)
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
     try {
-        $members = @(Get-ADGroupMember 'Pre-Windows 2000 Compatible Access' -ErrorAction Stop)
+        $members = @(Get-ADGroupMember 'Pre-Windows 2000 Compatible Access' @serverParam -ErrorAction Stop)
         $hasAnon = $members | Where-Object { $_.Name -eq 'ANONYMOUS LOGON' -or $_.SamAccountName -eq 'ANONYMOUS LOGON' }
         if (-not $hasAnon) {
             New-HardeningCheckResult -Status 'OK' -Message "ANONYMOUS LOGON not in Pre-Windows 2000 Compatible Access"
@@ -2055,9 +2382,13 @@ function Test-HardeningAnonymousAccess {
 }
 
 function Test-HardeningT0AuthPolicy {
+    param([string]$Server, [PSCredential]$Credential)
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
     try {
         $t0Pattern = 'T[-_]?0|Tier[-_]?0'
-        $allSilos = @(Get-ADAuthenticationPolicySilo -Filter * -ErrorAction SilentlyContinue)
+        $allSilos = @(Get-ADAuthenticationPolicySilo -Filter * @serverParam -ErrorAction SilentlyContinue)
         $t0Silos  = @($allSilos | Where-Object { $_.Name -match $t0Pattern })
         if ($t0Silos.Count -gt 0) {
             $names = $t0Silos.Name -join ', '
@@ -2069,9 +2400,13 @@ function Test-HardeningT0AuthPolicy {
 }
 
 function Test-HardeningReplicationNotify {
+    param([string]$Server, [PSCredential]$Credential)
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
     try {
-        $configNC = (Get-ADRootDSE).configurationNamingContext
-        $siteLinks = @(Get-ADObject -Filter { objectClass -eq 'siteLink' } -SearchBase "CN=Sites,$configNC" -Properties Options)
+        $configNC = (Get-ADRootDSE @serverParam).configurationNamingContext
+        $siteLinks = @(Get-ADObject -Filter { objectClass -eq 'siteLink' } -SearchBase "CN=Sites,$configNC" -Properties Options @serverParam)
         if ($siteLinks.Count -eq 0) {
             return New-HardeningCheckResult -Status 'OK' -Message "No site links found"
         }
@@ -2087,9 +2422,14 @@ function Test-HardeningReplicationNotify {
 }
 
 function Test-HardeningCentralStore {
+    param([string]$Server, [PSCredential]$Credential)
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
     try {
-        $domain = Get-ADDomain
-        $sysvol = "\\$($domain.PDCEmulator)\SYSVOL\$($domain.DNSRoot)\Policies\PolicyDefinitions"
+        $domain = Get-ADDomain @serverParam
+        $sysvolRoot = Get-LOCKmeADSysvolDrive -DomainDNSRoot $domain.DNSRoot -Credential $Credential
+        $sysvol = "$sysvolRoot\$($domain.DNSRoot)\Policies\PolicyDefinitions"
         if (Test-Path $sysvol) {
             New-HardeningCheckResult -Status 'OK' -Message "Central Store exists"
         } else {
@@ -2099,8 +2439,12 @@ function Test-HardeningCentralStore {
 }
 
 function Test-HardeningLAPSSchema {
+    param([string]$Server, [PSCredential]$Credential)
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
     try {
-        $schema = (Get-ADRootDSE).schemaNamingContext
+        $schema = (Get-ADRootDSE @serverParam).schemaNamingContext
 
         # Attributes added by Update-LapsADSchema per MS official documentation
         # (msLAPS-CurrentPasswordVersion is WS2025+ only and excluded from this check)
@@ -2115,7 +2459,7 @@ function Test-HardeningLAPSSchema {
 
         $missing = @()
         foreach ($attr in $expected) {
-            $obj = Get-ADObject -LDAPFilter "(lDAPDisplayName=$attr)" -SearchBase $schema -ErrorAction SilentlyContinue
+            $obj = Get-ADObject -LDAPFilter "(lDAPDisplayName=$attr)" -SearchBase $schema @serverParam -ErrorAction SilentlyContinue
             if (-not $obj) { $missing += $attr }
         }
 
@@ -2135,18 +2479,25 @@ function Test-HardeningLAPSADPermissions {
         [string[]]$ReadPasswordOUs,
         [string[]]$ReadPasswordPrincipals,
         [string[]]$ResetPasswordOUs,
-        [string[]]$ResetPasswordPrincipals
+        [string[]]$ResetPasswordPrincipals,
+        [string]$Server,
+        [PSCredential]$Credential
     )
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+    $lapsServerParam = @{}
+    if ($Server) { $lapsServerParam.Server = $Server }
     try {
-        $domain   = Get-ADDomain
-        $allOUDNs = @(Get-ADOrganizationalUnit -Filter * -ErrorAction Stop | Select-Object -ExpandProperty DistinguishedName)
+        $domain   = Get-ADDomain @serverParam
+        $allOUDNs = @(Get-ADOrganizationalUnit -Filter * @serverParam -ErrorAction Stop | Select-Object -ExpandProperty DistinguishedName)
         $defaultContainers = @($domain.ComputersContainer, $domain.UsersContainer) | Where-Object { $_ }
         $allTargets = ($allOUDNs + $defaultContainers) | Sort-Object -Unique
 
         $lines = @()
         foreach ($dn in $allTargets) {
             try {
-                $rights = Find-LapsADExtendedRights -Identity $dn -ErrorAction Stop
+                $rights = Find-LapsADExtendedRights -Identity $dn @lapsServerParam -ErrorAction Stop
                 $delegated = @($rights.ExtendedRightHolders | Where-Object { $_ -notmatch '^NT AUTHORITY\\' })
                 if ($delegated.Count -gt 0) {
                     $lines += "$dn`n  $($delegated -join ', ')"
@@ -2160,10 +2511,15 @@ function Test-HardeningLAPSADPermissions {
 }
 
 function Test-HardeningDNSDynamicUpdate {
+    param([string]$Server, [PSCredential]$Credential)
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+    $adDrive = Get-LOCKmeADDrive -Server $Server -Credential $Credential
     try {
-        $domainDN    = (Get-ADDomain).DistinguishedName
+        $domainDN    = (Get-ADDomain @serverParam).DistinguishedName
         $dnsBase     = "CN=MicrosoftDNS,DC=DomainDnsZones,$domainDN"
-        $zones       = @(Get-ADObject -Filter { objectClass -eq 'dnsZone' } -SearchBase $dnsBase -ErrorAction SilentlyContinue)
+        $zones       = @(Get-ADObject -Filter { objectClass -eq 'dnsZone' } -SearchBase $dnsBase @serverParam -ErrorAction SilentlyContinue)
 
         if ($zones.Count -eq 0) {
             return New-HardeningCheckResult -Status 'Error' -Message "No AD-integrated DNS zones found"
@@ -2171,7 +2527,7 @@ function Test-HardeningDNSDynamicUpdate {
 
         $zoneWithAuthUsers = @()
         foreach ($zone in $zones) {
-            $acl = Get-Acl -Path "AD:$($zone.DistinguishedName)" -ErrorAction SilentlyContinue
+            $acl = Get-Acl -Path "${adDrive}$($zone.DistinguishedName)" -ErrorAction SilentlyContinue
             if ($acl) {
                 $bad = $acl.Access | Where-Object {
                     $_.IdentityReference -match 'Authenticated Users' -and
@@ -2190,12 +2546,15 @@ function Test-HardeningDNSDynamicUpdate {
 }
 
 function Test-HardeningDNSSecurityRecords {
-    param([string]$ZoneName, [string]$WpadIPAddress, [string]$WildcardTXTValue)
+    param([string]$ZoneName, [string]$WpadIPAddress, [string]$WildcardTXTValue, [string]$Server, [PSCredential]$Credential)
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
     try {
-        $domainDN = (Get-ADDomain).DistinguishedName
+        $domainDN = (Get-ADDomain @serverParam).DistinguishedName
 
         if ([string]::IsNullOrWhiteSpace($ZoneName)) {
-            $ZoneName = (Get-ADDomain).DNSRoot
+            $ZoneName = (Get-ADDomain @serverParam).DNSRoot
         }
 
         # Locate the zone — wrap each partition separately so an inaccessible
@@ -2204,7 +2563,7 @@ function Test-HardeningDNSSecurityRecords {
         foreach ($container in @("CN=MicrosoftDNS,DC=DomainDnsZones,$domainDN", "CN=MicrosoftDNS,DC=ForestDnsZones,$domainDN")) {
             try {
                 $zoneObj = Get-ADObject -Filter "objectClass -eq 'dnsZone' -and Name -eq '$ZoneName'" `
-                    -SearchBase $container -SearchScope OneLevel -ErrorAction Stop
+                    -SearchBase $container -SearchScope OneLevel @serverParam -ErrorAction Stop
                 if ($zoneObj) { $zoneDN = $zoneObj.DistinguishedName; break }
             } catch { continue }
         }
@@ -2216,7 +2575,7 @@ function Test-HardeningDNSSecurityRecords {
         # Fetch all dnsNode children and filter client-side — avoids LDAP escaping
         # issues with '*' and does not require the DnsServer module
         $allNodes     = @(Get-ADObject -Filter { objectClass -eq 'dnsNode' } `
-            -SearchBase $zoneDN -SearchScope OneLevel -ErrorAction SilentlyContinue)
+            -SearchBase $zoneDN -SearchScope OneLevel @serverParam -ErrorAction SilentlyContinue)
         $wpadNode     = $allNodes | Where-Object { $_.Name -eq 'wpad' }
         $wildcardNode = $allNodes | Where-Object { $_.Name -eq '*' }
 
@@ -2231,13 +2590,18 @@ function Test-HardeningDNSSecurityRecords {
 }
 
 function Test-HardeningDNSRecordOwnership {
+    param([string]$Server, [PSCredential]$Credential)
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+    $adDrive = Get-LOCKmeADDrive -Server $Server -Credential $Credential
     try {
-        $domain   = Get-ADDomain
+        $domain   = Get-ADDomain @serverParam
         $domainDN = $domain.DistinguishedName
 
         # Build computer map: lowercase name -> ADComputer object (with SID)
         $computerMap = @{}
-        Get-ADComputer -Filter * -Properties SID -ErrorAction SilentlyContinue | ForEach-Object {
+        Get-ADComputer -Filter * -Properties SID @serverParam -ErrorAction SilentlyContinue | ForEach-Object {
             $computerMap[$_.Name.ToLower()] = $_
         }
 
@@ -2253,7 +2617,7 @@ function Test-HardeningDNSRecordOwnership {
             $zones = $null
             try {
                 $zones = @(Get-ADObject -Filter { objectClass -eq 'dnsZone' } -SearchBase $container `
-                    -SearchScope OneLevel -ErrorAction Stop)
+                    -SearchScope OneLevel @serverParam -ErrorAction Stop)
             } catch { continue }
 
             foreach ($zone in $zones) {
@@ -2261,7 +2625,7 @@ function Test-HardeningDNSRecordOwnership {
 
                 $nodes = @(Get-ADObject -Filter { objectClass -eq 'dnsNode' } `
                     -SearchBase $zone.DistinguishedName -SearchScope OneLevel `
-                    -Properties dnsRecord -ErrorAction SilentlyContinue)
+                    -Properties dnsRecord @serverParam -ErrorAction SilentlyContinue)
 
                 foreach ($node in $nodes) {
                     if ($node.Name -in @('@', '*') -or $node.Name -match '^_') { continue }
@@ -2273,9 +2637,9 @@ function Test-HardeningDNSRecordOwnership {
 
                     $relevant++
 
-                    # Use "AD:\" (with backslash) — matches the path format used by the
-                    # hardening action; without it Get-Acl may fail on application-partition DNs
-                    $acl = Get-Acl -Path "AD:\$($node.DistinguishedName)" -ErrorAction SilentlyContinue
+                    # Matches the path format used by the hardening action; without the
+                    # backslash Get-Acl may fail on application-partition DNs
+                    $acl = Get-Acl -Path "${adDrive}\$($node.DistinguishedName)" -ErrorAction SilentlyContinue
                     if ($acl) {
                         try {
                             $currentSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])
@@ -2297,9 +2661,14 @@ function Test-HardeningDNSRecordOwnership {
 }
 
 function Test-HardeningADObjectOwnership {
+    param([string]$Server, [PSCredential]$Credential)
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+    $adDrive = Get-LOCKmeADDrive -Server $Server -Credential $Credential
     try {
         $objects = @(Get-ADObject -Filter { objectClass -eq 'user' -or objectClass -eq 'computer' } `
-            -ErrorAction SilentlyContinue)
+            @serverParam -ErrorAction SilentlyContinue)
 
         if ($objects.Count -eq 0) {
             return New-HardeningCheckResult -Status 'Error' -Message "No user/computer objects found"
@@ -2307,7 +2676,7 @@ function Test-HardeningADObjectOwnership {
 
         $wrong = 0
         foreach ($obj in $objects) {
-            $acl = Get-Acl -Path "AD:$($obj.DistinguishedName)" -ErrorAction SilentlyContinue
+            $acl = Get-Acl -Path "${adDrive}$($obj.DistinguishedName)" -ErrorAction SilentlyContinue
             if ($acl -and $acl.Owner -notmatch 'Domain Admins') { $wrong++ }
         }
 

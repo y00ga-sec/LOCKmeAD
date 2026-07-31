@@ -14,16 +14,29 @@
     Simulation mode: displays actions without executing them.
 .PARAMETER NoConfirm
     Skips the interactive confirmation prompt (used by the GUI).
+.PARAMETER Server
+    Explicit target domain controller. Required when this host is not domain-joined
+    and no domain controller can be located automatically.
+.PARAMETER Credential
+    Explicit domain credential. Prompted for interactively when this host is not
+    domain-joined and no credential is supplied.
+.PARAMETER RememberConnection
+    Persists the resolved -Server/-Credential (DPAPI-protected, current user only)
+    for reuse on the next run.
 .EXAMPLE
     .\Deploy-PSO.ps1
     .\Deploy-PSO.ps1 -ConfigPath "C:\Config\custom-pso.json"
     .\Deploy-PSO.ps1 -WhatIf
+    .\Deploy-PSO.ps1 -Server dc01.forest.lol -Credential (Get-Credential)
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\PSO-Config.json"),
-    [switch]$NoConfirm
+    [switch]$NoConfirm,
+    [string]$Server,
+    [PSCredential]$Credential,
+    [switch]$RememberConnection
 )
 
 # ============================================================================
@@ -40,6 +53,9 @@ if (-not (Test-Path $modulePath)) {
     exit 1
 }
 Import-Module $modulePath -Force
+Import-Module (Join-Path $rootDir "Modules\Common\Connection.psm1") -Force
+
+$connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
 
 # ============================================================================
 # Load configuration
@@ -75,8 +91,8 @@ Write-Host "--- Environment Information ---" -ForegroundColor White
 Write-Host ""
 
 try {
-    $envInfo = Get-PSOEnvironmentInfo
-    $targetServer = $envInfo.PDCEmulator
+    $envInfo = Get-PSOEnvironmentInfo -Server $connection.Server -Credential $connection.Credential
+    $targetServer = if ($connection.Server) { $connection.Server } else { $envInfo.PDCEmulator }
 
     Write-Host "  Current DC        : $($envInfo.CurrentDC)" -ForegroundColor Cyan
     if ($envInfo.IsPDC) {
@@ -190,6 +206,7 @@ foreach ($policy in $config.Policies) {
                                -ReversibleEncryptionEnabled ([bool]$policy.ReversibleEncryptionEnabled) `
                                -ProtectedFromAccidentalDeletion ([bool]$policy.ProtectedFromAccidentalDeletion) `
                                -Server $targetServer `
+                               -Credential $connection.Credential `
                                -LogDirectory $logDir `
                                -WhatIf:$WhatIfPreference
         $stats.PoliciesCreated++
@@ -208,6 +225,7 @@ foreach ($policy in $config.Policies) {
                 Add-PSOSubject -PolicyName $policy.Name `
                                 -Subjects $validSubjects `
                                 -Server $targetServer `
+                                -Credential $connection.Credential `
                                 -LogDirectory $logDir `
                                 -WhatIf:$WhatIfPreference
                 $stats.SubjectsApplied += $validSubjects.Count

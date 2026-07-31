@@ -15,16 +15,29 @@
     Simulation mode: displays actions without executing them.
 .PARAMETER NoConfirm
     Skips the interactive confirmation prompt (used by the GUI).
+.PARAMETER Server
+    Explicit target domain controller. Required when this host is not domain-joined
+    and no domain controller can be located automatically.
+.PARAMETER Credential
+    Explicit domain credential. Prompted for interactively when this host is not
+    domain-joined and no credential is supplied.
+.PARAMETER RememberConnection
+    Persists the resolved -Server/-Credential (DPAPI-protected, current user only)
+    for reuse on the next run.
 .EXAMPLE
     .\Deploy-JIT.ps1
     .\Deploy-JIT.ps1 -ConfigPath "C:\Config\custom-jit.json"
     .\Deploy-JIT.ps1 -WhatIf
+    .\Deploy-JIT.ps1 -Server dc01.forest.lol -Credential (Get-Credential)
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\JIT-Config.json"),
-    [switch]$NoConfirm
+    [switch]$NoConfirm,
+    [string]$Server,
+    [PSCredential]$Credential,
+    [switch]$RememberConnection
 )
 
 # ============================================================================
@@ -41,6 +54,9 @@ if (-not (Test-Path $modulePath)) {
     exit 1
 }
 Import-Module $modulePath -Force
+Import-Module (Join-Path $rootDir "Modules\Common\Connection.psm1") -Force
+
+$connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
 
 # ============================================================================
 # Load configuration
@@ -80,8 +96,8 @@ Write-Host "--- Environment Information ---" -ForegroundColor White
 Write-Host ""
 
 try {
-    $envInfo = Get-JITEnvironmentInfo
-    $targetServer = $envInfo.PDCEmulator
+    $envInfo = Get-JITEnvironmentInfo -Server $connection.Server -Credential $connection.Credential
+    $targetServer = if ($connection.Server) { $connection.Server } else { $envInfo.PDCEmulator }
 
     Write-Host "  Current DC        : $($envInfo.CurrentDC)" -ForegroundColor Cyan
     if ($envInfo.IsPDC) {
@@ -189,6 +205,7 @@ $sourcePath = Join-Path $rootDir "Scripts\Start-JIT.ps1"
 try {
     Publish-JITTool -SourcePath $sourcePath `
                     -DistributionSharePath $sharePath `
+                    -Credential $connection.Credential `
                     -LogDirectory $logDir `
                     -WhatIf:$WhatIfPreference
     $stats.Published = $true
@@ -209,6 +226,7 @@ try {
                          -DistributionSharePath $sharePath `
                          -DomainDN $envInfo.DomainDN `
                          -Server $targetServer `
+                         -Credential $connection.Credential `
                          -LogDirectory $logDir `
                          -WhatIf:$WhatIfPreference
     $stats.GPOCreated = $true
@@ -227,6 +245,7 @@ if ($validTargets.Count -gt 0) {
         Set-JITGPOLink -GPOName $gpoName `
                        -LinkTargets $validTargets `
                        -Server $targetServer `
+                       -Credential $connection.Credential `
                        -LogDirectory $logDir `
                        -WhatIf:$WhatIfPreference
         $stats.LinksCreated = $validTargets.Count

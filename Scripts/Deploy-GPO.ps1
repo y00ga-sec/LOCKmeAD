@@ -13,16 +13,29 @@
     Path to the JSON configuration file. Default: .\Config\GPO-Config.json
 .PARAMETER WhatIf
     Simulation mode: displays actions without executing them.
+.PARAMETER Server
+    Explicit target domain controller. Required when this host is not domain-joined
+    and no domain controller can be located automatically.
+.PARAMETER Credential
+    Explicit domain credential. Prompted for interactively when this host is not
+    domain-joined and no credential is supplied.
+.PARAMETER RememberConnection
+    Persists the resolved -Server/-Credential (DPAPI-protected, current user only)
+    for reuse on the next run.
 .EXAMPLE
     .\Deploy-GPO.ps1
     .\Deploy-GPO.ps1 -ConfigPath "C:\Config\custom-gpo.json"
     .\Deploy-GPO.ps1 -WhatIf
+    .\Deploy-GPO.ps1 -Server dc01.forest.lol -Credential (Get-Credential)
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\GPO-Config.json"),
-    [switch]$NoConfirm
+    [switch]$NoConfirm,
+    [string]$Server,
+    [PSCredential]$Credential,
+    [switch]$RememberConnection
 )
 
 # ============================================================================
@@ -39,6 +52,9 @@ if (-not (Test-Path $modulePath)) {
     exit 1
 }
 Import-Module $modulePath -Force
+Import-Module (Join-Path $rootDir "Modules\Common\Connection.psm1") -Force
+
+$connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
 
 # ============================================================================
 # Load configuration
@@ -74,8 +90,8 @@ Write-Host "--- Environment Information ---" -ForegroundColor White
 Write-Host ""
 
 try {
-    $envInfo = Get-GPOEnvironmentInfo
-    $targetServer = $envInfo.PDCEmulator
+    $envInfo = Get-GPOEnvironmentInfo -Server $connection.Server -Credential $connection.Credential
+    $targetServer = if ($connection.Server) { $connection.Server } else { $envInfo.PDCEmulator }
 
     Write-Host "  Current DC        : $($envInfo.CurrentDC)" -ForegroundColor Cyan
     if ($envInfo.IsPDC) {
@@ -113,7 +129,9 @@ if ($filteringEnabled) {
     }
     # Verify the OU exists in AD (target PDC to avoid replication lag when Tiering just created it)
     try {
-        Get-ADOrganizationalUnit -Identity $filteringOU -Server $targetServer -ErrorAction Stop | Out-Null
+        $ouCheckParam = @{ Server = $targetServer }
+        if ($connection.Credential) { $ouCheckParam.Credential = $connection.Credential }
+        Get-ADOrganizationalUnit -Identity $filteringOU @ouCheckParam -ErrorAction Stop | Out-Null
     }
     catch {
         Write-Host ""
@@ -227,6 +245,7 @@ foreach ($gpo in $config.GPOs) {
                                -RegistrySettings $regSettings `
                                -GpoStatus $gpoStatus `
                                -Server $targetServer `
+                                        -Credential $connection.Credential `
                                -LogDirectory $logDir `
                                -WhatIf:$WhatIfPreference
         $stats.GPOsCreated++
@@ -243,6 +262,7 @@ foreach ($gpo in $config.GPOs) {
             Set-GPORegistryPreferences -GPOName $gpo.Name `
                                          -RegistryPreferences $gpo.RegistryPreferences `
                                          -Server $targetServer `
+                                        -Credential $connection.Credential `
                                          -LogDirectory $logDir `
                                          -WhatIf:$WhatIfPreference
         }
@@ -258,6 +278,7 @@ foreach ($gpo in $config.GPOs) {
             Set-GPOUserRightsAssignment -GPOName $gpo.Name `
                                          -Assignments $gpo.UserRightsAssignments `
                                          -Server $targetServer `
+                                        -Credential $connection.Credential `
                                          -LogDirectory $logDir `
                                          -WhatIf:$WhatIfPreference
         }
@@ -273,6 +294,7 @@ foreach ($gpo in $config.GPOs) {
             Set-GPORestrictedGroups -GPOName $gpo.Name `
                                      -RestrictedGroups $gpo.RestrictedGroups `
                                      -Server $targetServer `
+                                        -Credential $connection.Credential `
                                      -LogDirectory $logDir `
                                      -WhatIf:$WhatIfPreference
         }
@@ -288,6 +310,7 @@ foreach ($gpo in $config.GPOs) {
             Set-GPOSecurityOptions -GPOName $gpo.Name `
                                      -SecurityOptions $gpo.SecurityOptions `
                                      -Server $targetServer `
+                                        -Credential $connection.Credential `
                                      -LogDirectory $logDir `
                                      -WhatIf:$WhatIfPreference
         }
@@ -303,6 +326,7 @@ foreach ($gpo in $config.GPOs) {
             Set-GPOSystemServices -GPOName $gpo.Name `
                                     -SystemServices $gpo.SystemServices `
                                     -Server $targetServer `
+                                        -Credential $connection.Credential `
                                     -LogDirectory $logDir `
                                     -WhatIf:$WhatIfPreference
         }
@@ -318,6 +342,7 @@ foreach ($gpo in $config.GPOs) {
             Set-GPOScript -GPOName $gpo.Name `
                            -Scripts $gpo.Scripts `
                            -Server $targetServer `
+                                        -Credential $connection.Credential `
                            -LogDirectory $logDir `
                            -WhatIf:$WhatIfPreference
         }
@@ -337,12 +362,14 @@ foreach ($gpo in $config.GPOs) {
                                    -Description "Apply group for GPO '$($gpo.Name)'" `
                                    -OU $filteringOU `
                                    -Server $targetServer `
+                                        -Credential $connection.Credential `
                                    -LogDirectory $logDir `
                                    -WhatIf:$WhatIfPreference
             New-GPOFilteringGroup -Name $denyGroupName `
                                    -Description "Deny group for GPO '$($gpo.Name)'" `
                                    -OU $filteringOU `
                                    -Server $targetServer `
+                                        -Credential $connection.Credential `
                                    -LogDirectory $logDir `
                                    -WhatIf:$WhatIfPreference
             $stats.GroupsCreated += 2
@@ -351,6 +378,7 @@ foreach ($gpo in $config.GPOs) {
                                         -ApplyGroupName $applyGroupName `
                                         -DenyGroupName $denyGroupName `
                                         -Server $targetServer `
+                                        -Credential $connection.Credential `
                                         -LogDirectory $logDir `
                                         -WhatIf:$WhatIfPreference
         }
@@ -365,6 +393,7 @@ foreach ($gpo in $config.GPOs) {
         try {
             Remove-GPOAuthenticatedUsers -GPOName $gpo.Name `
                                           -Server $targetServer `
+                                        -Credential $connection.Credential `
                                           -LogDirectory $logDir `
                                           -WhatIf:$WhatIfPreference
         }
@@ -382,6 +411,7 @@ foreach ($gpo in $config.GPOs) {
                 Set-GPOLink -GPOName $gpo.Name `
                              -TargetOU $target `
                              -Server $targetServer `
+                                        -Credential $connection.Credential `
                              -LogDirectory $logDir `
                              -WhatIf:$WhatIfPreference
                 $stats.LinksCreated++

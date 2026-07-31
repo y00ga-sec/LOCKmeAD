@@ -1,8 +1,14 @@
-#Requires -Modules ActiveDirectory
-
 # ============================================================================
 # RBAC Module - Functions for deploying RBAC roles in Active Directory
 # ============================================================================
+# No #Requires -Modules ActiveDirectory here -- every entry point (LOCKmeAD.ps1,
+# each Scripts\Deploy-*.ps1, Web\Start-LOCKmeADWeb.ps1) already checks for it
+# before importing this module, and Pode's internal per-runspace module re-import
+# (Import-PodeModulesInternal) can fail a module's own #Requires check in a fresh
+# worker runspace even when the module is genuinely installed (confirmed against
+# GPO.psm1/JIT.psm1's GroupPolicy requirement) -- removed here too for consistency.
+
+Import-Module (Join-Path $PSScriptRoot "..\Common\Connection.psm1") -Force
 
 # Module variable for the current log file path
 $script:LogFilePath = $null
@@ -136,16 +142,20 @@ function Get-RBACEnvironmentInfo {
         Retrieves Active Directory environment information.
     .PARAMETER Server
         Target DC for all AD operations (avoids replication lag).
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     .OUTPUTS
         PSCustomObject with environment information.
     #>
     [CmdletBinding()]
     param(
-        [string]$Server
+        [string]$Server,
+        [PSCredential]$Credential
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     try {
         $domain = Get-ADDomain @serverParam
@@ -204,11 +214,14 @@ function New-RBACGroup {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     # Check if group already exists
     try {
@@ -267,11 +280,14 @@ function Add-RBACGroupMember {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     # Check if member is already present
     try {
@@ -324,11 +340,14 @@ function Set-RBACNTFSPermission {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $path = $Permission.Path
     $rights = $Permission.Rights
@@ -338,6 +357,27 @@ function Set-RBACNTFSPermission {
 
     $shareName  = $Permission.ShareName
     $shareRight = $Permission.ShareRight
+
+    # Extract the file server from the original UNC path before any drive substitution below.
+    $fileServer = if ($path -match '^\\\\([^\\]+)') { $Matches[1] } else { $null }
+
+    # Plain filesystem cmdlets can't carry alternate credentials on a UNC path — when an
+    # explicit credential is supplied, map the target share first so Get-Acl/Set-Acl/Test-Path
+    # authenticate as that account instead of the current (possibly non-domain) session.
+    if ($Credential -and $path -match '^(\\\\[^\\]+\\[^\\]+)') {
+        $shareRoot = $Matches[1]
+        $ntfsDriveName = "LOCKmeADNTFS"
+        if (-not (Get-PSDrive -Name $ntfsDriveName -ErrorAction SilentlyContinue)) {
+            try {
+                New-PSDrive -Name $ntfsDriveName -PSProvider FileSystem -Root $shareRoot -Credential $Credential -Scope Global -ErrorAction Stop | Out-Null
+            }
+            catch {
+                Write-RBACLog -Message "Could not map '$shareRoot' with the supplied credential: $_" -Level Error -LogDirectory $LogDirectory
+                throw
+            }
+        }
+        $path = $path -replace [regex]::Escape($shareRoot), "${ntfsDriveName}:"
+    }
 
     if ($PSCmdlet.ShouldProcess("$path", "Apply NTFS ACE ($rights) for '$GroupName'")) {
         if (-not (Test-Path $path)) {
@@ -367,17 +407,16 @@ function Set-RBACNTFSPermission {
         }
 
         if ($shareName) {
-            if ($path -notmatch '^\\\\([^\\]+)') {
+            if (-not $fileServer) {
                 Write-RBACLog -Message "SMB share permission skipped: path '$path' is not a UNC path. Use \\server\share format." -Level Warning -LogDirectory $LogDirectory
             }
             else {
-                $fileServer = $Matches[1]
-                $identity   = (Get-ADDomain @serverParam).NetBIOSName + "\$GroupName"
+                $identity = (Get-ADDomain @serverParam).NetBIOSName + "\$GroupName"
                 try {
-                    Invoke-Command -ComputerName $fileServer -ScriptBlock {
+                    Invoke-LOCKmeADRemote -Server $fileServer -Credential $Credential -AlwaysRemote -ArgumentList $shareName, $identity, $shareRight -ScriptBlock {
                         param($sn, $acct, $right)
                         Grant-SmbShareAccess -Name $sn -AccountName $acct -AccessRight $right -Force -ErrorAction Stop
-                    } -ArgumentList $shareName, $identity, $shareRight -ErrorAction Stop
+                    } | Out-Null
                     Write-RBACLog -Message "SMB share permission '$shareRight' applied on '\\$fileServer\$shareName' for '$GroupName'." -Level Success -LogDirectory $LogDirectory
                 }
                 catch {
@@ -412,24 +451,30 @@ function Backup-RBACAdPermission {
         [string]$TargetOU,
 
         [Parameter(Mandatory)]
-        [string]$BackupDirectory
+        [string]$BackupDirectory,
+
+        [string]$Server,
+        [PSCredential]$Credential
     )
 
     if (-not (Test-Path $BackupDirectory)) {
         New-Item -Path $BackupDirectory -ItemType Directory -Force | Out-Null
     }
 
+    $adDrive = Get-LOCKmeADDrive -Server $Server -Credential $Credential
+
     try {
-        $acl       = Get-Acl -Path "AD:\$TargetOU" -ErrorAction Stop
+        $acl       = Get-Acl -Path "${adDrive}\$TargetOU" -ErrorAction Stop
         $sddl      = $acl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access)
         $sanitized = $TargetOU -replace '[\\/:*?"<>|,=]', '_'
         $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
         $backupFile = Join-Path $BackupDirectory "ACL_${timestamp}_${sanitized}.xml"
 
+        $auditUser = if ($Credential) { $Credential.UserName } else { [System.Security.Principal.WindowsIdentity]::GetCurrent().Name }
         @{
             OU        = $TargetOU
             Timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-            User      = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+            User      = $auditUser
             SDDL      = $sddl
         } | Export-Clixml -Path $backupFile -Force
 
@@ -458,7 +503,9 @@ function Restore-RBACAdPermission {
         [Parameter(Mandatory)]
         [string]$BackupFile,
 
-        [string]$LogDirectory
+        [string]$LogDirectory,
+        [string]$Server,
+        [PSCredential]$Credential
     )
 
     if ([string]::IsNullOrWhiteSpace($BackupFile)) {
@@ -467,6 +514,8 @@ function Restore-RBACAdPermission {
     if (-not (Test-Path $BackupFile)) {
         throw "Backup file not found: '$BackupFile'"
     }
+
+    $adDrive = Get-LOCKmeADDrive -Server $Server -Credential $Credential
 
     try {
         $data = Import-Clixml -Path $BackupFile
@@ -481,7 +530,7 @@ function Restore-RBACAdPermission {
             throw "Backup file '$BackupFile' is in an unsupported format (no SDDL). Re-deploy to generate a new backup."
         }
 
-        $targetPath = "AD:\$($data.OU)"
+        $targetPath = "${adDrive}\$($data.OU)"
 
         if ($PSCmdlet.ShouldProcess($data.OU, "Restore AD ACL from '$BackupFile' (taken $($data.Timestamp) by $($data.User))")) {
             $acl = Get-Acl -Path $targetPath -ErrorAction Stop
@@ -507,15 +556,19 @@ function Get-RBACGuidMap {
         Builds a name→GUID map from the AD schema (attributes and classes).
     .PARAMETER Server
         Target DC for all AD operations.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     #>
     [CmdletBinding()]
-    param([string]$Server)
+    param([string]$Server, [PSCredential]$Credential)
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $script:GuidMap = @{}
     $script:DefaultServer = $Server
+    $script:DefaultCredential = $Credential
     $schemaNamingContext = (Get-ADRootDSE @serverParam).schemaNamingContext
 
     Get-ADObject -SearchBase $schemaNamingContext `
@@ -536,12 +589,15 @@ function Get-RBACExtendedRightMap {
         Builds a name→GUID map from the AD configuration partition (extended rights).
     .PARAMETER Server
         Target DC for all AD operations.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     #>
     [CmdletBinding()]
-    param([string]$Server)
+    param([string]$Server, [PSCredential]$Credential)
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $script:ExtendedRightMap = @{}
     $configNamingContext = (Get-ADRootDSE @serverParam).configurationNamingContext
@@ -598,7 +654,8 @@ function Resolve-RBACNameToGuid {
     # Cache miss — query AD directly as fallback
     try {
         $rootDseParams = @{ ErrorAction = 'Stop' }
-        if ($script:DefaultServer) { $rootDseParams['Server'] = $script:DefaultServer }
+        if ($script:DefaultServer)     { $rootDseParams['Server']     = $script:DefaultServer }
+        if ($script:DefaultCredential) { $rootDseParams['Credential'] = $script:DefaultCredential }
         $rootDse = Get-ADRootDSE @rootDseParams
 
         $schemaParams = @{
@@ -607,7 +664,8 @@ function Resolve-RBACNameToGuid {
             Properties  = @('schemaIDGUID')
             ErrorAction = 'Stop'
         }
-        if ($script:DefaultServer) { $schemaParams['Server'] = $script:DefaultServer }
+        if ($script:DefaultServer)     { $schemaParams['Server']     = $script:DefaultServer }
+        if ($script:DefaultCredential) { $schemaParams['Credential'] = $script:DefaultCredential }
 
         $schemaObj = Get-ADObject @schemaParams | Select-Object -First 1
         if ($schemaObj -and $schemaObj.schemaIDGUID) {
@@ -622,7 +680,8 @@ function Resolve-RBACNameToGuid {
             Properties  = @('rightsGuid')
             ErrorAction = 'Stop'
         }
-        if ($script:DefaultServer) { $rightParams['Server'] = $script:DefaultServer }
+        if ($script:DefaultServer)     { $rightParams['Server']     = $script:DefaultServer }
+        if ($script:DefaultCredential) { $rightParams['Credential'] = $script:DefaultCredential }
 
         $rightObj = Get-ADObject @rightParams | Select-Object -First 1
         if ($rightObj -and $rightObj.rightsGuid) {
@@ -660,13 +719,16 @@ function Set-RBACADPermission {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory,
 
         [string]$BackupDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $targetOU            = $Permission.TargetOU
     $adRights            = $Permission.ADRights
@@ -686,11 +748,13 @@ function Set-RBACADPermission {
     }
 
     if ($BackupDirectory) {
-        $backupFile = Backup-RBACAdPermission -TargetOU $targetOU -BackupDirectory $BackupDirectory
+        $backupFile = Backup-RBACAdPermission -TargetOU $targetOU -BackupDirectory $BackupDirectory -Server $Server -Credential $Credential
         if ($backupFile) {
             Write-RBACLog -Message "ACL backup created: '$backupFile'." -Level Info -LogDirectory $LogDirectory
         }
     }
+
+    $adDrive = Get-LOCKmeADDrive -Server $Server -Credential $Credential
 
     if ($PSCmdlet.ShouldProcess("$targetOU", "Apply AD delegation ($adRights) for '$GroupName'")) {
         try {
@@ -709,7 +773,7 @@ function Set-RBACADPermission {
             )
 
             # Apply the ACE on the target OU
-            $ouPath = "AD:\$targetOU"
+            $ouPath = "${adDrive}\$targetOU"
             $acl = Get-Acl -Path $ouPath
             $acl.AddAccessRule($ace)
             Set-Acl -Path $ouPath -AclObject $acl
@@ -733,7 +797,12 @@ function Set-RBACADCSPermission {
     .DESCRIPTION
         Modifies the CA security descriptor via the remote registry of the CA server.
         Supported rights: ManageCA (0x01), ManageCertificates (0x02), Enroll (0x04), Read (0x100).
-        Requires remote registry access (Remote Registry) on the CA server.
+        Requires remote registry access (Remote Registry) on the CA server when running
+        domain-joined/implicit. When an explicit -Credential is supplied (e.g. running
+        off-domain), the raw remote-registry API can't carry delegated credentials, so this
+        instead runs the same logic inside an Invoke-Command -Credential session against
+        -CAHostname — which requires WinRM (5985/5986) reachable on the CA server, in
+        addition to the RPC/DCOM (135) needed for the implicit-mode remote registry path.
     .PARAMETER GroupName
         Name of the group to grant permissions to.
     .PARAMETER Permission
@@ -753,11 +822,14 @@ function Set-RBACADCSPermission {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $caName = $Permission.CAName
     $caHostname = $Permission.CAHostname
@@ -776,70 +848,86 @@ function Set-RBACADCSPermission {
         }
     }
 
+    # The ACE-building/registry logic is identical whether it runs locally against the
+    # remote-registry handle (implicit mode) or inside an Invoke-Command session (explicit
+    # credential) — expressed once here and invoked either directly or remotely below.
+    $applyAceScript = {
+        param($caName, $caHostname, $groupSID, $rightMask, $right, $groupName, $caConfig)
+
+        $reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey(
+            [Microsoft.Win32.RegistryHive]::LocalMachine,
+            $caHostname
+        )
+        $regPath = "SYSTEM\CurrentControlSet\Services\CertSvc\Configuration\$caName"
+        $key = $reg.OpenSubKey($regPath, $true)
+
+        if (-not $key) {
+            throw "Registry key not found: HKLM:\$regPath on $caHostname. Verify the CA name and connectivity."
+        }
+
+        # Read the current security descriptor
+        $sdBytes = [byte[]]$key.GetValue("Security")
+        $sd = New-Object System.Security.AccessControl.RawSecurityDescriptor($sdBytes, 0)
+
+        # Check if the ACE already exists
+        $aceExists = $false
+        foreach ($existingAce in $sd.DiscretionaryAcl) {
+            if ($existingAce.SecurityIdentifier -eq $groupSID -and
+                $existingAce.AceQualifier -eq [System.Security.AccessControl.AceQualifier]::AccessAllowed -and
+                ($existingAce.AccessMask -band $rightMask) -eq $rightMask) {
+                $aceExists = $true
+                break
+            }
+        }
+
+        if ($aceExists) {
+            $key.Close()
+            $reg.Close()
+            return "AlreadyExists"
+        }
+
+        # Create the new ACE (Allow)
+        $ace = New-Object System.Security.AccessControl.CommonAce(
+            [System.Security.AccessControl.AceFlags]::None,
+            [System.Security.AccessControl.AceQualifier]::AccessAllowed,
+            $rightMask,
+            $groupSID,
+            $false,
+            $null
+        )
+
+        # Add the ACE to the DACL
+        $sd.DiscretionaryAcl.InsertAce($sd.DiscretionaryAcl.Count, $ace)
+
+        # Write the modified SD back to the registry
+        $newSdBytes = New-Object byte[] $sd.BinaryLength
+        $sd.GetBinaryForm($newSdBytes, 0)
+        $key.SetValue("Security", [byte[]]$newSdBytes, [Microsoft.Win32.RegistryValueKind]::Binary)
+
+        $key.Close()
+        $reg.Close()
+
+        # Restart CertSvc service to apply changes
+        Restart-Service -Name CertSvc -Force
+        return "Applied"
+    }
+
     if ($PSCmdlet.ShouldProcess("$caConfig", "Apply ADCS right '$right' for '$GroupName'")) {
         try {
             # Retrieve the group SID
             $group = Get-ADGroup -Identity $GroupName @serverParam
             $groupSID = $group.SID
 
-            # Open the remote registry on the CA server
-            $reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey(
-                [Microsoft.Win32.RegistryHive]::LocalMachine,
-                $caHostname
-            )
-            $regPath = "SYSTEM\CurrentControlSet\Services\CertSvc\Configuration\$caName"
-            $key = $reg.OpenSubKey($regPath, $true)
-
-            if (-not $key) {
-                throw "Registry key not found: HKLM:\$regPath on $caHostname. Verify the CA name and connectivity."
+            $scriptArgs = @($caName, $caHostname, $groupSID, $rightMask, $right, $GroupName, $caConfig)
+            if ($Credential) {
+                Write-RBACLog -Message "Applying ADCS right '$right' on '$caConfig' via remote session (explicit credential)..." -Level Info -LogDirectory $LogDirectory
             }
+            $result = Invoke-LOCKmeADRemote -Server $caHostname -Credential $Credential -ArgumentList $scriptArgs -ScriptBlock $applyAceScript
 
-            # Read the current security descriptor
-            $sdBytes = [byte[]]$key.GetValue("Security")
-            $sd = New-Object System.Security.AccessControl.RawSecurityDescriptor($sdBytes, 0)
-
-            # Check if the ACE already exists
-            $aceExists = $false
-            foreach ($existingAce in $sd.DiscretionaryAcl) {
-                if ($existingAce.SecurityIdentifier -eq $groupSID -and
-                    $existingAce.AceQualifier -eq [System.Security.AccessControl.AceQualifier]::AccessAllowed -and
-                    ($existingAce.AccessMask -band $rightMask) -eq $rightMask) {
-                    $aceExists = $true
-                    break
-                }
-            }
-
-            if ($aceExists) {
+            if ($result -eq "AlreadyExists") {
                 Write-RBACLog -Message "ADCS right '$right' already exists on '$caConfig' for '$GroupName'." -Level Warning -LogDirectory $LogDirectory
-                $key.Close()
-                $reg.Close()
                 return
             }
-
-            # Create the new ACE (Allow)
-            $ace = New-Object System.Security.AccessControl.CommonAce(
-                [System.Security.AccessControl.AceFlags]::None,
-                [System.Security.AccessControl.AceQualifier]::AccessAllowed,
-                $rightMask,
-                $groupSID,
-                $false,
-                $null
-            )
-
-            # Add the ACE to the DACL
-            $sd.DiscretionaryAcl.InsertAce($sd.DiscretionaryAcl.Count, $ace)
-
-            # Write the modified SD back to the registry
-            $newSdBytes = New-Object byte[] $sd.BinaryLength
-            $sd.GetBinaryForm($newSdBytes, 0)
-            $key.SetValue("Security", [byte[]]$newSdBytes, [Microsoft.Win32.RegistryValueKind]::Binary)
-
-            $key.Close()
-            $reg.Close()
-
-            # Restart CertSvc service to apply changes
-            Write-RBACLog -Message "Restarting CertSvc service on '$caHostname'..." -Level Info -LogDirectory $LogDirectory
-            Invoke-Command -ComputerName $caHostname -ScriptBlock { Restart-Service -Name CertSvc -Force }
 
             Write-RBACLog -Message "ADCS right '$right' applied on '$caConfig' for '$GroupName'." -Level Success -LogDirectory $LogDirectory
         }
@@ -1013,11 +1101,14 @@ function Set-RBACSharePermission {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam  = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $fileServer = $Permission.ShareServer
     $shareName  = $Permission.ShareName
@@ -1026,10 +1117,10 @@ function Set-RBACSharePermission {
     if ($PSCmdlet.ShouldProcess("\\$fileServer\$shareName", "Apply SMB share permission ($shareRight) for '$GroupName'")) {
         $identity = (Get-ADDomain @serverParam).NetBIOSName + "\$GroupName"
         try {
-            Invoke-Command -ComputerName $fileServer -ScriptBlock {
+            Invoke-LOCKmeADRemote -Server $fileServer -Credential $Credential -AlwaysRemote -ArgumentList $shareName, $identity, $shareRight -ScriptBlock {
                 param($sn, $acct, $right)
                 Grant-SmbShareAccess -Name $sn -AccountName $acct -AccessRight $right -Force -ErrorAction Stop
-            } -ArgumentList $shareName, $identity, $shareRight -ErrorAction Stop
+            } | Out-Null
             Write-RBACLog -Message "SMB share permission '$shareRight' applied on '\\$fileServer\$shareName' for '$GroupName'." -Level Success -LogDirectory $LogDirectory
         }
         catch {

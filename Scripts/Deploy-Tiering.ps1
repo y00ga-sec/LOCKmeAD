@@ -9,18 +9,31 @@
     to implement the AD tiering model (Tier 0, Tier 1, Tier 2).
 .PARAMETER ConfigPath
     Path to the JSON configuration file. Default: .\Config\Tiering-Config.json
+.PARAMETER Server
+    Explicit target domain controller. Required when this host is not domain-joined
+    and no domain controller can be located automatically.
+.PARAMETER Credential
+    Explicit domain credential. Prompted for interactively when this host is not
+    domain-joined and no credential is supplied.
+.PARAMETER RememberConnection
+    Persists the resolved -Server/-Credential (DPAPI-protected, current user only)
+    for reuse on the next run.
 .PARAMETER WhatIf
     Simulation mode: displays actions without executing them.
 .EXAMPLE
     .\Deploy-Tiering.ps1
     .\Deploy-Tiering.ps1 -ConfigPath "C:\Config\custom-tiering.json"
     .\Deploy-Tiering.ps1 -WhatIf
+    .\Deploy-Tiering.ps1 -Server dc01.forest.lol -Credential (Get-Credential)
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\Tiering-Config.json"),
-    [switch]$NoConfirm
+    [switch]$NoConfirm,
+    [string]$Server,
+    [PSCredential]$Credential,
+    [switch]$RememberConnection
 )
 
 # ============================================================================
@@ -37,6 +50,11 @@ if (-not (Test-Path $modulePath)) {
     exit 1
 }
 Import-Module $modulePath -Force
+Import-Module (Join-Path $rootDir "Modules\Common\Connection.psm1") -Force
+
+# Resolve the AD connection: implicit (domain-joined) or explicit (-Server/-Credential),
+# prompting interactively when this host is not domain-joined and nothing was supplied.
+$connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
 
 # ============================================================================
 # Load configuration
@@ -72,8 +90,10 @@ Write-Host "--- Environment Information ---" -ForegroundColor White
 Write-Host ""
 
 try {
-    $envInfo = Get-TieringEnvironmentInfo
-    $targetServer = $envInfo.PDCEmulator
+    $envInfo = Get-TieringEnvironmentInfo -Server $connection.Server -Credential $connection.Credential
+    # An explicit -Server always wins (the host may only be able to reach that one DC);
+    # otherwise target the PDC Emulator as before to avoid replication lag.
+    $targetServer = if ($connection.Server) { $connection.Server } else { $envInfo.PDCEmulator }
 
     Write-Host "  Current DC        : $($envInfo.CurrentDC)" -ForegroundColor Cyan
     if ($envInfo.IsPDC) {
@@ -180,6 +200,7 @@ $results = Deploy-TieringOUStructure -OUNodes $config.OUStructure `
                                       -ParentDN $config.Settings.BaseDN `
                                       -DefaultProtection $defaultProtection `
                                       -Server $targetServer `
+                                      -Credential $connection.Credential `
                                       -LogDirectory $logDir `
                                       -WhatIf:$WhatIfPreference
 

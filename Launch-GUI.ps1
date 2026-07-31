@@ -7,7 +7,22 @@
     Unified WPF GUI for managing Hardening, Tiering, and RBAC configurations.
     Allows enabling/disabling tasks, editing OU structures, managing RBAC roles,
     and deploying each module with WhatIf support.
+.PARAMETER Server
+    Explicit target domain controller. Used when this host is not domain-joined
+    and no domain controller can be located automatically. If not supplied and the
+    host isn't domain-joined, a connection dialog is shown at startup.
+.PARAMETER Credential
+    Explicit domain credential, paired with -Server.
+.PARAMETER RememberConnection
+    Persists the resolved connection (DPAPI-protected, current user only) for reuse
+    on the next launch.
 #>
+
+param(
+    [string]$Server,
+    [PSCredential]$Credential,
+    [switch]$RememberConnection
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -22,6 +37,8 @@ if ($missingModules) {
 }
 $scriptRoot = $PSScriptRoot
 
+Import-Module (Join-Path $scriptRoot "Modules\Common\Connection.psm1") -Force
+
 # Load WPF assemblies
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
@@ -30,6 +47,19 @@ Add-Type -AssemblyName WindowsBase
 # Load GUI components
 . "$scriptRoot\GUI\Views.ps1"
 . "$scriptRoot\GUI\Controller.ps1"
+
+# Resolve the AD connection: implicit if domain-joined, otherwise explicit
+# -Server/-Credential, or a connection dialog if neither was supplied.
+if ($Server -or $Credential -or (Test-LOCKmeADDomainJoined)) {
+    $script:Connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
+}
+else {
+    $script:Connection = Show-GUIConnectionDialog
+    if (-not $script:Connection) {
+        Write-Host "  Connection cancelled." -ForegroundColor Yellow
+        exit 0
+    }
+}
 
 # Parse XAML
 $xaml = Get-MainWindowXaml

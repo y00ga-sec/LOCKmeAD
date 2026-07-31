@@ -15,16 +15,29 @@
     Simulation mode: displays actions without executing them.
 .PARAMETER NoConfirm
     Skips the interactive confirmation prompt (used by the GUI).
+.PARAMETER Server
+    Explicit target domain controller. Required when this host is not domain-joined
+    and no domain controller can be located automatically.
+.PARAMETER Credential
+    Explicit domain credential. Prompted for interactively when this host is not
+    domain-joined and no credential is supplied.
+.PARAMETER RememberConnection
+    Persists the resolved -Server/-Credential (DPAPI-protected, current user only)
+    for reuse on the next run.
 .EXAMPLE
     .\Deploy-Silo.ps1
     .\Deploy-Silo.ps1 -ConfigPath "C:\Config\custom-silo.json"
     .\Deploy-Silo.ps1 -WhatIf
+    .\Deploy-Silo.ps1 -Server dc01.forest.lol -Credential (Get-Credential)
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\Silo-Config.json"),
-    [switch]$NoConfirm
+    [switch]$NoConfirm,
+    [string]$Server,
+    [PSCredential]$Credential,
+    [switch]$RememberConnection
 )
 
 # ============================================================================
@@ -41,6 +54,9 @@ if (-not (Test-Path $modulePath)) {
     exit 1
 }
 Import-Module $modulePath -Force
+Import-Module (Join-Path $rootDir "Modules\Common\Connection.psm1") -Force
+
+$connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
 
 # ============================================================================
 # Load configuration
@@ -84,8 +100,8 @@ Write-Host "--- Environment Information ---" -ForegroundColor White
 Write-Host ""
 
 try {
-    $envInfo = Get-SiloEnvironmentInfo
-    $targetServer = $envInfo.PDCEmulator
+    $envInfo = Get-SiloEnvironmentInfo -Server $connection.Server -Credential $connection.Credential
+    $targetServer = if ($connection.Server) { $connection.Server } else { $envInfo.PDCEmulator }
 
     Write-Host "  Current DC        : $($envInfo.CurrentDC)" -ForegroundColor Cyan
     if ($envInfo.IsPDC) {
@@ -192,6 +208,7 @@ foreach ($silo in $config.Silos) {
                             -TGTLifetimeMinutes $silo.TGTLifetimeMinutes `
                             -Enforce ([bool]$silo.Enforce) `
                             -Server $targetServer `
+                            -Credential $connection.Credential `
                             -LogDirectory $logDir `
                             -WhatIf:$WhatIfPreference
         $stats.SilosDeployed++
@@ -210,6 +227,7 @@ foreach ($silo in $config.Silos) {
                 Add-SiloMember -SiloName $silo.Name `
                                 -Accounts $validComputers `
                                 -Server $targetServer `
+                                -Credential $connection.Credential `
                                 -LogDirectory $logDir `
                                 -WhatIf:$WhatIfPreference
                 $stats.AccountsAssigned += $validComputers.Count
@@ -229,6 +247,7 @@ foreach ($silo in $config.Silos) {
                 Add-SiloMember -SiloName $silo.Name `
                                 -Accounts $validAccounts `
                                 -Server $targetServer `
+                                -Credential $connection.Credential `
                                 -LogDirectory $logDir `
                                 -WhatIf:$WhatIfPreference
                 $stats.AccountsAssigned += $validAccounts.Count

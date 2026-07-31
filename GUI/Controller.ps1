@@ -1,4 +1,83 @@
 # ============================================================================
+# Connection Dialog (shown at startup when the host is not domain-joined)
+# ============================================================================
+
+function Show-GUIConnectionDialog {
+    <#
+    .SYNOPSIS
+        Prompts for a target domain controller and credential when the host running
+        the GUI is not domain-joined (or a domain controller couldn't be located
+        automatically).
+    .OUTPUTS
+        PSCustomObject with Server/Credential (as Resolve-LOCKmeADConnection returns),
+        or $null if the user cancelled.
+    #>
+    $dialogXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Connect to Active Directory" Width="440" SizeToContent="Height"
+        WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
+        Background="#F3F3F3" FontFamily="Segoe UI">
+    <StackPanel Margin="24">
+        <TextBlock Text="Connect to Active Directory" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,4"/>
+        <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#666666" Margin="0,0,0,16"
+                   Text="This host is not domain-joined (or no domain controller could be located automatically). Provide a target domain controller and domain credentials to continue."/>
+
+        <TextBlock Text="Domain Controller (hostname or IP)" FontSize="12" Foreground="#555" Margin="0,0,0,4"/>
+        <TextBox Name="ConnServer" FontSize="13" Padding="8,6" BorderBrush="#DDD"/>
+
+        <TextBlock Text="Username (DOMAIN\user or user@domain)" FontSize="12" Foreground="#555" Margin="0,12,0,4"/>
+        <TextBox Name="ConnUsername" FontSize="13" Padding="8,6" BorderBrush="#DDD"/>
+
+        <TextBlock Text="Password" FontSize="12" Foreground="#555" Margin="0,12,0,4"/>
+        <PasswordBox Name="ConnPassword" FontSize="13" Padding="8,6"/>
+
+        <CheckBox Name="ConnRemember" Content="Remember this connection on this computer"
+                   FontSize="12" Margin="0,14,0,0"/>
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+            <Button Name="BtnCancel" Content="Cancel" Width="90" Padding="0,8"
+                    Background="#E8E8E8" BorderThickness="0" FontSize="13" Cursor="Hand" Margin="0,0,8,0"/>
+            <Button Name="BtnConnect" Content="Connect" Width="100" Padding="0,8"
+                    Background="#0078D4" Foreground="White" BorderThickness="0"
+                    FontSize="13" FontWeight="SemiBold" Cursor="Hand"/>
+        </StackPanel>
+    </StackPanel>
+</Window>
+"@
+    [xml]$dlgDoc = $dialogXaml
+    $reader = [System.Xml.XmlNodeReader]::new($dlgDoc)
+    $dlg = [System.Windows.Markup.XamlReader]::Load($reader)
+
+    $txtServer   = $dlg.FindName("ConnServer")
+    $txtUsername = $dlg.FindName("ConnUsername")
+    $txtPassword = $dlg.FindName("ConnPassword")
+    $chkRemember = $dlg.FindName("ConnRemember")
+
+    $dlg.Tag = $null
+    $dlg.FindName("BtnConnect").Add_Click({
+        if ([string]::IsNullOrWhiteSpace($txtServer.Text)) {
+            [System.Windows.MessageBox]::Show("Domain controller is required.", "Validation",
+                [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
+            return
+        }
+        if ([string]::IsNullOrWhiteSpace($txtUsername.Text)) {
+            [System.Windows.MessageBox]::Show("Username is required.", "Validation",
+                [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
+            return
+        }
+        $secure = $txtPassword.SecurePassword
+        $cred = [PSCredential]::new($txtUsername.Text, $secure)
+        $conn = Resolve-LOCKmeADConnection -Server $txtServer.Text.Trim() -Credential $cred -Remember:$chkRemember.IsChecked
+        $dlg.Tag = $conn
+        $dlg.Close()
+    }.GetNewClosure())
+    $dlg.FindName("BtnCancel").Add_Click({ $dlg.Close() }.GetNewClosure())
+
+    $dlg.ShowDialog() | Out-Null
+    return $dlg.Tag
+}
+
+# ============================================================================
 # Helper Functions
 # ============================================================================
 
@@ -306,9 +385,11 @@ function ConvertFrom-TreeView($items) {
 function Populate-Dashboard {
     # Environment info (try/catch in case not on a DC)
     try {
-        $domain = Get-ADDomain
-        $forest = Get-ADForest
-        $UI.DashEnvDC.Text        = "Current DC: $($env:COMPUTERNAME)"
+        $connParam = New-LOCKmeADConnectionParam -Connection $script:Connection
+        $domain = Get-ADDomain @connParam
+        $forest = Get-ADForest @connParam
+        $currentHost = if ($script:Connection -and $script:Connection.Server) { $script:Connection.Server } else { $env:COMPUTERNAME }
+        $UI.DashEnvDC.Text        = "Current DC: $currentHost"
         $UI.DashEnvPDC.Text       = "PDC Emulator: $($domain.PDCEmulator)"
         $UI.DashEnvDomain.Text    = "Domain: $($domain.DNSRoot)"
         $UI.DashEnvForest.Text    = "Forest: $($forest.Name)"
@@ -1952,10 +2033,12 @@ function Show-FunctionalLevelPrereqDialog {
     try {
         Import-Module $modulePath -Force -ErrorAction Stop
         if ($Scope -eq 'Domain') {
-            $checks = @(Test-HardeningDomainFunctionalLevelPrerequisites -TargetDomainLevel $TargetLevel)
+            $checks = @(Test-HardeningDomainFunctionalLevelPrerequisites -TargetDomainLevel $TargetLevel `
+                -Server $script:Connection.Server -Credential $script:Connection.Credential)
         }
         else {
-            $checks = @(Test-HardeningForestFunctionalLevelPrerequisites -TargetForestLevel $TargetLevel)
+            $checks = @(Test-HardeningForestFunctionalLevelPrerequisites -TargetForestLevel $TargetLevel `
+                -Server $script:Connection.Server -Credential $script:Connection.Credential)
         }
     }
     catch {
@@ -2634,11 +2717,16 @@ function Start-SingleDeployment([string]$module) {
     }
 
     $configPath = $script:ConfigPaths[$module]
-    $cmd = "& '$scriptPath' -ConfigPath '$configPath' -NoConfirm"
-    if ($whatIf) { $cmd += " -WhatIf" }
+    $callParams = @{
+        ConfigPath = $configPath
+        NoConfirm  = $true
+    }
+    if ($script:Connection -and $script:Connection.Server)     { $callParams.Server     = $script:Connection.Server }
+    if ($script:Connection -and $script:Connection.Credential) { $callParams.Credential = $script:Connection.Credential }
+    if ($whatIf) { $callParams.WhatIf = $true }
 
     try {
-        $output = Invoke-Expression $cmd 2>&1
+        $output = & $scriptPath @callParams 2>&1
         foreach ($line in $output) {
             $lvl = "Info"
             $text = $line.ToString()
@@ -2714,11 +2802,12 @@ $script:GuidToNameMap = @{}
 function Build-GuidToNameMap {
     if ($script:GuidToNameMap.Count -gt 0) { return }
     try {
-        $rootDse = Get-ADRootDSE -ErrorAction Stop
+        $connParam = New-LOCKmeADConnectionParam -Connection $script:Connection
+        $rootDse = Get-ADRootDSE @connParam -ErrorAction Stop
         Get-ADObject -SearchBase $rootDse.schemaNamingContext `
                      -LDAPFilter "(schemaidguid=*)" `
                      -Properties lDAPDisplayName, schemaIDGUID `
-                     -ErrorAction Stop |
+                     @connParam -ErrorAction Stop |
             ForEach-Object {
                 $g = [System.Guid]$_.schemaIDGUID
                 $script:GuidToNameMap[$g.ToString().ToLower()] = $_.lDAPDisplayName
@@ -2726,7 +2815,7 @@ function Build-GuidToNameMap {
         Get-ADObject -SearchBase $rootDse.configurationNamingContext `
                      -LDAPFilter "(&(objectclass=controlAccessRight)(rightsguid=*))" `
                      -Properties displayName, rightsGuid `
-                     -ErrorAction Stop |
+                     @connParam -ErrorAction Stop |
             ForEach-Object {
                 $g = [System.Guid]$_.rightsGuid
                 $script:GuidToNameMap[$g.ToString().ToLower()] = $_.displayName
@@ -2809,7 +2898,8 @@ function Show-ADGroupSearchDialog {
         $statusText.Text = "Searching..."
         $searchWindow.Cursor = [System.Windows.Input.Cursors]::Wait
         try {
-            $results = Get-ADGroup -Filter "Name -like '*$val*'" -ErrorAction Stop | Select-Object -First 50
+            $connParam = New-LOCKmeADConnectionParam -Connection $script:Connection
+            $results = Get-ADGroup -Filter "Name -like '*$val*'" @connParam -ErrorAction Stop | Select-Object -First 50
             foreach ($r in $results) {
                 $item = [System.Windows.Controls.ListBoxItem]::new()
                 $item.Content = "$($r.SamAccountName)  —  $($r.Name)"
@@ -2920,8 +3010,9 @@ function Show-ADObjectSearchDialog {
         $statusText.Text = "Searching..."
         $searchWindow.Cursor = [System.Windows.Input.Cursors]::Wait
         try {
+            $connParam = New-LOCKmeADConnectionParam -Connection $script:Connection
             if ($capturedType -eq "User") {
-                $results = Get-ADUser -Filter "Name -like '*$val*'" -ErrorAction Stop | Select-Object -First 50
+                $results = Get-ADUser -Filter "Name -like '*$val*'" @connParam -ErrorAction Stop | Select-Object -First 50
                 foreach ($r in $results) {
                     $item = [System.Windows.Controls.ListBoxItem]::new()
                     $item.Content = "$($r.SamAccountName)  —  $($r.Name)"
@@ -2929,7 +3020,7 @@ function Show-ADObjectSearchDialog {
                     $resultList.Items.Add($item) | Out-Null
                 }
             } else {
-                $results = Get-ADGroup -Filter "Name -like '*$val*'" -ErrorAction Stop | Select-Object -First 50
+                $results = Get-ADGroup -Filter "Name -like '*$val*'" @connParam -ErrorAction Stop | Select-Object -First 50
                 foreach ($r in $results) {
                     $item = [System.Windows.Controls.ListBoxItem]::new()
                     $item.Content = "$($r.SamAccountName)  —  $($r.Name)"
@@ -3008,12 +3099,13 @@ function Show-CASearchDialog {
     $script:caList = @()
 
     try {
-        $domainDN   = (Get-ADDomain).DistinguishedName
+        $connParam  = New-LOCKmeADConnectionParam -Connection $script:Connection
+        $domainDN   = (Get-ADDomain @connParam).DistinguishedName
         $enrollBase = "CN=Enrollment Services,CN=Public Key Services,CN=Services,CN=Configuration,$domainDN"
         $cas = Get-ADObject -LDAPFilter "(objectClass=pKIEnrollmentService)" `
                             -SearchBase $enrollBase `
                             -Properties dNSHostName `
-                            -ErrorAction Stop
+                            @connParam -ErrorAction Stop
         $script:caList = @($cas | ForEach-Object {
             [PSCustomObject]@{ CAName = $_.Name; CAHostname = $_.dNSHostName }
         })
@@ -3414,12 +3506,13 @@ function Show-ADSchemaSearchDialog {
     $allItems = [System.Collections.Generic.List[PSCustomObject]]::new()
 
     try {
-        $rootDse = Get-ADRootDSE -ErrorAction Stop
+        $connParam = New-LOCKmeADConnectionParam -Connection $script:Connection
+        $rootDse = Get-ADRootDSE @connParam -ErrorAction Stop
 
         Get-ADObject -SearchBase $rootDse.schemaNamingContext `
                      -LDAPFilter "(schemaidguid=*)" `
                      -Properties lDAPDisplayName, objectClass `
-                     -ErrorAction Stop |
+                     @connParam -ErrorAction Stop |
             ForEach-Object {
                 $type = if ('classSchema' -in $_.objectClass) { 'Class' } else { 'Attribute' }
                 $allItems.Add([PSCustomObject]@{ Name = $_.lDAPDisplayName; Type = $type })
@@ -3428,7 +3521,7 @@ function Show-ADSchemaSearchDialog {
         Get-ADObject -SearchBase $rootDse.configurationNamingContext `
                      -LDAPFilter "(&(objectclass=controlAccessRight)(rightsguid=*))" `
                      -Properties displayName `
-                     -ErrorAction Stop |
+                     @connParam -ErrorAction Stop |
             ForEach-Object {
                 $allItems.Add([PSCustomObject]@{ Name = $_.displayName; Type = 'ExtendedRight' })
             }
@@ -4267,7 +4360,8 @@ function Register-GUIEvents {
             if (-not $b) { continue }
 
             try {
-                $result = Test-HardeningTask -TaskName $task.Name -TaskParameters $task.Parameters
+                $result = Test-HardeningTask -TaskName $task.Name -TaskParameters $task.Parameters `
+                    -Server $script:Connection.Server -Credential $script:Connection.Credential
                 switch ($result.Status) {
                     'OK'      {
                         $b.Border.Background = Get-WPFBrush "#E8F5E9"
@@ -4740,7 +4834,8 @@ function Register-GUIEvents {
                 $failMsgs  = @()
                 foreach ($f in $files) {
                     try {
-                        Restore-RBACAdPermission -BackupFile $f.FullName | Out-Null
+                        Restore-RBACAdPermission -BackupFile $f.FullName `
+                            -Server $script:Connection.Server -Credential $script:Connection.Credential | Out-Null
                         $okCount++
                     } catch {
                         $failMsgs += "$($f.Name): $($_.Exception.Message)"

@@ -1,8 +1,12 @@
-#Requires -Modules ActiveDirectory
-
 # ============================================================================
 # Silo Module - Functions for deploying Authentication Policy Silos
 # ============================================================================
+# No #Requires -Modules ActiveDirectory here -- every entry point (LOCKmeAD.ps1,
+# each Scripts\Deploy-*.ps1, Web\Start-LOCKmeADWeb.ps1) already checks for it
+# before importing this module, and Pode's internal per-runspace module re-import
+# (Import-PodeModulesInternal) can fail a module's own #Requires check in a fresh
+# worker runspace even when the module is genuinely installed (confirmed against
+# GPO.psm1/JIT.psm1's GroupPolicy requirement) -- removed here too for consistency.
 
 # Module variable for the current log file path
 $script:LogFilePath = $null
@@ -124,15 +128,26 @@ function Get-SiloEnvironmentInfo {
     <#
     .SYNOPSIS
         Retrieves Active Directory environment information.
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     .OUTPUTS
         PSCustomObject with environment information.
     #>
     [CmdletBinding()]
-    param()
+    param(
+        [string]$Server,
+        [PSCredential]$Credential
+    )
+
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     try {
-        $domain = Get-ADDomain
-        $forest = Get-ADForest
+        $domain = Get-ADDomain @serverParam
+        $forest = Get-ADForest @serverParam
         $currentDC = $env:COMPUTERNAME
         $pdcEmulator = $domain.PDCEmulator
 
@@ -191,11 +206,14 @@ function New-SiloAuthPolicy {
         [bool]$Enforce = $false,
 
         [string]$Server,
+
+        [PSCredential]$Credential,
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $policyName = "$Name-Policy"
     $siloName   = "$Name-Silo"
@@ -331,11 +349,14 @@ function Add-SiloMember {
         [string[]]$Accounts,
 
         [string]$Server,
+
+        [PSCredential]$Credential,
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $fullSiloName = "$SiloName-Silo"
 
