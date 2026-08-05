@@ -2707,13 +2707,121 @@ function Invoke-Search([string]$query) {
 # Canonical safe execution order
 $script:DeploySafeOrder = @("Hardening", "Tiering", "RBAC", "PSO", "Silo", "GPO", "JIT")
 
+# Spinner frames for the per-module progress line. Deliberately plain ASCII: the console
+# panel renders in Cascadia Mono/Consolas, which have no Braille or spinner glyphs and
+# would show tofu boxes instead.
+$script:SpinnerFrames = @('|', '/', '-', '\')
+
+$script:VerdictColors = @{
+    SUCCESS = "#58D68D"   # green
+    PARTIAL = "#E67E22"   # orange
+    FAIL    = "#EC7063"   # red
+}
+
+function New-ConsoleStatusLine {
+    <#
+    .SYNOPSIS
+        Appends a console line and hands back its Run, so the caller can rewrite that same
+        line in place instead of appending a new one.
+    .DESCRIPTION
+        This is what lets one line spin while a module deploys and then turn into that
+        module's verdict, rather than scrolling the panel with hundreds of log lines.
+    #>
+    param([string]$Text, [string]$Color = "#CCCCCC")
+
+    $para = New-Object System.Windows.Documents.Paragraph
+    $para.Margin = [System.Windows.Thickness]::new(0)
+    $run = New-Object System.Windows.Documents.Run($Text)
+    $run.Foreground = Get-WPFBrush $Color
+    $para.Inlines.Add($run)
+    $UI.ConsoleOutput.Document.Blocks.Add($para)
+    $UI.ConsoleOutput.ScrollToEnd()
+    return $run
+}
+
+function Set-ConsoleStatusLine {
+    <#
+    .SYNOPSIS
+        Rewrites a line previously created by New-ConsoleStatusLine.
+    #>
+    param($Run, [string]$Text, [string]$Color)
+
+    $Run.Text = $Text
+    if ($Color) { $Run.Foreground = Get-WPFBrush $Color }
+    $UI.ConsoleOutput.ScrollToEnd()
+}
+
+function Get-DeploymentVerdict {
+    <#
+    .SYNOPSIS
+        Turns a deployment script's own "DEPLOYMENT SUMMARY" block into a
+        SUCCESS / PARTIAL / FAIL verdict plus a one-line detail.
+    .DESCRIPTION
+        Every Scripts\Deploy-*.ps1 closes with a summary of "<label> : <n>" counters and an
+        "Errors : <n>" line. Only lines *after* the DEPLOYMENT SUMMARY header are read: the
+        pre-flight configuration summary printed above it uses the very same
+        "label : number" shape (Total tasks, Enabled, Disabled, ...) and would otherwise be
+        mistaken for results.
+
+        Verdict:
+          SUCCESS - no errors reported
+          PARTIAL - errors, but at least one unit of work still went through
+          FAIL    - errors and nothing went through, or the script died before printing a
+                    summary at all (bad config, no AD connectivity, ...)
+
+        "skipped (disabled)" counters are ignored on purpose: a module the operator turned
+        off is a deliberate no-op, not work that succeeded.
+    .PARAMETER Lines
+        Plain-text lines captured from the deployment script.
+    .OUTPUTS
+        PSCustomObject with Verdict and Detail.
+    #>
+    param([string[]]$Lines)
+
+    $start = -1
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        if ($Lines[$i] -match 'DEPLOYMENT SUMMARY') { $start = $i; break }
+    }
+    if ($start -lt 0) {
+        return [PSCustomObject]@{ Verdict = 'FAIL'; Detail = 'stopped before producing a summary' }
+    }
+
+    $errors   = 0
+    $work     = 0
+    $headline = $null
+
+    for ($i = $start + 1; $i -lt $Lines.Count; $i++) {
+        # Anchored on a numeric (or Yes/No) value to end-of-line, so the trailing
+        # "Log file: ..." and "CSV report: ..." lines can never match.
+        if ($Lines[$i] -notmatch '^\s+(?<label>\S.*?)\s*:\s*(?<value>\d+|Yes|No)\s*$') { continue }
+
+        $label = ($Matches['label'] -replace '\s*\(SIMULATION\)\s*$', '').Trim()
+        $raw   = $Matches['value']
+        $value = if ($raw -eq 'Yes') { 1 } elseif ($raw -eq 'No') { 0 } else { [int]$raw }
+
+        if ($label -match '^Errors') { $errors = $value; continue }
+        if ($label -match 'skipped') { continue }
+
+        $work += $value
+        # First counter of the block is the module's headline figure (OUs created,
+        # GPOs deployed, Groups created, ...) -- reuse it verbatim as the detail.
+        if (-not $headline) { $headline = "${label}: $raw" }
+    }
+
+    $verdict = if ($errors -eq 0) { 'SUCCESS' } elseif ($work -gt 0) { 'PARTIAL' } else { 'FAIL' }
+    $detail  = @($headline, ("{0} error(s)" -f $errors)) | Where-Object { $_ }
+
+    return [PSCustomObject]@{ Verdict = $verdict; Detail = ($detail -join ', ') }
+}
+
 function Start-SingleDeployment([string]$module) {
     $whatIf = [bool]$UI.WhatIfToggle.IsChecked
+    $label  = $module.PadRight(10)
 
     $scriptPath = $script:ScriptPaths[$module]
     if (-not $scriptPath -or -not (Test-Path $scriptPath)) {
-        Write-ConsoleUI "Script not found: $scriptPath" "Error"
-        return
+        New-ConsoleStatusLine ("  {0,-9} {1} script not found: {2}" -f 'FAIL', $label, $scriptPath) $script:VerdictColors.FAIL | Out-Null
+        return [PSCustomObject]@{ Module = $module; Verdict = 'FAIL' }
     }
 
     $configPath = $script:ConfigPaths[$module]
@@ -2725,51 +2833,46 @@ function Start-SingleDeployment([string]$module) {
     if ($script:Connection -and $script:Connection.Credential) { $callParams.Credential = $script:Connection.Credential }
     if ($whatIf) { $callParams.WhatIf = $true }
 
+    $statusRun = New-ConsoleStatusLine ("  {0,-9} {1} deploying..." -f $script:SpinnerFrames[0], $label) "#87CEEB"
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $frame = 0
+    $clock = [System.Diagnostics.Stopwatch]::StartNew()
+
     try {
-        # `*>&1` (all streams), not `2>&1` (error stream only): every Write-*Log function in
-        # every module writes through Write-Host, which targets the Information stream -- so
-        # `2>&1` captured none of it and left this console panel empty for the whole run.
-        # `*>&1` captures Write-Host/Warning/Error/Output uniformly, and Write-Host's
-        # -ForegroundColor survives on InformationRecord.MessageData.ForegroundColor.
-        # Piped rather than collected into a variable so lines reach the panel as the
-        # deployment runs instead of all at once when it ends.
+        # Captured with `*>&1` (all streams), not `2>&1` (error stream only): every
+        # Write-*Log writes through Write-Host, i.e. the Information stream, which `2>&1`
+        # never merged. The lines now drive the spinner and the verdict instead of being
+        # printed one by one -- the full transcript is still written to
+        # Logs\<run>\<Module>_*.log by the modules themselves.
         & $scriptPath @callParams *>&1 | ForEach-Object {
             $record = $_
-            $text   = "$record"
-            $lvl    = "Info"
+            $lines.Add($(
+                if ($record -is [System.Management.Automation.InformationRecord]) { "$($record.MessageData)" }
+                else { "$record" }
+            ))
 
-            if ($record -is [System.Management.Automation.ErrorRecord]) {
-                $lvl = "Error"
+            # Repaint at ~12 fps at most. A GPO deployment emits several hundred lines and
+            # pumping the dispatcher for every single one is pure overhead.
+            if ($clock.ElapsedMilliseconds -ge 80) {
+                $frame = ($frame + 1) % $script:SpinnerFrames.Count
+                Set-ConsoleStatusLine $statusRun ("  {0,-9} {1} deploying..." -f $script:SpinnerFrames[$frame], $label)
+                $script:Window.Dispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
+                $clock.Restart()
             }
-            elseif ($record -is [System.Management.Automation.WarningRecord]) {
-                $lvl = "Warning"
-            }
-            elseif ($record -is [System.Management.Automation.InformationRecord]) {
-                $text = "$($record.MessageData)"
-                switch ("$($record.MessageData.ForegroundColor)") {
-                    'Green'  { $lvl = "Success" }
-                    'Yellow' { $lvl = "Warning" }
-                    'Red'    { $lvl = "Error" }
-                }
-            }
-
-            # Fall back to the "[Level]" marker every Write-*Log line embeds, for records
-            # that carry no usable ForegroundColor.
-            if ($lvl -eq "Info") {
-                if     ($text -match '\[Success\]') { $lvl = "Success" }
-                elseif ($text -match '\[Warning\]') { $lvl = "Warning" }
-                elseif ($text -match '\[Error\]')   { $lvl = "Error" }
-            }
-
-            Write-ConsoleUI $text $lvl
-            # Pump the dispatcher so the panel repaints during the deployment instead of
-            # only when the click handler returns (same trick as the Verify All handler).
-            $script:Window.Dispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
         }
-        Write-ConsoleUI "$module deployment completed." "Success"
-    } catch {
-        Write-ConsoleUI "$module deployment failed: $_" "Error"
     }
+    catch {
+        $lines.Add("[Error] $_")
+    }
+    $clock.Stop()
+
+    $result = Get-DeploymentVerdict -Lines $lines
+    $color  = $script:VerdictColors[$result.Verdict]
+    Set-ConsoleStatusLine $statusRun ("  {0,-9} {1} {2}" -f $result.Verdict, $label, $result.Detail) $color
+    $script:Window.Dispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
+
+    return [PSCustomObject]@{ Module = $module; Verdict = $result.Verdict }
 }
 
 function Start-SelectedDeployments {
@@ -2790,18 +2893,49 @@ function Start-SelectedDeployments {
     # Create a shared run folder so all modules log into the same directory
     $global:LOCKmeAD_RunFolder = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
 
-    # Enforce safe order
-    $ordered = $script:DeploySafeOrder | Where-Object { $selected -contains $_ }
+    # Enforce safe order. Wrapped in @() because Where-Object returns a bare string when a
+    # single module is selected, and indexing a string yields its first character.
+    $ordered = @($script:DeploySafeOrder | Where-Object { $selected -contains $_ })
 
     $whatIf = [bool]$UI.WhatIfToggle.IsChecked
     $whatIfLabel = if ($whatIf) { " (WhatIf)" } else { "" }
     Write-ConsoleUI "Deploying: $($ordered -join ' > ')$whatIfLabel" "Info"
 
+    # No "=== $module ===" header any more: each module now owns a single line that spins
+    # while it runs and settles into its own verdict.
+    $results = @()
     foreach ($module in $ordered) {
-        Write-ConsoleUI "=== $module ===" "Info"
-        Start-SingleDeployment $module
+        $results += Start-SingleDeployment $module
     }
-    Write-ConsoleUI "All selected deployments completed." "Success"
+
+    $ok      = @($results | Where-Object { $_.Verdict -eq 'SUCCESS' }).Count
+    $partial = @($results | Where-Object { $_.Verdict -eq 'PARTIAL' }).Count
+    $failed  = @($results | Where-Object { $_.Verdict -eq 'FAIL' }).Count
+    $level   = if ($failed -gt 0) { "Error" } elseif ($partial -gt 0) { "Warning" } else { "Success" }
+    Write-ConsoleUI "$ok SUCCESS, $partial PARTIAL, $failed FAIL - full output in $(Get-DeploymentLogPath $ordered[0])" $level
+}
+
+function Get-DeploymentLogPath([string]$module) {
+    <#
+    .SYNOPSIS
+        Absolute path of the folder the current run's log files were written to.
+    .DESCRIPTION
+        Since the console panel only reports a verdict per module, the operator has to open
+        the logs to find out what actually failed -- so the closing line has to hand over a
+        path that can be pasted straight into Explorer, not a project-relative one.
+
+        Resolved exactly the way every Scripts\Deploy-*.ps1 resolves it: the module config's
+        Settings.LogDirectory, treated as relative to the project root unless already rooted,
+        then the shared run folder. Reading it from the config rather than hardcoding "Logs"
+        keeps this correct if the LogDirectory setting is ever changed.
+    #>
+    $projectRoot = Split-Path (Split-Path $script:ConfigPaths.RBAC -Parent) -Parent
+
+    $logRoot = $script:Configs[$module].Settings.LogDirectory
+    if (-not $logRoot) { $logRoot = './Logs' }
+    if (-not [System.IO.Path]::IsPathRooted($logRoot)) { $logRoot = Join-Path $projectRoot $logRoot }
+
+    return [System.IO.Path]::GetFullPath((Join-Path $logRoot $global:LOCKmeAD_RunFolder))
 }
 
 function Update-DeployOrderHint {
