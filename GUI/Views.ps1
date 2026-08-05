@@ -5,7 +5,7 @@ function Get-MainWindowXaml {
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="LOCKmeAD Manager" Width="1400" Height="900"
     MinWidth="1100" MinHeight="700"
-    WindowStartupLocation="CenterScreen"
+    WindowStartupLocation="CenterScreen" WindowState="Maximized"
     Background="#F5F5F5" FontFamily="Segoe UI">
 
     <Window.Resources>
