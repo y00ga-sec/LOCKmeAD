@@ -1304,6 +1304,38 @@ function Populate-GPOTab {
             [void]$outerStack.Children.Add($lapsExpander)
         }
 
+        # Optional explanatory note, driven by the optional "Note"/"NoteSummary" fields on a
+        # GPO in Config\GPO-Config.json rather than by a hardcoded test on the GPO name, so
+        # any GPO needing a rationale gets one for free. NoteSummary stays visible on the
+        # card (the takeaway), Note opens on click -- same idiom as the Hardening tab's
+        # "How OUs and groups interact" link, which keeps a long rationale from bloating
+        # the card.
+        if ($gpo.Note) {
+            $noteSummary = if ($gpo.NoteSummary) { $gpo.NoteSummary } else { "Deployment note" }
+
+            $noteLink = New-Object System.Windows.Controls.TextBlock
+            $noteLink.Text = [char]0x24D8 + "  $noteSummary"
+            $noteLink.FontSize = 11
+            $noteLink.Foreground = Get-WPFBrush "#0078D4"
+            $noteLink.Margin = [System.Windows.Thickness]::new(58, 6, 0, 0)
+            $noteLink.Cursor = [System.Windows.Input.Cursors]::Hand
+            $noteLink.TextWrapping = "Wrap"
+            $noteLink.TextDecorations = [System.Windows.TextDecorations]::Underline
+
+            # GetNewClosure captures this iteration's values. A plain scriptblock would
+            # resolve $gpo at click time and every card would show the last GPO's note.
+            $noteTitle = [string]$gpo.Name
+            $noteBody  = [string]$gpo.Note
+            $noteLink.Add_MouseLeftButtonDown({
+                [System.Windows.MessageBox]::Show(
+                    $noteBody, $noteTitle,
+                    [System.Windows.MessageBoxButton]::OK,
+                    [System.Windows.MessageBoxImage]::Information)
+            }.GetNewClosure())
+
+            [void]$outerStack.Children.Add($noteLink)
+        }
+
         # Link Targets expander
         $linkExpander = New-Object System.Windows.Controls.Expander
         $linkExpander.Header = "Link Targets (OUs)"
