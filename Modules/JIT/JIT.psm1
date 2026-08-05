@@ -2,11 +2,9 @@
 # JIT Module - Functions for deploying JIT Access Manager via GPO
 # ============================================================================
 # No #Requires -Modules here (ActiveDirectory/GroupPolicy) -- every entry point
-# (LOCKmeAD.ps1, each Scripts\Deploy-*.ps1, Web\Start-LOCKmeADWeb.ps1) already
-# checks for these before importing this module, and Pode's internal per-runspace
-# module re-import (Import-PodeModulesInternal) fails this module's own #Requires
-# check in a fresh worker runspace even though GroupPolicy is genuinely installed --
-# confirmed by the same Import-Module succeeding moments earlier in the main script.
+# (LOCKmeAD.ps1, Launch-GUI.ps1, each Scripts\Deploy-*.ps1) already checks that
+# both modules are available before importing this one, so a per-module #Requires
+# would only be a redundant second layer.
 
 Import-Module (Join-Path $PSScriptRoot "..\Common\Connection.psm1") -Force
 
@@ -561,13 +559,16 @@ function Set-JITGPOLink {
         # Check if already linked
         $alreadyLinked = $false
         try {
-            $inheritance = Invoke-LOCKmeADRemote -Server $Server -Credential $Credential -ArgumentList $ou, $gpoServer -ScriptBlock {
+            # DisplayName must be projected to a plain string INSIDE the remote scriptblock:
+            # remoting serializes each GpoLink down to its ToString() value, so reading
+            # .DisplayName after the collection has crossed the session boundary yields empty
+            # strings and the "already linked" check silently never matches.
+            $linkedNames = @(Invoke-LOCKmeADRemote -Server $Server -Credential $Credential -ArgumentList $ou, $gpoServer -ScriptBlock {
                 param($ou, $Server)
                 $p = @{}
                 if ($Server) { $p.Server = $Server }
-                Get-GPInheritance -Target $ou @p
-            }
-            $linkedNames = @($inheritance.GpoLinks | ForEach-Object { $_.DisplayName })
+                (Get-GPInheritance -Target $ou @p).GpoLinks | ForEach-Object { $_.DisplayName }
+            })
             if ($linkedNames -contains $GPOName) {
                 $alreadyLinked = $true
             }

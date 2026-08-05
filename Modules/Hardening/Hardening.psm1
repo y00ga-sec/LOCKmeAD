@@ -2,11 +2,9 @@
 # Hardening Module - Functions for deploying AD hardening remediation tasks
 # ============================================================================
 # No #Requires -Modules ActiveDirectory here -- every entry point (LOCKmeAD.ps1,
-# each Scripts\Deploy-*.ps1, Web\Start-LOCKmeADWeb.ps1) already checks for it
-# before importing this module, and Pode's internal per-runspace module re-import
-# (Import-PodeModulesInternal) can fail a module's own #Requires check in a fresh
-# worker runspace even when the module is genuinely installed (confirmed against
-# GPO.psm1/JIT.psm1's GroupPolicy requirement) -- removed here too for consistency.
+# Launch-GUI.ps1, each Scripts\Deploy-*.ps1) already checks that the module is
+# available before importing this one, so a per-module #Requires would only be a
+# redundant second layer.
 
 Import-Module (Join-Path $PSScriptRoot "..\Common\Connection.psm1") -Force
 

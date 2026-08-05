@@ -2,11 +2,9 @@
 # GPO Module - Functions for deploying security GPOs from JSON templates
 # ============================================================================
 # No #Requires -Modules here (ActiveDirectory/GroupPolicy) -- every entry point
-# (LOCKmeAD.ps1, each Scripts\Deploy-*.ps1, Web\Start-LOCKmeADWeb.ps1) already
-# checks for these before importing this module, and Pode's internal per-runspace
-# module re-import (Import-PodeModulesInternal) fails this module's own #Requires
-# check in a fresh worker runspace even though GroupPolicy is genuinely installed --
-# confirmed by the same Import-Module succeeding moments earlier in the main script.
+# (LOCKmeAD.ps1, Launch-GUI.ps1, each Scripts\Deploy-*.ps1) already checks that
+# both modules are available before importing this one, so a per-module #Requires
+# would only be a redundant second layer.
 
 Import-Module (Join-Path $PSScriptRoot "..\Common\Connection.psm1") -Force
 
@@ -465,8 +463,7 @@ function Set-GPOFilteringPermission {
             $gpoDN    = "CN={$($gpo.Id.ToString().ToUpper())},CN=Policies,CN=System,$domainDN"
             $gpoGuid  = $gpo.Id.ToString().ToUpper()
             $adDrive  = Get-LOCKmeADDrive -Server $Server -Credential $Credential
-
-            $acl = Get-Acl -Path "${adDrive}\$gpoDN"
+            $acl      = Get-Acl -Path "${adDrive}\$gpoDN" -ErrorAction Stop
 
             # --- Remove Authenticated Users (S-1-5-11) from security filtering ---
             $authUsersSID = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-11")
@@ -906,18 +903,23 @@ function Set-GPOLink {
     # -Server when an explicit credential is in play.
     $gpoServer = if ($Credential) { $null } else { $Server }
 
-    # Check if link already exists
+    # Check if link already exists.
+    # DisplayName must be projected to a plain string INSIDE the remote scriptblock. PowerShell
+    # remoting serializes each GpoLink object down to its ToString() value, so a GpoLinks
+    # collection that crosses the session boundary arrives as an ArrayList of String whose
+    # .DisplayName is empty -- filtering on the near side therefore never matched, and every
+    # re-run tried to re-create links that already existed (only reachable in explicit-credential
+    # mode; domain-joined runs stay in-process and never serialize).
     try {
-        $inheritance = Invoke-LOCKmeADRemote -Server $Server -Credential $Credential -ArgumentList $TargetOU, $gpoServer -ScriptBlock {
+        $linkedNames = @(Invoke-LOCKmeADRemote -Server $Server -Credential $Credential -ArgumentList $TargetOU, $gpoServer -ScriptBlock {
             param($TargetOU, $Server)
             $p = @{}
             if ($Server) { $p.Server = $Server }
-            Get-GPInheritance -Target $TargetOU @p
-        }
-        $existingLink = $inheritance.GpoLinks | Where-Object { $_.DisplayName -eq $GPOName }
-        if ($existingLink) {
+            (Get-GPInheritance -Target $TargetOU @p).GpoLinks | ForEach-Object { $_.DisplayName }
+        })
+        if ($linkedNames -contains $GPOName) {
             Write-GPOLog -Message "GPO '$GPOName' is already linked to '$TargetOU'." -Level Warning -LogDirectory $LogDirectory
-            return
+            return $false
         }
     }
     catch {
@@ -934,6 +936,7 @@ function Set-GPOLink {
                 New-GPLink -Name $GPOName -Target $TargetOU -LinkEnabled Yes @p | Out-Null
             } | Out-Null
             Write-GPOLog -Message "GPO '$GPOName' linked to '$TargetOU'." -Level Success -LogDirectory $LogDirectory
+            return $true
         }
         catch {
             Write-GPOLog -Message "Error linking GPO '$GPOName' to '$TargetOU': $_" -Level Error -LogDirectory $LogDirectory
@@ -942,6 +945,7 @@ function Set-GPOLink {
     }
     else {
         Write-GPOLog -Message "[WhatIf] GPO '$GPOName' would be linked to '$TargetOU'." -Level Info -LogDirectory $LogDirectory
+        return $true
     }
 }
 

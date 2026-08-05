@@ -217,6 +217,7 @@ Write-Host ""
 $modeLabel = if ($WhatIfPreference) { " (SIMULATION)" } else { "" }
 
 Write-Host "  OUs created$modeLabel             : $($results.OUsCreated)" -ForegroundColor Cyan
+Write-Host "  OUs already present        : $($results.OUsExisting)" -ForegroundColor DarkGray
 
 if ($results.Errors -gt 0) {
     Write-Host "  Errors                     : $($results.Errors)" -ForegroundColor Red

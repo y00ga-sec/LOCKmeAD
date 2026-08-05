@@ -2726,14 +2726,45 @@ function Start-SingleDeployment([string]$module) {
     if ($whatIf) { $callParams.WhatIf = $true }
 
     try {
-        $output = & $scriptPath @callParams 2>&1
-        foreach ($line in $output) {
-            $lvl = "Info"
-            $text = $line.ToString()
-            if ($text -match '\[Success\]') { $lvl = "Success" }
-            elseif ($text -match '\[Warning\]') { $lvl = "Warning" }
-            elseif ($text -match '\[Error\]' -or $line -is [System.Management.Automation.ErrorRecord]) { $lvl = "Error" }
+        # `*>&1` (all streams), not `2>&1` (error stream only): every Write-*Log function in
+        # every module writes through Write-Host, which targets the Information stream -- so
+        # `2>&1` captured none of it and left this console panel empty for the whole run.
+        # `*>&1` captures Write-Host/Warning/Error/Output uniformly, and Write-Host's
+        # -ForegroundColor survives on InformationRecord.MessageData.ForegroundColor.
+        # Piped rather than collected into a variable so lines reach the panel as the
+        # deployment runs instead of all at once when it ends.
+        & $scriptPath @callParams *>&1 | ForEach-Object {
+            $record = $_
+            $text   = "$record"
+            $lvl    = "Info"
+
+            if ($record -is [System.Management.Automation.ErrorRecord]) {
+                $lvl = "Error"
+            }
+            elseif ($record -is [System.Management.Automation.WarningRecord]) {
+                $lvl = "Warning"
+            }
+            elseif ($record -is [System.Management.Automation.InformationRecord]) {
+                $text = "$($record.MessageData)"
+                switch ("$($record.MessageData.ForegroundColor)") {
+                    'Green'  { $lvl = "Success" }
+                    'Yellow' { $lvl = "Warning" }
+                    'Red'    { $lvl = "Error" }
+                }
+            }
+
+            # Fall back to the "[Level]" marker every Write-*Log line embeds, for records
+            # that carry no usable ForegroundColor.
+            if ($lvl -eq "Info") {
+                if     ($text -match '\[Success\]') { $lvl = "Success" }
+                elseif ($text -match '\[Warning\]') { $lvl = "Warning" }
+                elseif ($text -match '\[Error\]')   { $lvl = "Error" }
+            }
+
             Write-ConsoleUI $text $lvl
+            # Pump the dispatcher so the panel repaints during the deployment instead of
+            # only when the click handler returns (same trick as the Verify All handler).
+            $script:Window.Dispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
         }
         Write-ConsoleUI "$module deployment completed." "Success"
     } catch {

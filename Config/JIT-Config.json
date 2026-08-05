@@ -1,13 +1,13 @@
 {
   "Settings": {
-    "ToolsSharePath": "\\\\forest.lol\\NETLOGON\\JIT",
+    "ToolsSharePath": "\\\\corp.local\\NETLOGON\\JIT",
     "InstallPath": "C:\\Program Files\\JIT-Access",
     "LogDirectory": "./Logs",
-    "FilteringGroupsOU": "OU=GPO,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
+    "FilteringGroupsOU": "OU=GPO,OU=GroupsT0,OU=Admin,DC=corp,DC=local",
     "GPO": {
       "Name": "SEC_JIT_Tool_Deploy",
       "Description": "Deploys JIT Access Manager to T0 admin workstations via startup script",
-      "LinkTargets": "OU=Domain Controllers,DC=forest,DC=lol"
+      "LinkTargets": "OU=Domain Controllers,DC=corp,DC=local"
     }
   }
 }

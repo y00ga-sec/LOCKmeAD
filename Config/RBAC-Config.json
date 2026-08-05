@@ -5,8 +5,8 @@
       "DomainLocal": "DL_"
     },
     "DefaultOU": {
-      "Global": "OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
-      "DomainLocal": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol"
+      "Global": "OU=GroupsT0,OU=Admin,DC=corp,DC=local",
+      "DomainLocal": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=corp,DC=local"
     },
     "LogDirectory": "./Logs"
   },
@@ -14,7 +14,7 @@
     {
       "Name": "DL_T0",
       "Description": "Tier 0 root group - Deny logon target for all T0 accounts",
-      "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
+      "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=corp,DC=local",
       "Members": [
         "GG_T0_Machine_Admins",
         "GG_T0_Operators",
@@ -24,7 +24,7 @@
     {
       "Name": "DL_T1",
       "Description": "Tier 1 root group - Deny logon target for all T1 accounts",
-      "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=forest,DC=lol",
+      "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=corp,DC=local",
       "Members": [
         "GG_T1_Machine_Admins",
         "GG_T1_Operators",
@@ -34,7 +34,7 @@
     {
       "Name": "DL_T2",
       "Description": "Tier 2 root group - Deny logon target for all T2 accounts",
-      "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=forest,DC=lol",
+      "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=corp,DC=local",
       "Members": [
         "GG_T2_Machine_Admins",
         "GG_T2_Operators",
@@ -49,19 +49,19 @@
       "GlobalGroup": {
         "Name": "GG_T0_Machine_Admins",
         "Description": "T0 global group - Local administrators on T0 machines",
-        "OU": "OU=GroupsT0,OU=Admin,DC=forest,DC=lol"
+        "OU": "OU=GroupsT0,OU=Admin,DC=corp,DC=local"
       },
       "DomainLocalGroups": [
         {
           "Name": "DL_T0_Servers_LocalAdmin",
           "Description": "DL T0 - Local Administrators on T0 servers (used in GPO Restricted Groups)",
-          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=corp,DC=local",
           "Permissions": []
         },
         {
           "Name": "DL_T0_PAWs_LocalAdmin",
           "Description": "DL T0 - Local Administrators on T0 PAWs (used in GPO Restricted Groups)",
-          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=corp,DC=local",
           "Permissions": []
         }
       ]
@@ -72,17 +72,17 @@
       "GlobalGroup": {
         "Name": "GG_T0_Operators",
         "Description": "T0 global group - Tier 0 operators",
-        "OU": "OU=GroupsT0,OU=Admin,DC=forest,DC=lol"
+        "OU": "OU=GroupsT0,OU=Admin,DC=corp,DC=local"
       },
       "DomainLocalGroups": [
         {
           "Name": "DL_T0_Servers_Manage",
           "Description": "DL T0 - Computer object management in OU=Servers,OU=T0-Prod",
-          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=corp,DC=local",
           "Permissions": [
             {
               "Type": "AD",
-              "TargetOU": "OU=Servers,OU=T0-Prod,DC=forest,DC=lol",
+              "TargetOU": "OU=Servers,OU=T0-Prod,DC=corp,DC=local",
               "ADRights": "GenericAll",
               "ObjectType": "00000000-0000-0000-0000-000000000000",
               "InheritanceType": "Descendents",
@@ -94,11 +94,11 @@
         {
           "Name": "DL_T0_PAWs_Manage",
           "Description": "DL T0 - Computer object management in OU=PAWs,OU=T0-Prod",
-          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=corp,DC=local",
           "Permissions": [
             {
               "Type": "AD",
-              "TargetOU": "OU=PAWs,OU=T0-Prod,DC=forest,DC=lol",
+              "TargetOU": "OU=PAWs,OU=T0-Prod,DC=corp,DC=local",
               "ADRights": "GenericAll",
               "ObjectType": "00000000-0000-0000-0000-000000000000",
               "InheritanceType": "Descendents",
@@ -110,11 +110,11 @@
         {
           "Name": "DL_T0_Users_Manage",
           "Description": "DL T0 - Admin account management in OU=UsersT0,OU=Admin",
-          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=corp,DC=local",
           "Permissions": [
             {
               "Type": "AD",
-              "TargetOU": "OU=UsersT0,OU=Admin,DC=forest,DC=lol",
+              "TargetOU": "OU=UsersT0,OU=Admin,DC=corp,DC=local",
               "ADRights": "CreateChild, DeleteChild",
               "ObjectType": "bf967aba-0de6-11d0-a285-00aa003049e2",
               "InheritanceType": "All",
@@ -123,7 +123,7 @@
             },
             {
               "Type": "AD",
-              "TargetOU": "OU=UsersT0,OU=Admin,DC=forest,DC=lol",
+              "TargetOU": "OU=UsersT0,OU=Admin,DC=corp,DC=local",
               "ADRights": "WriteProperty",
               "ObjectType": "00000000-0000-0000-0000-000000000000",
               "InheritanceType": "Descendents",
@@ -132,7 +132,7 @@
             },
             {
               "Type": "AD",
-              "TargetOU": "OU=UsersT0,OU=Admin,DC=forest,DC=lol",
+              "TargetOU": "OU=UsersT0,OU=Admin,DC=corp,DC=local",
               "ADRights": "ExtendedRight",
               "ObjectType": "00299570-246d-11d0-a768-00aa006e0529",
               "InheritanceType": "Descendents",
@@ -144,11 +144,11 @@
         {
           "Name": "DL_T0_DNS_ForestZone",
           "Description": "DL T0 - DNS record management on the forest.lol zone",
-          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=corp,DC=local",
           "Permissions": [
             {
               "Type": "AD",
-              "TargetOU": "DC=forest.lol,CN=MicrosoftDNS,DC=DomainDnsZones,DC=forest,DC=lol",
+              "TargetOU": "DC=corp.local,CN=MicrosoftDNS,DC=DomainDnsZones,DC=corp,DC=local",
               "ADRights": "CreateChild, DeleteChild",
               "ObjectType": "e0fa1e8c-9b45-11d0-afdd-00c04fd930c9",
               "InheritanceType": "All",
@@ -157,7 +157,7 @@
             },
             {
               "Type": "AD",
-              "TargetOU": "DC=forest.lol,CN=MicrosoftDNS,DC=DomainDnsZones,DC=forest,DC=lol",
+              "TargetOU": "DC=corp.local,CN=MicrosoftDNS,DC=DomainDnsZones,DC=corp,DC=local",
               "ADRights": "WriteProperty",
               "ObjectType": "00000000-0000-0000-0000-000000000000",
               "InheritanceType": "Descendents",
@@ -174,59 +174,17 @@
       "GlobalGroup": {
         "Name": "GG_T0_Admins",
         "Description": "T0 global group - Tier 0 full administrators",
-        "OU": "OU=GroupsT0,OU=Admin,DC=forest,DC=lol"
+        "OU": "OU=GroupsT0,OU=Admin,DC=corp,DC=local"
       },
       "DomainLocalGroups": [
         {
-          "Name": "DL_T0_PKI_ManageCA",
-          "Description": "DL T0 - ManageCA on ForestSubCA",
-          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
-          "Permissions": [
-            {
-              "Type": "ADCS",
-              "CAName": "ForestSubCA",
-              "CAHostname": "SUBCA.forest.lol",
-              "Right": "ManageCA"
-            }
-          ]
-        },
-        {
-          "Name": "DL_T0_PKI_ManageCerts",
-          "Description": "DL T0 - ManageCertificates on ForestSubCA",
-          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
-          "Permissions": [
-            {
-              "Type": "ADCS",
-              "CAName": "ForestSubCA",
-              "CAHostname": "SUBCA.forest.lol",
-              "Right": "ManageCertificates"
-            }
-          ]
-        },
-        {
-          "Name": "DL_T0_PKI_Enroll",
-          "Description": "DL T0 - Enrollment right on ForestSubCA",
-          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
-          "Permissions": [
-            {
-              "Type": "AD",
-              "TargetOU": "CN=ForestSubCA,CN=Enrollment Services,CN=Public Key Services,CN=Services,CN=Configuration,DC=forest,DC=lol",
-              "ADRights": "ExtendedRight",
-              "ObjectType": "0e10c968-78fb-11d2-90d4-00c04f79dc55",
-              "InheritanceType": "None",
-              "InheritedObjectType": "00000000-0000-0000-0000-000000000000",
-              "AccessControlType": "Allow"
-            }
-          ]
-        },
-        {
           "Name": "DL_T0_Groups_Manage",
           "Description": "DL T0 - Group object management in OU=GroupsT0,OU=Admin",
-          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=corp,DC=local",
           "Permissions": [
             {
               "Type": "AD",
-              "TargetOU": "OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
+              "TargetOU": "OU=GroupsT0,OU=Admin,DC=corp,DC=local",
               "ADRights": "GenericAll",
               "ObjectType": "00000000-0000-0000-0000-000000000000",
               "InheritanceType": "Descendents",
@@ -238,35 +196,35 @@
         {
           "Name": "DL_T0_Servers_Manage",
           "Description": "DL T0 - Computer object management in OU=Servers,OU=T0-Prod",
-          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=corp,DC=local",
           "Permissions": []
         },
         {
           "Name": "DL_T0_PAWs_Manage",
           "Description": "DL T0 - Computer object management in OU=PAWs,OU=T0-Prod",
-          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=corp,DC=local",
           "Permissions": []
         },
         {
           "Name": "DL_T0_Users_Manage",
           "Description": "DL T0 - Admin account management in OU=UsersT0,OU=Admin",
-          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=corp,DC=local",
           "Permissions": []
         },
         {
           "Name": "DL_T0_DNS_ForestZone",
           "Description": "DL T0 - DNS record management on the forest.lol zone",
-          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=corp,DC=local",
           "Permissions": []
         },
         {
           "Name": "DL_T0_GPOLink",
           "Description": "DL T0 - GPO linking on T0 production and admin OUs",
-          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=corp,DC=local",
           "Permissions": [
             {
               "Type": "AD",
-              "TargetOU": "OU=T0-Prod,DC=forest,DC=lol",
+              "TargetOU": "OU=T0-Prod,DC=corp,DC=local",
               "ADRights": "WriteProperty",
               "ObjectType": "gPLink",
               "InheritanceType": "All",
@@ -275,7 +233,7 @@
             },
             {
               "Type": "AD",
-              "TargetOU": "OU=T0-Prod,DC=forest,DC=lol",
+              "TargetOU": "OU=T0-Prod,DC=corp,DC=local",
               "ADRights": "WriteProperty",
               "ObjectType": "gPOptions",
               "InheritanceType": "All",
@@ -284,7 +242,7 @@
             },
             {
               "Type": "AD",
-              "TargetOU": "OU=Admin,DC=forest,DC=lol",
+              "TargetOU": "OU=Admin,DC=corp,DC=local",
               "ADRights": "WriteProperty",
               "ObjectType": "gPLink",
               "InheritanceType": "All",
@@ -293,7 +251,7 @@
             },
             {
               "Type": "AD",
-              "TargetOU": "OU=Admin,DC=forest,DC=lol",
+              "TargetOU": "OU=Admin,DC=corp,DC=local",
               "ADRights": "WriteProperty",
               "ObjectType": "gPOptions",
               "InheritanceType": "All",
@@ -310,13 +268,13 @@
       "GlobalGroup": {
         "Name": "GG_T1_Machine_Admins",
         "Description": "T1 global group - Local administrators on T1 servers",
-        "OU": "OU=GroupsT1,OU=Admin,DC=forest,DC=lol"
+        "OU": "OU=GroupsT1,OU=Admin,DC=corp,DC=local"
       },
       "DomainLocalGroups": [
         {
           "Name": "DL_T1_Servers_LocalAdmin",
           "Description": "DL T1 - Local Administrators on T1 servers (used in GPO Restricted Groups)",
-          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=corp,DC=local",
           "Permissions": []
         }
       ]
@@ -327,17 +285,17 @@
       "GlobalGroup": {
         "Name": "GG_T1_Operators",
         "Description": "T1 global group - Tier 1 operators",
-        "OU": "OU=GroupsT1,OU=Admin,DC=forest,DC=lol"
+        "OU": "OU=GroupsT1,OU=Admin,DC=corp,DC=local"
       },
       "DomainLocalGroups": [
         {
           "Name": "DL_T1_Servers_Manage",
           "Description": "DL T1 - Computer object management in OU=Servers,OU=T1-Prod",
-          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=corp,DC=local",
           "Permissions": [
             {
               "Type": "AD",
-              "TargetOU": "OU=Servers,OU=T1-Prod,DC=forest,DC=lol",
+              "TargetOU": "OU=Servers,OU=T1-Prod,DC=corp,DC=local",
               "ADRights": "GenericAll",
               "ObjectType": "00000000-0000-0000-0000-000000000000",
               "InheritanceType": "Descendents",
@@ -349,11 +307,11 @@
         {
           "Name": "DL_T1_Users_Manage",
           "Description": "DL T1 - Admin account management in OU=UsersT1,OU=Admin",
-          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=corp,DC=local",
           "Permissions": [
             {
               "Type": "AD",
-              "TargetOU": "OU=UsersT1,OU=Admin,DC=forest,DC=lol",
+              "TargetOU": "OU=UsersT1,OU=Admin,DC=corp,DC=local",
               "ADRights": "CreateChild, DeleteChild",
               "ObjectType": "bf967aba-0de6-11d0-a285-00aa003049e2",
               "InheritanceType": "All",
@@ -362,7 +320,7 @@
             },
             {
               "Type": "AD",
-              "TargetOU": "OU=UsersT1,OU=Admin,DC=forest,DC=lol",
+              "TargetOU": "OU=UsersT1,OU=Admin,DC=corp,DC=local",
               "ADRights": "WriteProperty",
               "ObjectType": "00000000-0000-0000-0000-000000000000",
               "InheritanceType": "Descendents",
@@ -371,26 +329,11 @@
             },
             {
               "Type": "AD",
-              "TargetOU": "OU=UsersT1,OU=Admin,DC=forest,DC=lol",
+              "TargetOU": "OU=UsersT1,OU=Admin,DC=corp,DC=local",
               "ADRights": "ExtendedRight",
               "ObjectType": "00299570-246d-11d0-a768-00aa006e0529",
               "InheritanceType": "Descendents",
               "InheritedObjectType": "bf967aba-0de6-11d0-a285-00aa003049e2",
-              "AccessControlType": "Allow"
-            }
-          ]
-        },
-        {
-          "Name": "DL_T1_FileServer_ReadWrite",
-          "Description": "DL T1 - Read/Write on \\\\SRV01.forest.lol\\Data$ share",
-          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=forest,DC=lol",
-          "Permissions": [
-            {
-              "Type": "NTFS",
-              "Path": "\\\\SRV01.forest.lol\\Data$",
-              "Rights": "Modify",
-              "InheritanceFlags": "ContainerInherit, ObjectInherit",
-              "PropagationFlags": "None",
               "AccessControlType": "Allow"
             }
           ]
@@ -403,17 +346,17 @@
       "GlobalGroup": {
         "Name": "GG_T1_Admins",
         "Description": "T1 global group - Tier 1 full administrators",
-        "OU": "OU=GroupsT1,OU=Admin,DC=forest,DC=lol"
+        "OU": "OU=GroupsT1,OU=Admin,DC=corp,DC=local"
       },
       "DomainLocalGroups": [
         {
           "Name": "DL_T1_Groups_Manage",
           "Description": "DL T1 - Group object management in OU=GroupsT1,OU=Admin",
-          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=corp,DC=local",
           "Permissions": [
             {
               "Type": "AD",
-              "TargetOU": "OU=GroupsT1,OU=Admin,DC=forest,DC=lol",
+              "TargetOU": "OU=GroupsT1,OU=Admin,DC=corp,DC=local",
               "ADRights": "GenericAll",
               "ObjectType": "00000000-0000-0000-0000-000000000000",
               "InheritanceType": "Descendents",
@@ -423,40 +366,25 @@
           ]
         },
         {
-          "Name": "DL_T1_FileServer_FullControl",
-          "Description": "DL T1 - Full control on \\\\SRV01.forest.lol\\Data$ share",
-          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=forest,DC=lol",
-          "Permissions": [
-            {
-              "Type": "NTFS",
-              "Path": "\\\\SRV01.forest.lol\\Data$",
-              "Rights": "FullControl",
-              "InheritanceFlags": "ContainerInherit, ObjectInherit",
-              "PropagationFlags": "None",
-              "AccessControlType": "Allow"
-            }
-          ]
-        },
-        {
           "Name": "DL_T1_Servers_Manage",
           "Description": "DL T1 - Computer object management in OU=Servers,OU=T1-Prod",
-          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=corp,DC=local",
           "Permissions": []
         },
         {
           "Name": "DL_T1_Users_Manage",
           "Description": "DL T1 - Admin account management in OU=UsersT1,OU=Admin",
-          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=corp,DC=local",
           "Permissions": []
         },
         {
           "Name": "DL_T1_GPOLink",
           "Description": "DL T1 - GPO linking on T1 server and admin user OUs",
-          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=corp,DC=local",
           "Permissions": [
             {
               "Type": "AD",
-              "TargetOU": "OU=Servers,OU=T1-Prod,DC=forest,DC=lol",
+              "TargetOU": "OU=Servers,OU=T1-Prod,DC=corp,DC=local",
               "ADRights": "WriteProperty",
               "ObjectType": "gPLink",
               "InheritanceType": "All",
@@ -465,7 +393,7 @@
             },
             {
               "Type": "AD",
-              "TargetOU": "OU=Servers,OU=T1-Prod,DC=forest,DC=lol",
+              "TargetOU": "OU=Servers,OU=T1-Prod,DC=corp,DC=local",
               "ADRights": "WriteProperty",
               "ObjectType": "gPOptions",
               "InheritanceType": "All",
@@ -474,7 +402,7 @@
             },
             {
               "Type": "AD",
-              "TargetOU": "OU=UsersT1,OU=Admin,DC=forest,DC=lol",
+              "TargetOU": "OU=UsersT1,OU=Admin,DC=corp,DC=local",
               "ADRights": "WriteProperty",
               "ObjectType": "gPLink",
               "InheritanceType": "All",
@@ -483,7 +411,7 @@
             },
             {
               "Type": "AD",
-              "TargetOU": "OU=UsersT1,OU=Admin,DC=forest,DC=lol",
+              "TargetOU": "OU=UsersT1,OU=Admin,DC=corp,DC=local",
               "ADRights": "WriteProperty",
               "ObjectType": "gPOptions",
               "InheritanceType": "All",
@@ -495,15 +423,15 @@
         {
           "Name": "DL_T1_Servers_BitLocker",
           "Description": "DL T1 - BitLocker recovery key read on T1 servers",
-          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=corp,DC=local",
           "Permissions": [
             {
               "Type": "AD",
-              "TargetOU": "OU=Servers,OU=T1-Prod,DC=forest,DC=lol",
+              "TargetOU": "OU=Servers,OU=T1-Prod,DC=corp,DC=local",
               "ADRights": "GenericAll",
               "ObjectType": "",
               "InheritanceType": "Descendents",
-              "InheritedObjectType": "ms-FVE-RecoveryInformation",
+              "InheritedObjectType": "msFVE-RecoveryInformation",
               "AccessControlType": "Allow"
             }
           ]
@@ -516,13 +444,13 @@
       "GlobalGroup": {
         "Name": "GG_T2_Machine_Admins",
         "Description": "T2 global group - Local administrators on T2 workstations",
-        "OU": "OU=GroupsT2,OU=Admin,DC=forest,DC=lol"
+        "OU": "OU=GroupsT2,OU=Admin,DC=corp,DC=local"
       },
       "DomainLocalGroups": [
         {
           "Name": "DL_T2_Workstations_LocalAdmin",
           "Description": "DL T2 - Local Administrators on T2 workstations (used in GPO Restricted Groups)",
-          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=corp,DC=local",
           "Permissions": []
         }
       ]
@@ -533,17 +461,17 @@
       "GlobalGroup": {
         "Name": "GG_T2_Operators",
         "Description": "T2 global group - Tier 2 operators (helpdesk)",
-        "OU": "OU=GroupsT2,OU=Admin,DC=forest,DC=lol"
+        "OU": "OU=GroupsT2,OU=Admin,DC=corp,DC=local"
       },
       "DomainLocalGroups": [
         {
           "Name": "DL_T2_Workstations_Manage",
           "Description": "DL T2 - Computer object management in OU=Workstations,OU=T2-Prod",
-          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=corp,DC=local",
           "Permissions": [
             {
               "Type": "AD",
-              "TargetOU": "OU=Workstations,OU=T2-Prod,DC=forest,DC=lol",
+              "TargetOU": "OU=Workstations,OU=T2-Prod,DC=corp,DC=local",
               "ADRights": "GenericAll",
               "ObjectType": "00000000-0000-0000-0000-000000000000",
               "InheritanceType": "Descendents",
@@ -555,11 +483,11 @@
         {
           "Name": "DL_T2_Users_ResetPwd",
           "Description": "DL T2 - Password reset for users in OU=Users,OU=T2-Prod",
-          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=corp,DC=local",
           "Permissions": [
             {
               "Type": "AD",
-              "TargetOU": "OU=Users,OU=T2-Prod,DC=forest,DC=lol",
+              "TargetOU": "OU=Users,OU=T2-Prod,DC=corp,DC=local",
               "ADRights": "ExtendedRight",
               "ObjectType": "00299570-246d-11d0-a768-00aa006e0529",
               "InheritanceType": "Descendents",
@@ -571,11 +499,11 @@
         {
           "Name": "DL_T2_Users_Unlock",
           "Description": "DL T2 - Account unlock for users in OU=Users,OU=T2-Prod",
-          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=corp,DC=local",
           "Permissions": [
             {
               "Type": "AD",
-              "TargetOU": "OU=Users,OU=T2-Prod,DC=forest,DC=lol",
+              "TargetOU": "OU=Users,OU=T2-Prod,DC=corp,DC=local",
               "ADRights": "WriteProperty",
               "ObjectType": "28630ebf-41d5-11d1-a9c1-0000f80367c1",
               "InheritanceType": "Descendents",
@@ -592,17 +520,17 @@
       "GlobalGroup": {
         "Name": "GG_T2_Admins",
         "Description": "T2 global group - Tier 2 full administrators",
-        "OU": "OU=GroupsT2,OU=Admin,DC=forest,DC=lol"
+        "OU": "OU=GroupsT2,OU=Admin,DC=corp,DC=local"
       },
       "DomainLocalGroups": [
         {
           "Name": "DL_T2_Users_Manage",
           "Description": "DL T2 - Full user lifecycle on production users and T2 admin accounts",
-          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=corp,DC=local",
           "Permissions": [
             {
               "Type": "AD",
-              "TargetOU": "OU=Users,OU=T2-Prod,DC=forest,DC=lol",
+              "TargetOU": "OU=Users,OU=T2-Prod,DC=corp,DC=local",
               "ADRights": "CreateChild, DeleteChild",
               "ObjectType": "bf967aba-0de6-11d0-a285-00aa003049e2",
               "InheritanceType": "All",
@@ -611,7 +539,7 @@
             },
             {
               "Type": "AD",
-              "TargetOU": "OU=Users,OU=T2-Prod,DC=forest,DC=lol",
+              "TargetOU": "OU=Users,OU=T2-Prod,DC=corp,DC=local",
               "ADRights": "WriteProperty",
               "ObjectType": "00000000-0000-0000-0000-000000000000",
               "InheritanceType": "Descendents",
@@ -620,7 +548,7 @@
             },
             {
               "Type": "AD",
-              "TargetOU": "OU=Users,OU=T2-Prod,DC=forest,DC=lol",
+              "TargetOU": "OU=Users,OU=T2-Prod,DC=corp,DC=local",
               "ADRights": "ExtendedRight",
               "ObjectType": "00299570-246d-11d0-a768-00aa006e0529",
               "InheritanceType": "Descendents",
@@ -629,7 +557,7 @@
             },
             {
               "Type": "AD",
-              "TargetOU": "OU=UsersT2,OU=Admin,DC=forest,DC=lol",
+              "TargetOU": "OU=UsersT2,OU=Admin,DC=corp,DC=local",
               "ADRights": "CreateChild, DeleteChild",
               "ObjectType": "bf967aba-0de6-11d0-a285-00aa003049e2",
               "InheritanceType": "All",
@@ -638,7 +566,7 @@
             },
             {
               "Type": "AD",
-              "TargetOU": "OU=UsersT2,OU=Admin,DC=forest,DC=lol",
+              "TargetOU": "OU=UsersT2,OU=Admin,DC=corp,DC=local",
               "ADRights": "WriteProperty",
               "ObjectType": "00000000-0000-0000-0000-000000000000",
               "InheritanceType": "Descendents",
@@ -647,7 +575,7 @@
             },
             {
               "Type": "AD",
-              "TargetOU": "OU=UsersT2,OU=Admin,DC=forest,DC=lol",
+              "TargetOU": "OU=UsersT2,OU=Admin,DC=corp,DC=local",
               "ADRights": "ExtendedRight",
               "ObjectType": "00299570-246d-11d0-a768-00aa006e0529",
               "InheritanceType": "Descendents",
@@ -659,11 +587,11 @@
         {
           "Name": "DL_T2_Groups_Manage",
           "Description": "DL T2 - Group object management in OU=GroupsT2,OU=Admin",
-          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=corp,DC=local",
           "Permissions": [
             {
               "Type": "AD",
-              "TargetOU": "OU=GroupsT2,OU=Admin,DC=forest,DC=lol",
+              "TargetOU": "OU=GroupsT2,OU=Admin,DC=corp,DC=local",
               "ADRights": "GenericAll",
               "ObjectType": "00000000-0000-0000-0000-000000000000",
               "InheritanceType": "Descendents",
@@ -675,29 +603,29 @@
         {
           "Name": "DL_T2_Workstations_Manage",
           "Description": "DL T2 - Computer object management in OU=Workstations,OU=T2-Prod",
-          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=corp,DC=local",
           "Permissions": []
         },
         {
           "Name": "DL_T2_Users_ResetPwd",
           "Description": "DL T2 - Password reset for users in OU=Users,OU=T2-Prod",
-          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=corp,DC=local",
           "Permissions": []
         },
         {
           "Name": "DL_T2_Users_Unlock",
           "Description": "DL T2 - Account unlock for users in OU=Users,OU=T2-Prod",
-          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=corp,DC=local",
           "Permissions": []
         },
         {
           "Name": "DL_T2_GPOLink",
           "Description": "DL T2 - GPO linking on T2 user and workstation OUs",
-          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=corp,DC=local",
           "Permissions": [
             {
               "Type": "AD",
-              "TargetOU": "OU=Users,OU=T2-Prod,DC=forest,DC=lol",
+              "TargetOU": "OU=Users,OU=T2-Prod,DC=corp,DC=local",
               "ADRights": "WriteProperty",
               "ObjectType": "gPLink",
               "InheritanceType": "All",
@@ -706,7 +634,7 @@
             },
             {
               "Type": "AD",
-              "TargetOU": "OU=Users,OU=T2-Prod,DC=forest,DC=lol",
+              "TargetOU": "OU=Users,OU=T2-Prod,DC=corp,DC=local",
               "ADRights": "WriteProperty",
               "ObjectType": "gPOptions",
               "InheritanceType": "All",
@@ -715,7 +643,7 @@
             },
             {
               "Type": "AD",
-              "TargetOU": "OU=Workstations,OU=T2-Prod,DC=forest,DC=lol",
+              "TargetOU": "OU=Workstations,OU=T2-Prod,DC=corp,DC=local",
               "ADRights": "WriteProperty",
               "ObjectType": "gPLink",
               "InheritanceType": "All",
@@ -724,7 +652,7 @@
             },
             {
               "Type": "AD",
-              "TargetOU": "OU=Workstations,OU=T2-Prod,DC=forest,DC=lol",
+              "TargetOU": "OU=Workstations,OU=T2-Prod,DC=corp,DC=local",
               "ADRights": "WriteProperty",
               "ObjectType": "gPOptions",
               "InheritanceType": "All",
@@ -736,15 +664,15 @@
         {
           "Name": "DL_T2_BitLocker",
           "Description": "DL T2 - BitLocker recovery key read on T2 workstations",
-          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=forest,DC=lol",
+          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=corp,DC=local",
           "Permissions": [
             {
               "Type": "AD",
-              "TargetOU": "OU=Workstations,OU=T2-Prod,DC=forest,DC=lol",
+              "TargetOU": "OU=Workstations,OU=T2-Prod,DC=corp,DC=local",
               "ADRights": "GenericAll",
               "ObjectType": "",
               "InheritanceType": "Descendents",
-              "InheritedObjectType": "ms-FVE-RecoveryInformation",
+              "InheritedObjectType": "msFVE-RecoveryInformation",
               "AccessControlType": "Allow"
             }
           ]

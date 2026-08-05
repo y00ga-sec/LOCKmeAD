@@ -1,6 +1,6 @@
 {
   "Settings": {
-    "BaseDN": "DC=forest,DC=lol",
+    "BaseDN": "DC=corp,DC=local",
     "LogDirectory": "./Logs",
     "OUDefaults": {
       "ProtectedFromAccidentalDeletion": true

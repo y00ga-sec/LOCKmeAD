@@ -105,22 +105,15 @@ function Resolve-LOCKmeADConnection {
     .PARAMETER Forget
         Deletes any persisted connection profile and returns an implicit
         connection instead of resolving one.
-    .PARAMETER NonInteractive
-        Never prompts (Read-Host/Get-Credential). If explicit/saved/auto-detected
-        resolution all fall through, returns $null instead of prompting -- for
-        callers like the web server that must not block a console waiting for
-        input a browser-based UI will collect instead.
     .OUTPUTS
-        PSCustomObject with Server (string or $null) and Credential (PSCredential or $null),
-        or $null if -NonInteractive was set and no connection could be resolved without prompting.
+        PSCustomObject with Server (string or $null) and Credential (PSCredential or $null).
     #>
     [CmdletBinding()]
     param(
         [string]$Server,
         [PSCredential]$Credential,
         [switch]$Remember,
-        [switch]$Forget,
-        [switch]$NonInteractive
+        [switch]$Forget
     )
 
     if ($Forget) {
@@ -131,7 +124,6 @@ function Resolve-LOCKmeADConnection {
     # Explicit parameters always win
     if ($Server -or $Credential) {
         if (-not $Credential) {
-            if ($NonInteractive) { return $null }
             $Credential = Get-Credential -Message "Domain credentials for $Server"
         }
         $conn = [PSCustomObject]@{ Server = $Server; Credential = $Credential }
@@ -155,8 +147,6 @@ function Resolve-LOCKmeADConnection {
     if (Test-LOCKmeADDomainJoined) {
         return [PSCustomObject]@{ Server = $null; Credential = $null }
     }
-
-    if ($NonInteractive) { return $null }
 
     # Not joined and nothing supplied: require an explicit connection
     Write-Host ""
@@ -351,25 +341,205 @@ function Invoke-LOCKmeADRemote {
     if (-not $Credential) {
         # Implicit/Kerberos-SSO remoting to a specific different host -- no credential
         # to negotiate, so no Kerberos-vs-NTLM decision needed here.
-        return Invoke-Command -ComputerName $Server -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
+        $session = Get-LOCKmeADRemoteSession -Server $Server
+        return Invoke-Command -Session $session -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
     }
 
     if ($global:LOCKmeADAllowNtlmFallback -eq $true) {
-        return Invoke-Command -ComputerName $Server -Credential $Credential -Authentication Negotiate -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
+        $session = Get-LOCKmeADRemoteSession -Server $Server -Credential $Credential -Authentication Negotiate
+        return Invoke-Command -Session $session -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
     }
 
     try {
-        return Invoke-Command -ComputerName $Server -Credential $Credential -Authentication Kerberos -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList -ErrorAction Stop
+        $session = Get-LOCKmeADRemoteSession -Server $Server -Credential $Credential -Authentication Kerberos
+        return Invoke-Command -Session $session -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList -ErrorAction Stop
     }
     catch {
         $kerberosError = $_
 
-        if (-not (Request-LOCKmeADNtlmFallback -Target $Server -Reason $kerberosError)) {
-            throw "Kerberos authentication to '$Server' failed and NTLM fallback was declined: $kerberosError"
+        # Only a genuine authentication failure is worth retrying over NTLM. A transport or
+        # transient failure (WinRM under load, timeout, host unreachable) is NOT an auth
+        # problem: re-authenticating cannot fix it, and converting it into an NTLM prompt
+        # both hides the real cause and blocks non-interactive callers. Drop the cached
+        # session so the next call rebuilds it, then surface the original error unchanged.
+        if (-not (Test-LOCKmeADAuthenticationError -ErrorRecord $kerberosError)) {
+            Remove-LOCKmeADRemoteSession -Server $Server -Credential $Credential -Authentication Kerberos
+            throw
         }
 
-        Invoke-Command -ComputerName $Server -Credential $Credential -Authentication Negotiate -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
+        if (-not (Request-LOCKmeADNtlmFallback -Target $Server -Reason $kerberosError)) {
+            throw "Kerberos authentication to '$Server' failed and NTLM fallback was not permitted: $kerberosError"
+        }
+
+        $session = Get-LOCKmeADRemoteSession -Server $Server -Credential $Credential -Authentication Negotiate
+        Invoke-Command -Session $session -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
     }
+}
+
+function Get-LOCKmeADRemoteSession {
+    <#
+    .SYNOPSIS
+        Returns a reusable PSSession for -Server, creating it on first use and caching it
+        for the rest of the run.
+    .DESCRIPTION
+        Invoke-LOCKmeADRemote is called once per remote cmdlet invocation, and a single GPO
+        deployment issues hundreds of them (per GPO: Get-GPO, New-GPO, one Set-GPRegistryValue
+        per setting, then Get-GPInheritance/New-GPLink). Opening a brand-new WinRM session for
+        each one is both slow and fragile -- that session churn is what produced intermittent
+        remoting failures during GPO link creation. Caching one session per
+        target+auth+identity removes the churn entirely.
+
+        The cache lives at global scope so it survives this module being re-imported by each
+        LOCKmeAD feature module (same reasoning as $global:LOCKmeADAllowNtlmFallback). A
+        cached session is reused only while it is genuinely usable (Opened + Available);
+        otherwise it is discarded and rebuilt.
+    .PARAMETER Server
+        Target host for the session.
+    .PARAMETER Credential
+        Explicit credential. When $null, an implicit/SSO session is created.
+    .PARAMETER Authentication
+        WinRM authentication mechanism (e.g. Kerberos, Negotiate). Omit for the default.
+    .OUTPUTS
+        A PSSession ready to pass to Invoke-Command -Session.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Server,
+
+        [PSCredential]$Credential,
+
+        [string]$Authentication
+    )
+
+    if (-not $global:LOCKmeADSessionCache) { $global:LOCKmeADSessionCache = @{} }
+
+    $key = Get-LOCKmeADRemoteSessionKey -Server $Server -Credential $Credential -Authentication $Authentication
+
+    $existing = $global:LOCKmeADSessionCache[$key]
+    if ($existing -and $existing.State -eq 'Opened' -and $existing.Availability -eq 'Available') {
+        return $existing
+    }
+    if ($existing) {
+        Remove-PSSession -Session $existing -ErrorAction SilentlyContinue
+        $global:LOCKmeADSessionCache.Remove($key)
+    }
+
+    $sessionParam = @{ ComputerName = $Server; ErrorAction = 'Stop' }
+    if ($Credential)     { $sessionParam.Credential     = $Credential }
+    if ($Authentication) { $sessionParam.Authentication = $Authentication }
+
+    $session = New-PSSession @sessionParam
+    $global:LOCKmeADSessionCache[$key] = $session
+    return $session
+}
+
+function Get-LOCKmeADRemoteSessionKey {
+    <#
+    .SYNOPSIS
+        Builds the cache key identifying a remote session (target + auth mechanism + identity).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Server,
+
+        [PSCredential]$Credential,
+
+        [string]$Authentication
+    )
+
+    $identity = if ($Credential) { $Credential.UserName } else { '<implicit>' }
+    $authKey  = if ($Authentication) { $Authentication } else { '<default>' }
+    return "$Server|$authKey|$identity"
+}
+
+function Remove-LOCKmeADRemoteSession {
+    <#
+    .SYNOPSIS
+        Drops one cached session (when it has gone bad), or every cached session when called
+        with no -Server.
+    .DESCRIPTION
+        Call the parameterless form at the end of a run to release WinRM sessions on the
+        target instead of leaving them to idle-timeout.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$Server,
+
+        [PSCredential]$Credential,
+
+        [string]$Authentication
+    )
+
+    if (-not $global:LOCKmeADSessionCache) { return }
+
+    if (-not $Server) {
+        foreach ($session in @($global:LOCKmeADSessionCache.Values)) {
+            Remove-PSSession -Session $session -ErrorAction SilentlyContinue
+        }
+        $global:LOCKmeADSessionCache = @{}
+        return
+    }
+
+    $key = Get-LOCKmeADRemoteSessionKey -Server $Server -Credential $Credential -Authentication $Authentication
+    $existing = $global:LOCKmeADSessionCache[$key]
+    if ($existing) {
+        Remove-PSSession -Session $existing -ErrorAction SilentlyContinue
+        $global:LOCKmeADSessionCache.Remove($key)
+    }
+}
+
+function Test-LOCKmeADAuthenticationError {
+    <#
+    .SYNOPSIS
+        Returns $true only when an error genuinely represents an authentication failure that
+        retrying over NTLM could plausibly fix.
+    .DESCRIPTION
+        Invoke-LOCKmeADRemote previously treated ANY Invoke-Command failure as "Kerberos
+        failed" and offered NTLM fallback. That misclassifies transport and transient errors
+        (WinRM under load, timeouts, unreachable hosts), which NTLM cannot fix -- and in a
+        non-interactive context the resulting prompt turns a recoverable, clearly-diagnosable
+        error into an opaque one. Transient signatures are checked first so that a transport
+        error mentioning the word "authentication" is still classified as transport.
+    .PARAMETER ErrorRecord
+        The ErrorRecord captured from the failed remote call.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        $ErrorRecord
+    )
+
+    $text = @(
+        $ErrorRecord.Exception.Message
+        $ErrorRecord.FullyQualifiedErrorId
+        $ErrorRecord.CategoryInfo.Reason
+    ) -join ' '
+
+    # Transport / transient -- NTLM fallback would not help.
+    $transientPatterns = @(
+        'timed out', 'timeout', 'is busy', 'cannot connect', 'unable to connect',
+        'network path', 'rpc server is unavailable', 'maximum number of concurrent',
+        'connection.*(closed|reset|aborted)', 'not.*listening', 'shell.*not.*found',
+        'winrm.*(service|client).*(not|cannot)'
+    )
+    foreach ($pattern in $transientPatterns) {
+        if ($text -imatch $pattern) { return $false }
+    }
+
+    # Genuine authentication / authorization failures.
+    $authPatterns = @(
+        'kerberos', '\bkdc\b', 'realm', '\bspn\b', 'service principal name',
+        'authentication', 'access is denied', 'logon failure',
+        'user name or password', 'credential', 'unauthorized',
+        '0x8009030c', '0x8009030e', '0x80090322'
+    )
+    foreach ($pattern in $authPatterns) {
+        if ($text -imatch $pattern) { return $true }
+    }
+
+    return $false
 }
 
 function Request-LOCKmeADNtlmFallback {
@@ -400,13 +570,31 @@ function Request-LOCKmeADNtlmFallback {
     if ($global:LOCKmeADAllowNtlmFallback -eq $true)  { return $true }
     if ($global:LOCKmeADAllowNtlmFallback -eq $false) { return $false }
 
+    # No console to prompt on (scheduled task, CI): never block, and never let Read-Host's
+    # raw "PowerShell is in NonInteractive mode" error escape as if it were the underlying
+    # failure. Record the decision as denied so the caller fails fast with the real Kerberos
+    # error instead.
+    if (-not [Environment]::UserInteractive) {
+        Write-Warning "Kerberos authentication to '$Target' failed and there is no console available to ask about NTLM fallback; treating it as denied. Fix the Kerberos realm/KDC configuration on this host ('ksetup /setrealm', 'ksetup /addkdc'), or run from an interactive session to be asked. Reason: $Reason"
+        $global:LOCKmeADAllowNtlmFallback = $false
+        return $false
+    }
+
     # Not yet decided this session -- ask once, then cache the answer at global scope.
     Write-Host ""
     Write-Host "Kerberos authentication to '$Target' failed:" -ForegroundColor Yellow
     Write-Host "  $Reason" -ForegroundColor Yellow
     Write-Host "This is expected if the Kerberos realm/KDC isn't configured on this host." -ForegroundColor Yellow
     Write-Host "Fix: run 'ksetup /setrealm <REALM>' and 'ksetup /addkdc <REALM> <kdc-host>' as admin, then reboot." -ForegroundColor Yellow
-    $answer = Read-Host "Allow falling back to NTLM for the rest of this session? (y/N)"
+    try {
+        $answer = Read-Host "Allow falling back to NTLM for the rest of this session? (y/N)"
+    }
+    catch {
+        # UserInteractive can still be $true in a host that cannot actually read input.
+        Write-Warning "Could not prompt for the NTLM fallback decision ($_). Treating it as denied."
+        $global:LOCKmeADAllowNtlmFallback = $false
+        return $false
+    }
     $global:LOCKmeADAllowNtlmFallback = ($answer -match '^(y|yes)$')
     return $global:LOCKmeADAllowNtlmFallback
 }
@@ -458,6 +646,9 @@ Export-ModuleMember -Function @(
     'Get-LOCKmeADSysvolDrive',
     'Get-LOCKmeADDrive',
     'Invoke-LOCKmeADRemote',
+    'Get-LOCKmeADRemoteSession',
+    'Remove-LOCKmeADRemoteSession',
+    'Test-LOCKmeADAuthenticationError',
     'Request-LOCKmeADNtlmFallback',
     'New-LOCKmeADCimSession'
 )

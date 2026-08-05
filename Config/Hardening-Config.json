@@ -96,16 +96,16 @@
       "Enabled": true,
       "Parameters": {
         "SelfPermissionOUs": [
-          "OU=Workstations,OU=T2-Prod,DC=forest,DC=lol"
+          "OU=Workstations,OU=T2-Prod,DC=corp,DC=local"
         ],
         "ReadPasswordOUs": [
-          "OU=Workstations,OU=T2-Prod,DC=forest,DC=lol"
+          "OU=Workstations,OU=T2-Prod,DC=corp,DC=local"
         ],
         "ReadPasswordPrincipals": [
           "forest\\GDL-LAPS-Pwd-Read"
         ],
         "ResetPasswordOUs": [
-          "OU=Workstations,OU=T2-Prod,DC=forest,DC=lol"
+          "OU=Workstations,OU=T2-Prod,DC=corp,DC=local"
         ],
         "ResetPasswordPrincipals": [
           "forest\\GDL-LAPS-Pwd-Reset"

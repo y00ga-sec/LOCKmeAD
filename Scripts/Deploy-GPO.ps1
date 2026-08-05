@@ -224,6 +224,7 @@ $stats = @{
     GPOsCreated    = 0
     GPOsSkipped    = 0
     LinksCreated   = 0
+    LinksExisting  = 0
     GroupsCreated  = 0
     Errors         = 0
 }
@@ -408,13 +409,16 @@ foreach ($gpo in $config.GPOs) {
         foreach ($target in $gpo.LinkTargets) {
             if ([string]::IsNullOrWhiteSpace($target)) { continue }
             try {
-                Set-GPOLink -GPOName $gpo.Name `
+                # Set-GPOLink reports whether it actually created the link ($false = the GPO
+                # was already linked there), so a no-op re-run no longer reports links it
+                # did not create.
+                $linkCreated = Set-GPOLink -GPOName $gpo.Name `
                              -TargetOU $target `
                              -Server $targetServer `
                                         -Credential $connection.Credential `
                              -LogDirectory $logDir `
                              -WhatIf:$WhatIfPreference
-                $stats.LinksCreated++
+                if ($linkCreated) { $stats.LinksCreated++ } else { $stats.LinksExisting++ }
             }
             catch {
                 Write-GPOLog -Message "Link '$($gpo.Name)' -> '$target' failed: $_" -Level Error -LogDirectory $logDir
@@ -440,6 +444,7 @@ Write-Host "  GPOs deployed$modeLabel       : $($stats.GPOsCreated)" -Foreground
 Write-Host "  GPOs skipped (disabled) : $($stats.GPOsSkipped)" -ForegroundColor Yellow
 Write-Host "  Filtering groups        : $($stats.GroupsCreated)" -ForegroundColor Cyan
 Write-Host "  Links created           : $($stats.LinksCreated)" -ForegroundColor Cyan
+Write-Host "  Links already present   : $($stats.LinksExisting)" -ForegroundColor DarkGray
 
 if ($stats.Errors -gt 0) {
     Write-Host "  Errors                  : $($stats.Errors)" -ForegroundColor Red
