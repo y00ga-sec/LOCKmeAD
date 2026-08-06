@@ -102,13 +102,13 @@
           "OU=Workstations,OU=T2-Prod,DC=corp,DC=local"
         ],
         "ReadPasswordPrincipals": [
-          "forest\\GDL-LAPS-Pwd-Read"
+          "CORP\\GDL-LAPS-Pwd-Read"
         ],
         "ResetPasswordOUs": [
           "OU=Workstations,OU=T2-Prod,DC=corp,DC=local"
         ],
         "ResetPasswordPrincipals": [
-          "forest\\GDL-LAPS-Pwd-Reset"
+          "CORP\\GDL-LAPS-Pwd-Reset"
         ]
       }
     }

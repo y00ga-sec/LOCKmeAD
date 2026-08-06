@@ -1468,6 +1468,70 @@ function Set-HardeningCentralStore {
 }
 
 # ============================================================================
+# LAPS command dispatch (shared by ExtendLAPSSchema / ConfigureLAPSADPermissions)
+# ============================================================================
+
+function Invoke-HardeningLapsCommand {
+    <#
+    .SYNOPSIS
+        Runs a Windows LAPS module command, either in-process or inside a WinRM session on
+        the target domain controller.
+    .DESCRIPTION
+        The LAPS module's cmdlets (Update-LapsADSchema, Set-LapsAD*, Find-LapsADExtendedRights)
+        accept -Server but never -Credential -- exactly the gap the GroupPolicy module has,
+        and handled here the same way: Invoke-LOCKmeADRemote runs the scriptblock in-process
+        when there is no credential (zero behavior change for a domain-joined run), and inside
+        a WinRM session on -Server when there is one, so the cmdlet executes under that domain
+        identity's own Windows token instead of a credential it cannot accept.
+
+        This replaces the previous guidance of launching the whole tool under
+        'runas /netonly': runas.exe reads its password straight from the console and cannot
+        be handed a PSCredential, so the credential collected by the GUI could never reach it.
+
+        Consequence worth knowing: with an explicit credential the LAPS module only needs to
+        be present on the target DC, not on the host running LOCKmeAD.
+    .PARAMETER Command
+        Name of the LAPS cmdlet to invoke.
+    .PARAMETER Parameters
+        Splat hashtable for that cmdlet. -Server is added here rather than by the caller,
+        because whether it is wanted at all depends on where the command ends up running.
+    .PARAMETER Server
+        Target domain controller.
+    .PARAMETER Credential
+        Explicit credential. When $null, the command runs in-process.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Command,
+
+        [hashtable]$Parameters = @{},
+
+        [string]$Server,
+
+        [PSCredential]$Credential
+    )
+
+    # In explicit-credential mode the cmdlet already runs ON $Server, so it must bind to that
+    # host's own directory service: adding -Server would turn a local bind into a second
+    # network hop, which the remote session's token cannot authenticate (the classic WinRM
+    # double-hop). In implicit mode there is no session, so -Server is what targets the DC.
+    $effectiveParams = @{}
+    foreach ($key in $Parameters.Keys) { $effectiveParams[$key] = $Parameters[$key] }
+    if (-not $Credential -and $Server) { $effectiveParams.Server = $Server }
+
+    Invoke-LOCKmeADRemote -Server $Server -Credential $Credential -ArgumentList $Command, $effectiveParams -ScriptBlock {
+        param($Command, $Parameters)
+
+        if (-not (Get-Module -ListAvailable -Name LAPS)) {
+            throw "The Windows LAPS PowerShell module is not available on '$env:COMPUTERNAME'. It ships in-box with Windows Server 2019+ and Windows 10+ from the April 11 2023 update onward -- install the latest cumulative update on that host."
+        }
+        Import-Module LAPS -ErrorAction Stop
+        & $Command @Parameters
+    }
+}
+
+# ============================================================================
 # Task: ExtendLAPSSchema
 # ============================================================================
 
@@ -1478,13 +1542,11 @@ function Update-HardeningLAPSSchema {
     .PARAMETER LogDirectory
         Log directory.
     .PARAMETER Server
-        Target DC for all AD operations. Required when not domain-joined.
+        Target DC for the AD pre-check. Required when not domain-joined.
     .PARAMETER Credential
-        Explicit credential to authenticate with. NOTE: the LAPS PowerShell module's
-        cmdlets (Update-LapsADSchema, Set-LapsAD*) only accept -Server, not -Credential —
-        when running off-domain this task still needs the *process* to be running under
-        the target identity (e.g. launched via runas /netonly) for schema/permission writes
-        to succeed, even though -Server lets it target an explicit DC.
+        Explicit credential to authenticate with. The LAPS cmdlets have no -Credential
+        parameter of their own, so the extension itself is dispatched to the schema master
+        over WinRM by Invoke-HardeningLapsCommand -- see that function for why.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -1496,22 +1558,33 @@ function Update-HardeningLAPSSchema {
     $serverParam = @{}
     if ($Server)     { $serverParam.Server     = $Server }
     if ($Credential) { $serverParam.Credential = $Credential }
-    $lapsServerParam = @{}
-    if ($Server) { $lapsServerParam.Server = $Server }
 
-    # Check if schema is already extended by looking for the ms-LAPS-Password attribute
+    # A schema object carries two different names and they are NOT interchangeable in a
+    # filter: cn/name is the hyphenated form ("ms-LAPS-Password") while lDAPDisplayName is
+    # the camelCase form ("msLAPS-Password"). Filtering lDAPDisplayName here keeps this
+    # consistent with Test-HardeningLAPSSchema and makes which form is meant unambiguous --
+    # 'Name -eq "msLAPS-Password"' silently matches nothing and would make this idempotency
+    # check never fire.
     $schemaNC = (Get-ADRootDSE @serverParam).schemaNamingContext
-    $lapsAttribute = Get-ADObject -SearchBase $schemaNC -Filter { Name -eq "ms-LAPS-Password" } @serverParam -ErrorAction SilentlyContinue
+    $lapsAttribute = Get-ADObject -SearchBase $schemaNC -LDAPFilter "(lDAPDisplayName=msLAPS-Password)" @serverParam -ErrorAction SilentlyContinue
 
     if ($lapsAttribute) {
-        Write-HardeningLog -Message "LAPS schema extension is already present (ms-LAPS-Password attribute exists)." -Level Warning -LogDirectory $LogDirectory
+        Write-HardeningLog -Message "LAPS schema extension is already present (msLAPS-Password attribute exists)." -Level Warning -LogDirectory $LogDirectory
         return
     }
 
-    if ($PSCmdlet.ShouldProcess($schemaNC, "Extend schema for Windows LAPS")) {
+    # Only the schema master owns the schema partition. Targeting it explicitly also keeps the
+    # remote call to a single hop: the cmdlet binds to the directory service of the very host
+    # its WinRM session is running on.
+    $schemaMaster = (Get-ADForest @serverParam).SchemaMaster
+
+    if ($PSCmdlet.ShouldProcess($schemaNC, "Extend schema for Windows LAPS (via $schemaMaster)")) {
         try {
-            Update-LapsADSchema -Confirm:$false @lapsServerParam
-            Write-HardeningLog -Message "AD schema extended for Windows LAPS." -Level Success -LogDirectory $LogDirectory
+            Invoke-HardeningLapsCommand -Command 'Update-LapsADSchema' `
+                                        -Parameters @{ Confirm = $false } `
+                                        -Server $schemaMaster `
+                                        -Credential $Credential | Out-Null
+            Write-HardeningLog -Message "AD schema extended for Windows LAPS (via $schemaMaster)." -Level Success -LogDirectory $LogDirectory
         }
         catch {
             Write-HardeningLog -Message "Error extending LAPS schema: $_" -Level Error -LogDirectory $LogDirectory
@@ -1519,7 +1592,7 @@ function Update-HardeningLAPSSchema {
         }
     }
     else {
-        Write-HardeningLog -Message "[WhatIf] AD schema would be extended for Windows LAPS." -Level Info -LogDirectory $LogDirectory
+        Write-HardeningLog -Message "[WhatIf] AD schema would be extended for Windows LAPS (via $schemaMaster)." -Level Info -LogDirectory $LogDirectory
     }
 }
 
@@ -1559,9 +1632,11 @@ function Set-HardeningLAPSADPermissions {
     .PARAMETER LogDirectory
         Log directory.
     .PARAMETER Server
-        Target DC for all AD operations. NOTE: as with Update-HardeningLAPSSchema, the
-        Set-LapsAD* cmdlets only accept -Server, not -Credential — running fully
-        off-domain still requires the process itself to run under the target identity.
+        Target DC for all LAPS operations.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. The Set-LapsAD* cmdlets have no
+        -Credential parameter of their own, so each call is dispatched to -Server over WinRM
+        by Invoke-HardeningLapsCommand -- see that function for why.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -1571,18 +1646,18 @@ function Set-HardeningLAPSADPermissions {
         [string[]]$ResetPasswordOUs        = @(),
         [string[]]$ResetPasswordPrincipals = @(),
         [string]$LogDirectory,
-        [string]$Server
+        [string]$Server,
+        [PSCredential]$Credential
     )
-
-    $lapsServerParam = @{}
-    if ($Server) { $lapsServerParam.Server = $Server }
 
     # --- Set-LapsADComputerSelfPermission ---
     foreach ($ou in $SelfPermissionOUs) {
         if ([string]::IsNullOrWhiteSpace($ou)) { continue }
         if ($PSCmdlet.ShouldProcess($ou, "Set-LapsADComputerSelfPermission")) {
             try {
-                Set-LapsADComputerSelfPermission -Identity $ou @lapsServerParam
+                Invoke-HardeningLapsCommand -Command 'Set-LapsADComputerSelfPermission' `
+                                            -Parameters @{ Identity = $ou } `
+                                            -Server $Server -Credential $Credential | Out-Null
                 Write-HardeningLog -Message "Set LAPS computer self-permission on '$ou'." -Level Success -LogDirectory $LogDirectory
             }
             catch {
@@ -1602,7 +1677,9 @@ function Set-HardeningLAPSADPermissions {
             $principalList = $ReadPasswordPrincipals -join ', '
             if ($PSCmdlet.ShouldProcess($ou, "Set-LapsADReadPasswordPermission for: $principalList")) {
                 try {
-                    Set-LapsADReadPasswordPermission -Identity $ou -AllowedPrincipals $ReadPasswordPrincipals @lapsServerParam
+                    Invoke-HardeningLapsCommand -Command 'Set-LapsADReadPasswordPermission' `
+                                                -Parameters @{ Identity = $ou; AllowedPrincipals = $ReadPasswordPrincipals } `
+                                                -Server $Server -Credential $Credential | Out-Null
                     Write-HardeningLog -Message "Set LAPS read permission on '$ou' for: $principalList." -Level Success -LogDirectory $LogDirectory
                 }
                 catch {
@@ -1626,7 +1703,9 @@ function Set-HardeningLAPSADPermissions {
             $principalList = $ResetPasswordPrincipals -join ', '
             if ($PSCmdlet.ShouldProcess($ou, "Set-LapsADResetPasswordPermission for: $principalList")) {
                 try {
-                    Set-LapsADResetPasswordPermission -Identity $ou -AllowedPrincipals $ResetPasswordPrincipals @lapsServerParam
+                    Invoke-HardeningLapsCommand -Command 'Set-LapsADResetPasswordPermission' `
+                                                -Parameters @{ Identity = $ou; AllowedPrincipals = $ResetPasswordPrincipals } `
+                                                -Server $Server -Credential $Credential | Out-Null
                     Write-HardeningLog -Message "Set LAPS reset permission on '$ou' for: $principalList." -Level Success -LogDirectory $LogDirectory
                 }
                 catch {
@@ -2484,8 +2563,6 @@ function Test-HardeningLAPSADPermissions {
     $serverParam = @{}
     if ($Server)     { $serverParam.Server     = $Server }
     if ($Credential) { $serverParam.Credential = $Credential }
-    $lapsServerParam = @{}
-    if ($Server) { $lapsServerParam.Server = $Server }
     try {
         $domain   = Get-ADDomain @serverParam
         $allOUDNs = @(Get-ADOrganizationalUnit -Filter * @serverParam -ErrorAction Stop | Select-Object -ExpandProperty DistinguishedName)
@@ -2495,7 +2572,9 @@ function Test-HardeningLAPSADPermissions {
         $lines = @()
         foreach ($dn in $allTargets) {
             try {
-                $rights = Find-LapsADExtendedRights -Identity $dn @lapsServerParam -ErrorAction Stop
+                $rights = Invoke-HardeningLapsCommand -Command 'Find-LapsADExtendedRights' `
+                                                      -Parameters @{ Identity = $dn; ErrorAction = 'Stop' } `
+                                                      -Server $Server -Credential $Credential
                 $delegated = @($rights.ExtendedRightHolders | Where-Object { $_ -notmatch '^NT AUTHORITY\\' })
                 if ($delegated.Count -gt 0) {
                     $lines += "$dn`n  $($delegated -join ', ')"

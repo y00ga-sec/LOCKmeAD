@@ -245,15 +245,16 @@ foreach ($task in $config.Tasks) {
                                             -WhatIf:$WhatIfPreference
             }
             'ConfigureLAPSADPermissions' {
-                # Set-HardeningLAPSADPermissions only accepts -Server (the Set-LapsAD*
-                # cmdlets don't support delegated credentials — see the function's docs).
+                # The Set-LapsAD* cmdlets have no -Credential parameter, so the credential is
+                # honored by dispatching each call to $targetServer over WinRM — see
+                # Invoke-HardeningLapsCommand in the Hardening module.
                 Set-HardeningLAPSADPermissions `
                     -SelfPermissionOUs       @($task.Parameters.SelfPermissionOUs) `
                     -ReadPasswordOUs         @($task.Parameters.ReadPasswordOUs) `
                     -ReadPasswordPrincipals  @($task.Parameters.ReadPasswordPrincipals) `
                     -ResetPasswordOUs        @($task.Parameters.ResetPasswordOUs) `
                     -ResetPasswordPrincipals @($task.Parameters.ResetPasswordPrincipals) `
-                    -Server $targetServer `
+                    -Server $targetServer -Credential $connection.Credential `
                     -LogDirectory $logDir `
                     -WhatIf:$WhatIfPreference
             }
