@@ -386,7 +386,15 @@ function New-JITDeploymentGPO {
                 param($GPOName, $Server)
                 $p = @{}
                 if ($Server) { $p.Server = $Server }
-                Set-GPPermission -Name $GPOName -PermissionLevel None -TargetType Group -TargetName "Authenticated Users" -Replace @p
+                # -Confirm:$false is required, not cosmetic: removing Authenticated Users makes
+                # Set-GPPermission raise its own KB3163622 confirmation prompt, which blocks the
+                # deployment on a console read. The GUI pipes this script's output and cannot
+                # surface that prompt, so the window just appears frozen -- and launched without
+                # an attached console it would wait forever. The warning does not apply here
+                # anyway: it concerns USER policy processing, and this GPO is machine-only (a
+                # startup script under Machine\Scripts). Step 4 below re-grants GpoApply to the
+                # filtering group, which is the whole point of removing Authenticated Users.
+                Set-GPPermission -Name $GPOName -PermissionLevel None -TargetType Group -TargetName "Authenticated Users" -Replace -Confirm:$false @p
             } | Out-Null
             Write-JITLog -Message "Removed 'Authenticated Users' from GPO '$GPOName' security filtering." -Level Info -LogDirectory $LogDirectory
         }
