@@ -193,8 +193,33 @@ if (-not $WhatIfPreference -and -not $NoConfirm) {
 Write-RBACLog -Message "Starting RBAC deployment..." -Level Info -LogDirectory $logDir
 Write-Host ""
 
+# Connection splat reused by the group existence pre-checks below.
+$connParam = @{ Server = $targetServer }
+if ($connection.Credential) { $connParam.Credential = $connection.Credential }
+
+function Test-RBACGroupPresent([string]$Name) {
+    <#
+    .SYNOPSIS
+        Returns whether an AD group already exists, so the caller can tell "created" from
+        "already there" before calling New-RBACGroup.
+    .DESCRIPTION
+        New-RBACGroup returns the group object whether it created it or found it, so the
+        caller cannot otherwise distinguish the two: a no-op re-run reported a full
+        deployment, and a config that references the same DL group from two roles (which
+        RBAC-Config.json does, by design) inflated the count even on a first run.
+
+        -ErrorAction SilentlyContinue is NOT enough here: Get-ADGroup -Identity raises
+        ADIdentityNotFoundException as a TERMINATING error, which SilentlyContinue does not
+        suppress. Same typed-catch idiom, and for the same reason, as
+        Deploy-TieringOUStructure.
+    #>
+    try   { return $null -ne (Get-ADGroup -Identity $Name @connParam -ErrorAction Stop) }
+    catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] { return $false }
+}
+
 $stats = @{
     GroupsCreated            = 0
+    GroupsExisting           = 0
     MembershipsSet           = 0
     RootGroupsMemberships    = 0
     NTFSPermissionsSet       = 0
@@ -210,6 +235,7 @@ foreach ($role in $config.Roles) {
     # --- Global Group ---
     $ggOU = if ($role.GlobalGroup.OU) { $role.GlobalGroup.OU } else { $config.Settings.DefaultOU.Global }
 
+    $ggPresent = Test-RBACGroupPresent $role.GlobalGroup.Name
     try {
         New-RBACGroup -Name $role.GlobalGroup.Name `
                       -Description $role.GlobalGroup.Description `
@@ -219,7 +245,7 @@ foreach ($role in $config.Roles) {
                                         -Credential $connection.Credential `
                       -LogDirectory $logDir `
                       -WhatIf:$WhatIfPreference
-        $stats.GroupsCreated++
+        if ($ggPresent) { $stats.GroupsExisting++ } else { $stats.GroupsCreated++ }
     }
     catch {
         Write-RBACLog -Message "Failed to create Global group '$($role.GlobalGroup.Name)': $_" -Level Error -LogDirectory $logDir
@@ -251,6 +277,7 @@ foreach ($role in $config.Roles) {
         $dlOU = if ($dlGroup.OU) { $dlGroup.OU } else { $config.Settings.DefaultOU.DomainLocal }
 
         # Create DL group
+        $dlPresent = Test-RBACGroupPresent $dlGroup.Name
         try {
             New-RBACGroup -Name $dlGroup.Name `
                           -Description $dlGroup.Description `
@@ -260,7 +287,7 @@ foreach ($role in $config.Roles) {
                                         -Credential $connection.Credential `
                           -LogDirectory $logDir `
                           -WhatIf:$WhatIfPreference
-            $stats.GroupsCreated++
+            if ($dlPresent) { $stats.GroupsExisting++ } else { $stats.GroupsCreated++ }
         }
         catch {
             Write-RBACLog -Message "Failed to create DL group '$($dlGroup.Name)': $_" -Level Error -LogDirectory $logDir
@@ -349,6 +376,7 @@ if ($config.RootGroups) {
         $rgOU = if ($rootGroup.OU) { $rootGroup.OU } else { $config.Settings.DefaultOU.DomainLocal }
 
         # Create root group (DomainLocal)
+        $rgPresent = Test-RBACGroupPresent $rootGroup.Name
         try {
             New-RBACGroup -Name $rootGroup.Name `
                           -Description $rootGroup.Description `
@@ -358,7 +386,7 @@ if ($config.RootGroups) {
                                         -Credential $connection.Credential `
                           -LogDirectory $logDir `
                           -WhatIf:$WhatIfPreference
-            $stats.GroupsCreated++
+            if ($rgPresent) { $stats.GroupsExisting++ } else { $stats.GroupsCreated++ }
         }
         catch {
             Write-RBACLog -Message "Failed to create root group '$($rootGroup.Name)': $_" -Level Error -LogDirectory $logDir
@@ -419,6 +447,7 @@ Write-Host ""
 $modeLabel = if ($WhatIfPreference) { " (SIMULATION)" } else { "" }
 
 Write-Host "  Groups created$modeLabel          : $($stats.GroupsCreated)" -ForegroundColor Cyan
+Write-Host "  Groups already present     : $($stats.GroupsExisting)" -ForegroundColor DarkGray
 Write-Host "  AGDLP memberships$modeLabel       : $($stats.MembershipsSet)" -ForegroundColor Cyan
 Write-Host "  Root memberships$modeLabel        : $($stats.RootGroupsMemberships)" -ForegroundColor Cyan
 Write-Host "  NTFS permissions$modeLabel        : $($stats.NTFSPermissionsSet)" -ForegroundColor Cyan
