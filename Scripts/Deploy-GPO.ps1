@@ -220,12 +220,36 @@ if (-not $WhatIfPreference -and -not $NoConfirm) {
 Write-GPOLog -Message "Starting GPO deployment..." -Level Info -LogDirectory $logDir
 Write-Host ""
 
+# Connection splat reused by the filtering group existence pre-checks below.
+$connParam = @{ Server = $targetServer }
+if ($connection.Credential) { $connParam.Credential = $connection.Credential }
+
+function Test-GPOFilteringGroupPresent([string]$Name) {
+    <#
+    .SYNOPSIS
+        Returns whether a filtering group already exists, so the caller can tell "created"
+        from "already there" before calling New-GPOFilteringGroup.
+    .DESCRIPTION
+        New-GPOFilteringGroup returns the group object whether it created it or found an
+        existing one, so incrementing the counter unconditionally made every re-run claim it
+        had created all of them -- 44 groups on a 22-GPO config where nothing was created.
+        Same defect, and same fix, as Deploy-RBAC.ps1 and Deploy-TieringOUStructure.
+
+        -ErrorAction SilentlyContinue is NOT enough: Get-ADGroup -Identity raises
+        ADIdentityNotFoundException as a TERMINATING error that SilentlyContinue does not
+        suppress, hence the typed catch.
+    #>
+    try   { return $null -ne (Get-ADGroup -Identity $Name @connParam -ErrorAction Stop) }
+    catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] { return $false }
+}
+
 $stats = @{
     GPOsCreated    = 0
     GPOsSkipped    = 0
     LinksCreated   = 0
     LinksExisting  = 0
     GroupsCreated  = 0
+    GroupsExisting = 0
     Errors         = 0
 }
 
@@ -359,6 +383,9 @@ foreach ($gpo in $config.GPOs) {
         $denyGroupName  = "GPO_Deny_$($gpo.Name)"
 
         try {
+            $applyPresent = Test-GPOFilteringGroupPresent $applyGroupName
+            $denyPresent  = Test-GPOFilteringGroupPresent $denyGroupName
+
             New-GPOFilteringGroup -Name $applyGroupName `
                                    -Description "Apply group for GPO '$($gpo.Name)'" `
                                    -OU $filteringOU `
@@ -373,7 +400,9 @@ foreach ($gpo in $config.GPOs) {
                                         -Credential $connection.Credential `
                                    -LogDirectory $logDir `
                                    -WhatIf:$WhatIfPreference
-            $stats.GroupsCreated += 2
+            foreach ($wasPresent in @($applyPresent, $denyPresent)) {
+                if ($wasPresent) { $stats.GroupsExisting++ } else { $stats.GroupsCreated++ }
+            }
 
             Set-GPOFilteringPermission -GPOName $gpo.Name `
                                         -ApplyGroupName $applyGroupName `
@@ -442,7 +471,8 @@ $modeLabel = if ($WhatIfPreference) { " (SIMULATION)" } else { "" }
 
 Write-Host "  GPOs deployed$modeLabel       : $($stats.GPOsCreated)" -ForegroundColor Cyan
 Write-Host "  GPOs skipped (disabled) : $($stats.GPOsSkipped)" -ForegroundColor Yellow
-Write-Host "  Filtering groups        : $($stats.GroupsCreated)" -ForegroundColor Cyan
+Write-Host "  Filtering groups created: $($stats.GroupsCreated)" -ForegroundColor Cyan
+Write-Host "  Filtering groups present: $($stats.GroupsExisting)" -ForegroundColor DarkGray
 Write-Host "  Links created           : $($stats.LinksCreated)" -ForegroundColor Cyan
 Write-Host "  Links already present   : $($stats.LinksExisting)" -ForegroundColor DarkGray
 
