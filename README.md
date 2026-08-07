@@ -75,6 +75,3 @@ For detailed configuration guides, JSON schema references, and deployment walkth
 ---
 
 ## TO DO :
-
-- [x] LAPS config GPO
-- [x] Create a new hardening task for securing DNS : Removing default DNS records creation for Domain Users and only keeping it for Domain Computers
