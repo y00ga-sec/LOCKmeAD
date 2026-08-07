@@ -252,6 +252,31 @@ function New-PSOPasswordPolicy {
     $lockDuration = [TimeSpan]::FromMinutes($LockoutDurationMinutes)
     $lockWindow   = [TimeSpan]::FromMinutes($LockoutObservationWindowMinutes)
 
+    # Settings shared by the create and update paths.
+    #
+    # Description is added only when it actually has a value. An empty one does not mean "blank
+    # the attribute": New-ADFineGrainedPasswordPolicy -Description '' writes nothing, so the
+    # attribute stays ABSENT in the directory. Passing -Description '' to Set-... then asks for a
+    # Replace on an attribute that holds no value, which AD rejects with an
+    # ADInvalidOperationException whose message is the bare word "replace".
+    #
+    # That made the module non-idempotent with its own shipped config: PSO-Config.json ships
+    # Description "" on every policy, so the first deployment succeeded and every re-deployment
+    # failed on all of them.
+    $psoSettings = @{
+        Precedence                  = $Precedence
+        ComplexityEnabled           = $ComplexityEnabled
+        MinPasswordLength           = $MinPasswordLength
+        MinPasswordAge              = $minPwdAge
+        MaxPasswordAge              = $maxPwdAge
+        PasswordHistoryCount        = $PasswordHistoryCount
+        LockoutThreshold            = $LockoutThreshold
+        LockoutDuration             = $lockDuration
+        LockoutObservationWindow    = $lockWindow
+        ReversibleEncryptionEnabled = $ReversibleEncryptionEnabled
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Description)) { $psoSettings.Description = $Description }
+
     $existingPSO = $null
     try {
         $existingPSO = Get-ADFineGrainedPasswordPolicy -Identity $Name @serverParam -ErrorAction Stop
@@ -265,18 +290,7 @@ function New-PSOPasswordPolicy {
 
         if ($PSCmdlet.ShouldProcess($Name, "Update Fine-Grained Password Policy")) {
             try {
-                Set-ADFineGrainedPasswordPolicy -Identity $Name `
-                    -Description $Description `
-                    -Precedence $Precedence `
-                    -ComplexityEnabled $ComplexityEnabled `
-                    -MinPasswordLength $MinPasswordLength `
-                    -MinPasswordAge $minPwdAge `
-                    -MaxPasswordAge $maxPwdAge `
-                    -PasswordHistoryCount $PasswordHistoryCount `
-                    -LockoutThreshold $LockoutThreshold `
-                    -LockoutDuration $lockDuration `
-                    -LockoutObservationWindow $lockWindow `
-                    -ReversibleEncryptionEnabled $ReversibleEncryptionEnabled `
+                Set-ADFineGrainedPasswordPolicy -Identity $Name @psoSettings `
                     -ProtectedFromAccidentalDeletion $ProtectedFromAccidentalDeletion `
                     @serverParam
 
@@ -296,19 +310,7 @@ function New-PSOPasswordPolicy {
             try {
                 # Create without ProtectedFromAccidentalDeletion first, then set it separately
                 # (AD rejects setting protection during creation on some environments)
-                New-ADFineGrainedPasswordPolicy -Name $Name `
-                    -Description $Description `
-                    -Precedence $Precedence `
-                    -ComplexityEnabled $ComplexityEnabled `
-                    -MinPasswordLength $MinPasswordLength `
-                    -MinPasswordAge $minPwdAge `
-                    -MaxPasswordAge $maxPwdAge `
-                    -PasswordHistoryCount $PasswordHistoryCount `
-                    -LockoutThreshold $LockoutThreshold `
-                    -LockoutDuration $lockDuration `
-                    -LockoutObservationWindow $lockWindow `
-                    -ReversibleEncryptionEnabled $ReversibleEncryptionEnabled `
-                    @serverParam
+                New-ADFineGrainedPasswordPolicy -Name $Name @psoSettings @serverParam
 
                 if ($ProtectedFromAccidentalDeletion) {
                     Set-ADFineGrainedPasswordPolicy -Identity $Name `
