@@ -7,6 +7,9 @@
 # would only be a redundant second layer.
 
 Import-Module (Join-Path $PSScriptRoot "..\Common\Connection.psm1") -Force
+# Remove-GPOAuthenticatedUsers is reused for this module's own GPO -- see step 3 in
+# New-JITDeploymentGPO for why Set-GPPermission cannot do that job.
+Import-Module (Join-Path $PSScriptRoot "..\GPO\GPO.psm1") -Force
 
 # Module variable for the current log file path
 $script:LogFilePath = $null
@@ -380,22 +383,24 @@ function New-JITDeploymentGPO {
     }
 
     # --- Step 3: Remove Authenticated Users from GPO security filtering ---
+    #
+    # This deliberately does NOT use Set-GPPermission. Removing Authenticated Users makes that
+    # cmdlet raise its own KB3163622 warning through ShouldContinue, which -Confirm:$false does
+    # not suppress (that only governs ShouldProcess) and which no -Force can bypass, because
+    # Set-GPPermission has no -Force parameter. The consequences are not cosmetic: with a console
+    # attached the deployment stops waiting for a keypress the GUI cannot surface, and with none
+    # it fails outright with "PowerShell is in NonInteractive mode" -- so a scheduled task or a
+    # GUI launched from a shortcut could never deploy this module.
+    #
+    # Remove-GPOAuthenticatedUsers does the same job by editing the GPO's AD ACL and syncing
+    # SYSVOL directly. That is already how the 22 GPOs of the GPO module get filtered, which is
+    # why none of them ever prompts.
     if ($PSCmdlet.ShouldProcess($GPOName, "Remove Authenticated Users from GPO security filtering")) {
         try {
-            Invoke-LOCKmeADRemote -Server $Server -Credential $Credential -ArgumentList $GPOName, $gpoServer -ScriptBlock {
-                param($GPOName, $Server)
-                $p = @{}
-                if ($Server) { $p.Server = $Server }
-                # -Confirm:$false is required, not cosmetic: removing Authenticated Users makes
-                # Set-GPPermission raise its own KB3163622 confirmation prompt, which blocks the
-                # deployment on a console read. The GUI pipes this script's output and cannot
-                # surface that prompt, so the window just appears frozen -- and launched without
-                # an attached console it would wait forever. The warning does not apply here
-                # anyway: it concerns USER policy processing, and this GPO is machine-only (a
-                # startup script under Machine\Scripts). Step 4 below re-grants GpoApply to the
-                # filtering group, which is the whole point of removing Authenticated Users.
-                Set-GPPermission -Name $GPOName -PermissionLevel None -TargetType Group -TargetName "Authenticated Users" -Replace -Confirm:$false @p
-            } | Out-Null
+            Remove-GPOAuthenticatedUsers -GPOName $GPOName `
+                                         -Server $Server `
+                                         -Credential $Credential `
+                                         -LogDirectory $LogDirectory
             Write-JITLog -Message "Removed 'Authenticated Users' from GPO '$GPOName' security filtering." -Level Info -LogDirectory $LogDirectory
         }
         catch {
