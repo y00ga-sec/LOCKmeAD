@@ -52,7 +52,15 @@ if (-not (Test-Path $modulePath)) {
 Import-Module $modulePath -Force
 Import-Module (Join-Path $rootDir "Modules\Common\Connection.psm1") -Force
 
-$connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
+# A refused connection must read as a clear operator error, not as an unhandled
+# exception: Resolve-LOCKmeADConnection throws when the account is not a Domain Admin.
+try {
+    $connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
+}
+catch {
+    Write-Host "`n[ERROR] $($_.Exception.Message)`n" -ForegroundColor Red
+    exit 1
+}
 
 # ============================================================================
 # Load configuration

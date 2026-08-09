@@ -66,6 +66,172 @@ function Save-LOCKmeADConnection {
     $Connection | Export-Clixml -Path $profilePath -Force
 }
 
+function Get-LOCKmeADSavedConnection {
+    <#
+    .SYNOPSIS
+        Returns the persisted connection profile, or $null when there is none usable.
+    .DESCRIPTION
+        Reading the profile used to be inlined in Resolve-LOCKmeADConnection, which meant only
+        callers willing to go through that function -- and therefore willing to be prompted --
+        could benefit from it. Launch-GUI.ps1 cannot: it has to decide whether to show its own
+        connection dialog *before* anything prompts on the console. Exposing the lookup on its own
+        lets the GUI honour a saved profile instead of asking again every single launch.
+
+        Never prompts, never throws: a missing, unreadable or incomplete profile simply yields
+        $null so the caller can fall back.
+    .OUTPUTS
+        PSCustomObject with Server and Credential, or $null.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $profilePath = Get-LOCKmeADConnectionProfilePath
+    if (-not (Test-Path $profilePath)) { return $null }
+
+    try {
+        $saved = Import-Clixml -Path $profilePath
+        if ($saved.Server -and $saved.Credential) {
+            return [PSCustomObject]@{ Server = $saved.Server; Credential = $saved.Credential }
+        }
+    }
+    catch { }
+    return $null
+}
+
+function Test-LOCKmeADConnection {
+    <#
+    .SYNOPSIS
+        Returns $true if the given connection can actually bind to Active Directory.
+    .DESCRIPTION
+        Used to sanity-check a restored profile before trusting it. A saved credential goes stale
+        the moment the password changes, and without this the GUI would start up "connected",
+        then fail on every single module with an authentication error far from its cause.
+    .PARAMETER Connection
+        Object with Server and Credential, as returned by Get-LOCKmeADSavedConnection.
+    #>
+    [CmdletBinding()]
+    param([PSCustomObject]$Connection)
+
+    if (-not $Connection) { return $false }
+    try {
+        $param = New-LOCKmeADConnectionParam -Connection $Connection
+        $null = Get-ADDomain @param -ErrorAction Stop
+        return $true
+    }
+    catch { return $false }
+}
+
+function Test-LOCKmeADPrivilege {
+    <#
+    .SYNOPSIS
+        Reports whether the identity behind a connection is a Domain Admin, and whether it is also
+        a Schema Admin.
+    .DESCRIPTION
+        Every module writes to the directory, so a connection that cannot write is worthless --
+        and worse than worthless before Set-Acl gained -ErrorAction Stop, when a non-privileged
+        account produced a fully green report having applied nothing at all. This is the check
+        that refuses such a connection up front instead of discovering it 44 access denials later.
+
+        Membership is resolved from the DIRECTORY, never from the local Windows token, whenever an
+        explicit credential is in play: the token of the process belongs to whoever launched the
+        tool, not to the domain account being tested. tokenGroups is the constructed attribute the
+        DC computes for that account, so it also covers nested and universal group membership --
+        the same approach the Hardening prerequisite checks already use. It can only be read
+        through an explicit base-scope search.
+
+        Schema Admins is looked up in the FOREST ROOT domain, which is the only place it exists;
+        in a child domain "<domain>-518" simply would not resolve.
+    .PARAMETER Server
+        Target DC. Omit for implicit (domain-joined) mode.
+    .PARAMETER Credential
+        Explicit credential to evaluate. Omit to evaluate the current Windows identity.
+    .OUTPUTS
+        PSCustomObject: Identity, IsDomainAdmin, IsSchemaAdmin, Determined, Reason.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$Server,
+        [PSCredential]$Credential
+    )
+
+    $connParam = @{}
+    if ($Server)     { $connParam.Server     = $Server }
+    if ($Credential) { $connParam.Credential = $Credential }
+
+    $result = [PSCustomObject]@{
+        Identity      = $null
+        IsDomainAdmin = $false
+        IsSchemaAdmin = $false
+        Determined    = $false
+        Reason        = $null
+    }
+
+    try {
+        $domain   = Get-ADDomain @connParam -ErrorAction Stop
+        $forest   = Get-ADForest @connParam -ErrorAction Stop
+        $rootSid  = (Get-ADDomain -Identity $forest.RootDomain @connParam -ErrorAction Stop).DomainSID.Value
+        $daSid    = "$($domain.DomainSID.Value)-512"   # Domain Admins, in the connected domain
+        $saSid    = "$rootSid-518"                     # Schema Admins, forest root only
+
+        if ($Credential) {
+            $result.Identity = $Credential.UserName
+            $account = $Credential.UserName -replace '^.*[\\@]', ''
+            $userDN  = (Get-ADUser -Identity $account @connParam -ErrorAction Stop).DistinguishedName
+            $tokens  = (Get-ADObject -SearchBase $userDN -SearchScope Base -Filter * `
+                            -Properties tokenGroups @connParam -ErrorAction Stop).tokenGroups
+            $sids = foreach ($tg in $tokens) {
+                if ($tg -is [System.Security.Principal.SecurityIdentifier]) { $tg.Value }
+                else { ([System.Security.Principal.SecurityIdentifier]::new([byte[]]$tg, 0)).Value }
+            }
+        }
+        else {
+            $identity        = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+            $result.Identity = $identity.Name
+            $sids            = @($identity.Groups | ForEach-Object { $_.Value })
+        }
+
+        $result.IsDomainAdmin = $daSid -in $sids
+        $result.IsSchemaAdmin = $saSid -in $sids
+        $result.Determined    = $true
+    }
+    catch {
+        $result.Reason = $_.Exception.Message
+    }
+
+    return $result
+}
+
+function Assert-LOCKmeADPrivilege {
+    <#
+    .SYNOPSIS
+        Throws unless the connection's identity is a Domain Admin. Returns the privilege report so
+        the caller can surface the Schema Admins situation in its own idiom.
+    .DESCRIPTION
+        Domain Admins is required and non-negotiable: nothing this tool does works without it.
+        Schema Admins is NOT required -- only ExtendLAPSSchema needs it, and that task is a no-op
+        on a forest whose schema is already extended -- so a Domain Admin who is not a Schema Admin
+        is allowed through and merely told which task will fail.
+
+        A check that could not be completed is treated as a failure rather than waved through: an
+        unverifiable identity is exactly the case where a silent partial deployment would follow.
+    .PARAMETER Connection
+        Object with Server and Credential, as returned by Resolve-LOCKmeADConnection.
+    #>
+    [CmdletBinding()]
+    param([PSCustomObject]$Connection)
+
+    $priv = Test-LOCKmeADPrivilege -Server $Connection.Server -Credential $Connection.Credential
+
+    if (-not $priv.Determined) {
+        throw "Could not verify the privileges of this account against '$(if ($Connection.Server) { $Connection.Server } else { 'the domain' })'. LOCKmeAD will not deploy with an unverified identity. Reason: $($priv.Reason)"
+    }
+    if (-not $priv.IsDomainAdmin) {
+        throw "'$($priv.Identity)' is not a member of Domain Admins. Every LOCKmeAD module writes to Active Directory, so a non-privileged account would report success while applying nothing. Connect with a Domain Admin account."
+    }
+
+    return $priv
+}
+
 function Remove-LOCKmeADConnection {
     <#
     .SYNOPSIS
@@ -121,31 +287,47 @@ function Resolve-LOCKmeADConnection {
         return [PSCustomObject]@{ Server = $null; Credential = $null }
     }
 
+    # Gate every resolved connection on Domain Admins membership. This sits here rather than in
+    # each entry point because this function is the single funnel: LOCKmeAD.ps1, Launch-GUI.ps1
+    # and all seven Scripts\Deploy-*.ps1 come through it, including when a Deploy script is run
+    # on its own. The check runs BEFORE -Remember persists anything, so a rejected account never
+    # ends up in the saved profile.
+    #
+    # There is deliberately no bypass switch. Every module writes to the directory, so no
+    # legitimate caller needs to proceed without Domain Admins -- and an opt-out would be a
+    # documented way back to the failure mode this gate exists to prevent: a green report over a
+    # deployment that applied nothing.
+    # Missing Schema Admins is NOT reported here. It affects exactly one task -- ExtendLAPSSchema
+    # -- so the notice belongs on that task, where it is actionable, rather than as a banner every
+    # operator sees at every launch regardless of what they came to deploy.
+    $confirmPrivilege = {
+        param($conn)
+        $null = Assert-LOCKmeADPrivilege -Connection $conn
+    }
+
     # Explicit parameters always win
     if ($Server -or $Credential) {
         if (-not $Credential) {
             $Credential = Get-Credential -Message "Domain credentials for $Server"
         }
         $conn = [PSCustomObject]@{ Server = $Server; Credential = $Credential }
+        & $confirmPrivilege $conn
         if ($Remember) { Save-LOCKmeADConnection -Connection $conn }
         return $conn
     }
 
     # A previously saved profile, if any
-    $profilePath = Get-LOCKmeADConnectionProfilePath
-    if (Test-Path $profilePath) {
-        try {
-            $saved = Import-Clixml -Path $profilePath
-            if ($saved.Server -and $saved.Credential) {
-                return [PSCustomObject]@{ Server = $saved.Server; Credential = $saved.Credential }
-            }
-        }
-        catch { }
+    $saved = Get-LOCKmeADSavedConnection
+    if ($saved) {
+        & $confirmPrivilege $saved
+        return $saved
     }
 
     # Auto-detect: domain-joined / a DC silently reachable -> implicit mode
     if (Test-LOCKmeADDomainJoined) {
-        return [PSCustomObject]@{ Server = $null; Credential = $null }
+        $conn = [PSCustomObject]@{ Server = $null; Credential = $null }
+        & $confirmPrivilege $conn
+        return $conn
     }
 
     # Not joined and nothing supplied: require an explicit connection
@@ -160,6 +342,7 @@ function Resolve-LOCKmeADConnection {
     $Credential = Get-Credential -Message "Domain credentials for $Server"
 
     $conn = [PSCustomObject]@{ Server = $Server; Credential = $Credential }
+    & $confirmPrivilege $conn
     if ($Remember) { Save-LOCKmeADConnection -Connection $conn }
     return $conn
 }
@@ -641,6 +824,10 @@ Export-ModuleMember -Function @(
     'Test-LOCKmeADDomainJoined',
     'Resolve-LOCKmeADConnection',
     'Save-LOCKmeADConnection',
+    'Get-LOCKmeADSavedConnection',
+    'Test-LOCKmeADConnection',
+    'Test-LOCKmeADPrivilege',
+    'Assert-LOCKmeADPrivilege',
     'Remove-LOCKmeADConnection',
     'New-LOCKmeADConnectionParam',
     'Get-LOCKmeADSysvolDrive',

@@ -1,4 +1,4 @@
-#Requires -Modules ActiveDirectory, GroupPolicy
+#Requires -Modules ActiveDirectory
 #Requires -RunAsAdministrator
 
 <#
@@ -54,7 +54,25 @@ if (-not (Test-Path $modulePath)) {
 Import-Module $modulePath -Force
 Import-Module (Join-Path $rootDir "Modules\Common\Connection.psm1") -Force
 
-$connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
+# A refused connection must read as a clear operator error, not as an unhandled
+# exception: Resolve-LOCKmeADConnection throws when the account is not a Domain Admin.
+try {
+    $connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
+}
+catch {
+    Write-Host "`n[ERROR] $($_.Exception.Message)`n" -ForegroundColor Red
+    exit 1
+}
+
+# The GroupPolicy module is required in THIS session only in implicit mode. With an explicit
+# credential every GroupPolicy cmdlet is executed on the target DC through a WinRM session
+# (they accept no -Credential), so it only has to exist there. Hence a runtime check here
+# rather than a static '#Requires -Modules GroupPolicy', which refused to start off-domain.
+if (-not $connection.Credential -and -not (Get-Module -ListAvailable -Name GroupPolicy)) {
+    Write-Host "`n[ERROR] The 'GroupPolicy' module is required to deploy GPOs in implicit mode." -ForegroundColor Red
+    Write-Host "Install RSAT-GPMC on this host, or pass -Server/-Credential to run them on the DC.`n" -ForegroundColor Yellow
+    exit 1
+}
 
 # ============================================================================
 # Load configuration

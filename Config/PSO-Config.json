@@ -18,7 +18,9 @@
       "LockoutObservationWindowMinutes": 30,
       "ReversibleEncryptionEnabled": false,
       "ProtectedFromAccidentalDeletion": true,
-      "AppliesTo": "DL_T0"
+      "AppliesTo": [
+        "DL_T0"
+      ]
     },
     {
       "Name": "T1-Admins",
@@ -35,7 +37,9 @@
       "LockoutObservationWindowMinutes": 30,
       "ReversibleEncryptionEnabled": false,
       "ProtectedFromAccidentalDeletion": true,
-      "AppliesTo": "DL_T1"
+      "AppliesTo": [
+        "DL_T1"
+      ]
     },
     {
       "Name": "T2-Admins",
@@ -52,7 +56,9 @@
       "LockoutObservationWindowMinutes": 30,
       "ReversibleEncryptionEnabled": false,
       "ProtectedFromAccidentalDeletion": true,
-      "AppliesTo": "DL_T2"
+      "AppliesTo": [
+        "DL_T2"
+      ]
     }
   ]
 }

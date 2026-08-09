@@ -242,7 +242,10 @@ function New-RBACGroup {
                 Path           = $OU
             }
             $newGroup = New-ADGroup @params @serverParam -PassThru
-            Write-RBACLog -Message "Group '$Name' ($GroupScope) created in '$OU'." -Level Success -LogDirectory $LogDirectory
+            # The SID is recorded so an undo can identify this exact object later. A name is not
+            # enough: delete a group and recreate it with the same name and you get a new SID, and
+            # anything keying on the name alone would happily delete the replacement.
+            Write-RBACLog -Message "Group '$Name' ($GroupScope) created in '$OU' (SID: $($newGroup.SID.Value))." -Level Success -LogDirectory $LogDirectory
             return $newGroup
         }
         catch {
@@ -396,7 +399,7 @@ function Set-RBACNTFSPermission {
             )
 
             $acl.AddAccessRule($aceRule)
-            Set-Acl -Path $path -AclObject $acl
+            Set-Acl -Path $path -AclObject $acl -ErrorAction Stop
             Write-RBACLog -Message "NTFS ACE '$rights' applied on '$path' for '$GroupName'." -Level Success -LogDirectory $LogDirectory
         }
         catch {
@@ -459,12 +462,38 @@ function Backup-RBACAdPermission {
         New-Item -Path $BackupDirectory -ItemType Directory -Force | Out-Null
     }
 
+    $sanitized = $TargetOU -replace '[\\/:*?"<>|,=]', '_'
+
+    # One pre-image per target per run -- deliberately NOT one per permission.
+    #
+    # Two reasons, and the first one is a data-loss bug. The file name embeds a timestamp at
+    # SECOND resolution, and the write uses -Force: two permissions applied to the same target
+    # inside the same second produced the identical file name and the second silently overwrote
+    # the first. A 44-permission deployment left only 20 backups, and each survivor was the
+    # pre-image of the LAST permission of its second -- an image that already contained the ACEs
+    # applied just before it. Rolling that run back removed 28 of 44 delegations and left 16
+    # behind, with nothing in the logs to suggest the backup set was incomplete.
+    #
+    # The second reason is semantic: for a rollback, the useful image is the state of the target
+    # BEFORE the run touched it at all. Keeping the first one and skipping the rest gives exactly
+    # that, and makes "restore every backup of this run" mean "undo this run" -- which is what the
+    # GUI's Restore button does. Returning the existing path keeps the caller's logging intact.
+    # The DN part is compared exactly, never by suffix: a sanitized child DN ends with its
+    # parent's sanitized DN ("..._OU_GroupsT0_OU_Admin_DC_corp_DC_local" ends with
+    # "_OU_Admin_DC_corp_DC_local"), so a suffix test makes the parent look already backed up and
+    # silently drops its pre-image.
+    $existing = @(Get-ChildItem -Path $BackupDirectory -Filter 'ACL_*.xml' -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match '^ACL_\d{8}_\d{6}_(?<dn>.+)\.xml$' -and $Matches['dn'] -eq $sanitized } |
+                    Sort-Object Name)
+    if ($existing.Count -gt 0) {
+        return $existing[0].FullName
+    }
+
     $adDrive = Get-LOCKmeADDrive -Server $Server -Credential $Credential
 
     try {
         $acl       = Get-Acl -Path "${adDrive}\$TargetOU" -ErrorAction Stop
         $sddl      = $acl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access)
-        $sanitized = $TargetOU -replace '[\\/:*?"<>|,=]', '_'
         $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
         $backupFile = Join-Path $BackupDirectory "ACL_${timestamp}_${sanitized}.xml"
 
@@ -532,7 +561,14 @@ function Restore-RBACAdPermission {
 
         if ($PSCmdlet.ShouldProcess($data.OU, "Restore AD ACL from '$BackupFile' (taken $($data.Timestamp) by $($data.User))")) {
             $acl = Get-Acl -Path $targetPath -ErrorAction Stop
-            $acl.SetSecurityDescriptorSddlForm($sddl)
+            # The section MUST be stated explicitly. Backup-RBACAdPermission saves only the DACL
+            # (GetSecurityDescriptorSddlForm(Access) -> "D:AI(...)", with no O:/G: fields), but the
+            # single-argument SetSecurityDescriptorSddlForm() overload defaults to
+            # AccessControlSections.All, so it overwrote owner and primary group with nothing.
+            # Committing that made AD substitute the default owner: restoring a DNS zone owned by
+            # SYSTEM silently handed ownership to Domain Admins. Naming Access restores exactly
+            # what was backed up -- the DACL -- and leaves owner and group untouched.
+            $acl.SetSecurityDescriptorSddlForm($sddl, [System.Security.AccessControl.AccessControlSections]::Access)
             Set-Acl -Path $targetPath -AclObject $acl -ErrorAction Stop
             Write-RBACLog -Message "ACL restored on '$($data.OU)' from '$BackupFile' (backup: $($data.Timestamp), user: $($data.User))." -Level Success -LogDirectory $LogDirectory
             return $true
@@ -546,6 +582,151 @@ function Restore-RBACAdPermission {
         Write-RBACLog -Message "Error restoring ACL from '$BackupFile': $_" -Level Error -LogDirectory $LogDirectory
         throw
     }
+}
+
+function Remove-RBACDeployedGroup {
+    <#
+    .SYNOPSIS
+        Deletes the groups that one RBAC deployment run created, turning the ACL rollback into a
+        full undo of that run.
+    .DESCRIPTION
+        Restore-RBACAdPermission only puts DACLs back; the groups it granted rights to survive.
+        This completes the picture, but deleting AD groups is irreversible and must never touch a
+        group the run did not create -- so the run's own CSV report is the source of truth. It
+        already records, per group, whether the deployment created it or found it
+        (Category=GroupCreated, Status=Created|AlreadyExists), together with the OU it went into.
+        Only Status=Created rows are candidates.
+
+        Four rails, all of which must pass before a single delete:
+          1. The group still exists at exactly CN=<Name>,<the OU recorded at creation>. A group of
+             the same name living somewhere else is a different object and is left alone.
+          2. Its RID is >= 1000, so no built-in or well-known principal can ever be reached.
+          3. Its whenCreated falls inside the run's own time window. This is what separates the
+             object the run created from a later re-creation that merely reuses the name -- a real
+             case here, since a deleted group coming back gets a brand new SID.
+          4. Its SID must not appear in any GptTmpl.inf in SYSVOL. Security templates embed raw
+             SIDs for User Rights Assignments and Restricted Groups, so deleting a group named
+             there leaves a dangling SID that the Security CSE will keep trying to apply. That one
+             is a warning rather than a veto -- it is legitimate when the GPOs are being rolled
+             back too -- but it is always reported.
+    .PARAMETER RunFolder
+        The Logs\<run> folder of the deployment to undo. Must contain that run's RBAC_*.csv report.
+    .PARAMETER Server
+        Target DC for all AD operations.
+    .PARAMETER Credential
+        Explicit credential to authenticate with.
+    .PARAMETER LogDirectory
+        Log directory.
+    .OUTPUTS
+        PSCustomObject with Deleted, Skipped, Errors and the list of skip reasons.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)]
+        [string]$RunFolder,
+
+        [string]$Server,
+        [PSCredential]$Credential,
+        [string]$LogDirectory
+    )
+
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+
+    $report = Get-ChildItem -Path $RunFolder -Filter 'RBAC_*.csv' -ErrorAction SilentlyContinue |
+                Sort-Object Name | Select-Object -First 1
+    if (-not $report) {
+        throw "No RBAC_*.csv report found in '$RunFolder'. Without it there is no record of which groups this run created, and deleting groups on a guess is not acceptable."
+    }
+
+    $allRows = @(Import-Csv -Path $report.FullName)
+    $created = @($allRows | Where-Object { $_.Category -eq 'GroupCreated' -and $_.Status -eq 'Created' })
+    if ($created.Count -eq 0) {
+        Write-RBACLog -Message "Run '$([System.IO.Path]::GetFileName($RunFolder))' created no group; nothing to delete." -Level Warning -LogDirectory $LogDirectory
+        return [PSCustomObject]@{ Deleted = 0; Skipped = 0; Errors = 0; SkipReasons = @() }
+    }
+
+    # Run window, widened by five minutes on each side to absorb clock skew between this host and
+    # the DC that stamps whenCreated.
+    $stamps   = @($allRows | ForEach-Object { [datetime]$_.Timestamp } | Sort-Object)
+    $windowLo = $stamps[0].AddMinutes(-5)
+    $windowHi = $stamps[-1].AddMinutes(5)
+
+    # Every security template in SYSVOL, read once, for rail 4.
+    $sysvolBlob = ''
+    try {
+        $domainDNS  = (Get-ADDomain @serverParam).DNSRoot
+        $sysvolRoot = Get-LOCKmeADSysvolDrive -DomainDNSRoot $domainDNS -Credential $Credential
+        $sysvolBlob = (Get-ChildItem -Path "$sysvolRoot\$domainDNS\Policies" -Filter 'GptTmpl.inf' -Recurse -ErrorAction SilentlyContinue |
+                        ForEach-Object { Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue }) -join "`n"
+    }
+    catch {
+        Write-RBACLog -Message "Could not read SYSVOL security templates to check for SID references: $_. Deletions will proceed without that check." -Level Warning -LogDirectory $LogDirectory
+    }
+
+    $stats = [PSCustomObject]@{ Deleted = 0; Skipped = 0; Errors = 0; SkipReasons = @() }
+
+    foreach ($row in $created) {
+        $name       = $row.Name
+        $expectedDN = "CN=$name,$($row.Target)"
+
+        $group = $null
+        try   { $group = Get-ADGroup -Identity $expectedDN -Properties whenCreated @serverParam -ErrorAction Stop }
+        catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {
+            $stats.Skipped++; $stats.SkipReasons += "$name : already absent from '$($row.Target)'"
+            continue
+        }
+        catch {
+            $stats.Errors++
+            Write-RBACLog -Message "  Error reading group '$name': $_" -Level Error -LogDirectory $LogDirectory
+            continue
+        }
+
+        $rid = [int]($group.SID.Value -split '-')[-1]
+        if ($rid -lt 1000) {
+            $stats.Skipped++; $stats.SkipReasons += "$name : RID $rid is a built-in principal"
+            continue
+        }
+        # Identity check. When the report carries the SID recorded at creation, that is exact and
+        # settles it outright. Older reports have no SID, so they fall back to the creation-time
+        # window -- which is only an approximation: a group deleted and recreated within the
+        # margin passes it (observed in testing), which is precisely why the SID is now logged.
+        if ($row.Details -match '^S-1-') {
+            if ($group.SID.Value -ne $row.Details) {
+                $stats.Skipped++
+                $stats.SkipReasons += "$name : SID $($group.SID.Value) differs from the one this run created ($($row.Details)) - a different object reusing the name"
+                continue
+            }
+        }
+        elseif ($group.whenCreated -lt $windowLo -or $group.whenCreated -gt $windowHi) {
+            $stats.Skipped++
+            $stats.SkipReasons += "$name : created $($group.whenCreated.ToString('yyyy-MM-dd HH:mm:ss')), outside this run's window - a different object reusing the name"
+            continue
+        }
+        if ($sysvolBlob -and $sysvolBlob.Contains($group.SID.Value)) {
+            Write-RBACLog -Message "  '$name' is referenced by SID in a GPO security template; deleting it leaves a dangling SID until those GPOs are rolled back too." -Level Warning -LogDirectory $LogDirectory
+        }
+
+        if ($PSCmdlet.ShouldProcess($group.DistinguishedName, "Delete AD group created by this run")) {
+            try {
+                Remove-ADGroup -Identity $group.DistinguishedName -Confirm:$false @serverParam
+                Write-RBACLog -Message "  Group '$name' deleted from '$($row.Target)'." -Level Success -LogDirectory $LogDirectory
+                $stats.Deleted++
+            }
+            catch {
+                Write-RBACLog -Message "  Error deleting group '$name': $_" -Level Error -LogDirectory $LogDirectory
+                $stats.Errors++
+            }
+        }
+        else {
+            Write-RBACLog -Message "  [WhatIf] Group '$name' would be deleted from '$($row.Target)'." -Level Info -LogDirectory $LogDirectory
+        }
+    }
+
+    Write-RBACLog -Message "Group removal: $($stats.Deleted) deleted, $($stats.Skipped) skipped, $($stats.Errors) error(s)." `
+        -Level $(if ($stats.Errors -gt 0) { 'Warning' } else { 'Success' }) -LogDirectory $LogDirectory
+    return $stats
 }
 
 function Get-RBACGuidMap {
@@ -748,7 +929,9 @@ function Set-RBACADPermission {
     if ($BackupDirectory) {
         $backupFile = Backup-RBACAdPermission -TargetOU $targetOU -BackupDirectory $BackupDirectory -Server $Server -Credential $Credential
         if ($backupFile) {
-            Write-RBACLog -Message "ACL backup created: '$backupFile'." -Level Info -LogDirectory $LogDirectory
+            # "pre-image", not "created": the first permission touching a target writes the file,
+            # every later one reuses it -- see Backup-RBACAdPermission for why.
+            Write-RBACLog -Message "ACL pre-image for '$targetOU': '$backupFile'." -Level Info -LogDirectory $LogDirectory
         }
     }
 
@@ -780,7 +963,7 @@ function Set-RBACADPermission {
                 throw "Could not read the security descriptor of '$targetOU'."
             }
             $acl.AddAccessRule($ace)
-            Set-Acl -Path $ouPath -AclObject $acl
+            Set-Acl -Path $ouPath -AclObject $acl -ErrorAction Stop
 
             Write-RBACLog -Message "AD delegation '$adRights' applied on '$targetOU' for '$GroupName'." -Level Success -LogDirectory $LogDirectory
         }
@@ -985,7 +1168,9 @@ function Export-RBACDeploymentReport {
 
         $row = $null
 
-        if ($msg -match "^Group '(?<name>[^']+)' \((?<scope>Global|DomainLocal)\) (?:created|would be created) in '(?<ou>[^']+)'") {
+        # The trailing "(SID: ...)" group is optional so reports from runs predating that addition
+        # still parse; Details simply stays empty for them.
+        if ($msg -match "^Group '(?<name>[^']+)' \((?<scope>Global|DomainLocal)\) (?:created|would be created) in '(?<ou>[^']+)'(?: \(SID: (?<sid>[^)]+)\))?") {
             $row = [PSCustomObject]@{
                 Timestamp = $ts
                 Category  = 'GroupCreated'
@@ -993,7 +1178,7 @@ function Export-RBACDeploymentReport {
                 Name      = $Matches['name']
                 Scope     = $Matches['scope']
                 Target    = $Matches['ou']
-                Details   = ''
+                Details   = $Matches['sid']
             }
         }
         elseif ($msg -match "^Group '(?<name>[^']+)' already exists in '(?<dn>[^']+)'") {
@@ -1147,6 +1332,7 @@ Export-ModuleMember -Function @(
     'Resolve-RBACNameToGuid',
     'Backup-RBACAdPermission',
     'Restore-RBACAdPermission',
+    'Remove-RBACDeployedGroup',
     'New-RBACGroup',
     'Add-RBACGroupMember',
     'Set-RBACNTFSPermission',

@@ -5,8 +5,8 @@
   "Silos": [
     {
       "Name": "T1-Service1",
-      "Description": "",
-      "Enabled": true,
+      "Description": "Disabled: no service account or gMSA exists in this domain yet. Enable and fill ServiceAccounts/Computers when a service is onboarded.",
+      "Enabled": false,
       "Enforce": false,
       "TGTLifetimeMinutes": 240,
       "ServiceAccounts": null,
@@ -14,8 +14,8 @@
     },
     {
       "Name": "T1-Service2",
-      "Description": "",
-      "Enabled": true,
+      "Description": "Disabled: no service account or gMSA exists in this domain yet. Enable and fill ServiceAccounts/Computers when a service is onboarded.",
+      "Enabled": false,
       "Enforce": false,
       "TGTLifetimeMinutes": 240,
       "ServiceAccounts": null,
@@ -23,8 +23,8 @@
     },
     {
       "Name": "T1-Service3",
-      "Description": "",
-      "Enabled": true,
+      "Description": "Disabled: no service account or gMSA exists in this domain yet. Enable and fill ServiceAccounts/Computers when a service is onboarded.",
+      "Enabled": false,
       "Enforce": false,
       "TGTLifetimeMinutes": 240,
       "ServiceAccounts": null,

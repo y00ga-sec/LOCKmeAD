@@ -43,20 +43,43 @@ param(
 $ErrorActionPreference = "Stop"
 
 # --- Check required modules ---
-$requiredModules = @("ActiveDirectory", "GroupPolicy")
-$missingModules  = $requiredModules | Where-Object { -not (Get-Module -Name $_) -and -not (Get-Module -ListAvailable -Name $_) }
-if ($missingModules) {
-    Write-Host "`n[ERROR] The following required modules are not available: $($missingModules -join ', ')" -ForegroundColor Red
-    Write-Host "`nImport them in your current session and try again:" -ForegroundColor Yellow
-    Write-Host "  Import-Module $($missingModules -join ', ')`n" -ForegroundColor Cyan
+#
+# ActiveDirectory is the only hard requirement: every module uses it, and its cmdlets always
+# run in this session.
+#
+# GroupPolicy is deliberately NOT a hard requirement. Only the GPO and JIT modules need it, and
+# only when running in implicit mode: with an explicit -Credential, Invoke-LOCKmeADRemote runs
+# every GroupPolicy cmdlet inside a WinRM session ON the domain controller (they have no
+# -Credential parameter of their own), so the module is needed there, not here. Requiring it
+# locally contradicted that design and made the tool refuse to start on the very host it was
+# built to support -- a non-domain-joined admin workstation without RSAT-GPMC -- even for
+# Tiering or RBAC, which never touch Group Policy at all.
+# Each Deploy-GPO/Deploy-JIT re-checks precisely, once the connection mode is known.
+if (-not (Get-Module -Name ActiveDirectory) -and -not (Get-Module -ListAvailable -Name ActiveDirectory)) {
+    Write-Host "`n[ERROR] The required module 'ActiveDirectory' is not available." -ForegroundColor Red
+    Write-Host "`nInstall RSAT (or run on a domain controller) and try again.`n" -ForegroundColor Yellow
     exit 1
+}
+if (-not (Get-Module -Name GroupPolicy) -and -not (Get-Module -ListAvailable -Name GroupPolicy)) {
+    Write-Host "`n[WARNING] The 'GroupPolicy' module is not available on this host." -ForegroundColor Yellow
+    Write-Host "  The GPO and JIT modules need it locally only when running domain-joined without" -ForegroundColor DarkGray
+    Write-Host "  an explicit -Credential. With -Server/-Credential they run it on the DC instead." -ForegroundColor DarkGray
+    Write-Host "  Every other module is unaffected.`n" -ForegroundColor DarkGray
 }
 
 # Resolve the AD connection once (implicit if domain-joined, otherwise explicit
 # -Server/-Credential or an interactive prompt) so an off-domain operator is only
 # asked once, regardless of how many modules are selected.
 Import-Module (Join-Path $PSScriptRoot "Modules\Common\Connection.psm1") -Force
-$script:Connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
+# A refused connection must read as a clear operator error, not as an unhandled
+# exception: Resolve-LOCKmeADConnection throws when the account is not a Domain Admin.
+try {
+    $script:Connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
+}
+catch {
+    Write-Host "`n[ERROR] $($_.Exception.Message)`n" -ForegroundColor Red
+    exit 1
+}
 
 # ============================================================================
 # Display logo

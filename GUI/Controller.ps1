@@ -8,10 +8,15 @@ function Show-GUIConnectionDialog {
         Prompts for a target domain controller and credential when the host running
         the GUI is not domain-joined (or a domain controller couldn't be located
         automatically).
+    .PARAMETER DefaultServer
+        Pre-fills the domain controller field, so a saved profile whose credential no longer
+        authenticates does not also cost the operator the server name.
     .OUTPUTS
         PSCustomObject with Server/Credential (as Resolve-LOCKmeADConnection returns),
         or $null if the user cancelled.
     #>
+    param([string]$DefaultServer = '')
+
     $dialogXaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         Title="Connect to Active Directory" Width="440" SizeToContent="Height"
@@ -52,9 +57,24 @@ function Show-GUIConnectionDialog {
     $txtUsername = $dlg.FindName("ConnUsername")
     $txtPassword = $dlg.FindName("ConnPassword")
     $chkRemember = $dlg.FindName("ConnRemember")
+    $btnConnect  = $dlg.FindName("BtnConnect")
+    $btnCancel   = $dlg.FindName("BtnCancel")
+
+    # Enter validates from any field, Esc cancels. IsDefault/IsCancel are WPF's own mechanism for
+    # this, so it keeps working inside the PasswordBox, which swallows most key handlers.
+    $btnConnect.IsDefault = $true
+    $btnCancel.IsCancel   = $true
+
+    $txtServer.Text = $DefaultServer
+    # Focus lands on the first field still empty, so a pre-filled server is not in the way.
+    $dlg.Add_Loaded({
+        if ([string]::IsNullOrWhiteSpace($txtServer.Text))        { [void]$txtServer.Focus() }
+        elseif ([string]::IsNullOrWhiteSpace($txtUsername.Text))  { [void]$txtUsername.Focus() }
+        else                                                      { [void]$txtPassword.Focus() }
+    }.GetNewClosure())
 
     $dlg.Tag = $null
-    $dlg.FindName("BtnConnect").Add_Click({
+    $btnConnect.Add_Click({
         if ([string]::IsNullOrWhiteSpace($txtServer.Text)) {
             [System.Windows.MessageBox]::Show("Domain controller is required.", "Validation",
                 [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
@@ -67,11 +87,27 @@ function Show-GUIConnectionDialog {
         }
         $secure = $txtPassword.SecurePassword
         $cred = [PSCredential]::new($txtUsername.Text, $secure)
-        $conn = Resolve-LOCKmeADConnection -Server $txtServer.Text.Trim() -Credential $cred -Remember:$chkRemember.IsChecked
+
+        # Resolve-LOCKmeADConnection throws when the account is not a Domain Admin. Catching it
+        # here keeps the dialog open so the operator can simply retype credentials, instead of
+        # letting the exception unwind and kill the launcher.
+        try {
+            $conn = Resolve-LOCKmeADConnection -Server $txtServer.Text.Trim() -Credential $cred -Remember:$chkRemember.IsChecked
+        }
+        catch {
+            [System.Windows.MessageBox]::Show($_.Exception.Message, "Connection refused",
+                [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error) | Out-Null
+            $txtPassword.Clear()
+            [void]$txtPassword.Focus()
+            return
+        }
+
+        # Schema Admins is not raised here on purpose: it only matters to ExtendLAPSSchema, and
+        # that task carries its own notice on the Hardening tab.
         $dlg.Tag = $conn
         $dlg.Close()
     }.GetNewClosure())
-    $dlg.FindName("BtnCancel").Add_Click({ $dlg.Close() }.GetNewClosure())
+    $btnCancel.Add_Click({ $dlg.Close() }.GetNewClosure())
 
     $dlg.ShowDialog() | Out-Null
     return $dlg.Tag
@@ -613,6 +649,34 @@ function Populate-HardeningTab {
             [void]$outerStack.Children.Add($infoLink)
         }
 
+        # Schema Admins notice — ExtendLAPSSchema only.
+        #
+        # This is the single task in the whole tool that needs more than Domain Admins: extending
+        # the schema is a forest-root operation reserved to Schema Admins. Rather than warning
+        # every operator at connection time about something most of them will never run, the
+        # notice sits on the one card it concerns, and only when the connected account actually
+        # lacks the membership.
+        if ($task.Name -eq 'ExtendLAPSSchema' -and $script:Privilege -and
+            $script:Privilege.Determined -and -not $script:Privilege.IsSchemaAdmin) {
+            $schemaNote = New-Object System.Windows.Controls.TextBlock
+            $schemaNote.Text = [char]0x24D8 + "  $($script:Privilege.Identity) is not a Schema Admin - this task will fail"
+            $schemaNote.FontSize = 11
+            $schemaNote.Foreground = Get-WPFBrush "#D35400"
+            $schemaNote.Margin = [System.Windows.Thickness]::new(62, 4, 0, 0)
+            $schemaNote.Cursor = [System.Windows.Input.Cursors]::Hand
+            $schemaNote.TextWrapping = "Wrap"
+            $schemaNote.TextDecorations = [System.Windows.TextDecorations]::Underline
+            $noteIdentity = [string]$script:Privilege.Identity
+            $schemaNote.Add_MouseLeftButtonDown({
+                [System.Windows.MessageBox]::Show(
+                    "Extending the Active Directory schema for Windows LAPS is a forest-root operation reserved to the Schema Admins group. '$noteIdentity' is a Domain Admin but not a member of it, so this task will fail.`n`nEvery other task and module deploys normally.`n`nTwo ways forward:`n  - add the account to Schema Admins on the forest root, temporarily, for this one run;`n  - or leave the task disabled if the schema already carries the msLAPS-* attributes, in which case it is a no-op anyway. The Verify All button tells you which.",
+                    "Schema Admins required",
+                    [System.Windows.MessageBoxButton]::OK,
+                    [System.Windows.MessageBoxImage]::Information) | Out-Null
+            }.GetNewClosure())
+            [void]$outerStack.Children.Add($schemaNote)
+        }
+
         # Prerequisites check button — for RaiseDomainFunctionalLevel and RaiseForestFunctionalLevel
         $prereqScope    = $null
         $prereqParamKey = $null
@@ -665,6 +729,136 @@ function Update-GPOFilteringOUWarning {
     }
 }
 
+function New-GPOGroupChipPanel {
+    <#
+    .SYNOPSIS
+        Builds the editable "list of AD groups" block shared by the User Rights Assignments and
+        Restricted Groups editors: one removable chip per group, plus an AD-backed add button.
+    .DESCRIPTION
+        Both editors manipulate the same thing -- a string array of group names hanging off an
+        entry in GPO-Config.json -- so they share one builder rather than two near-identical
+        copies. Edits mutate the configuration object in place, which is what makes them survive
+        "Save configs" without any change to Save-AllConfigs.
+
+        Removing the last entry is refused while the GPO is enabled: Import-GPOConfiguration
+        rejects an enabled GPO whose assignment has no Groups (or whose restricted group has no
+        Members), so allowing it here would only produce a configuration that fails at deployment
+        with a message pointing at the JSON rather than at the click that caused it.
+    .PARAMETER Owner
+        The object holding the list -- a UserRightsAssignments entry or a RestrictedGroups entry.
+    .PARAMETER Property
+        Name of the string-array property on that object: 'Groups' or 'Members'.
+    .PARAMETER Label
+        Heading shown above the chips.
+    .PARAMETER Accent
+        Chip foreground colour, to keep the two editors visually distinct.
+    .PARAMETER ChipBackground
+        Chip background colour.
+    .PARAMETER GpoEnabled
+        Whether the owning GPO is enabled, which decides if the list may be emptied.
+    #>
+    param(
+        [Parameter(Mandatory)] $Owner,
+        [Parameter(Mandatory)][string]$Property,
+        [Parameter(Mandatory)][string]$Label,
+        [string]$Accent         = "#4A235A",
+        [string]$ChipBackground = "#EDE7F6",
+        [bool]$GpoEnabled       = $true
+    )
+
+    $block = New-Object System.Windows.Controls.StackPanel
+    $block.Margin = [System.Windows.Thickness]::new(0, 2, 0, 8)
+
+    $heading = New-Object System.Windows.Controls.TextBlock
+    $heading.Text       = $Label
+    $heading.FontSize   = 11
+    $heading.FontWeight = "SemiBold"
+    $heading.Foreground = Get-WPFBrush "#6C3483"
+    $heading.Margin     = [System.Windows.Thickness]::new(0, 0, 0, 4)
+    [void]$block.Children.Add($heading)
+
+    $wrap = New-Object System.Windows.Controls.WrapPanel
+
+    $list = if ($Owner.$Property) { @($Owner.$Property) } else { @() }
+    foreach ($groupName in $list) {
+        $chip = New-Object System.Windows.Controls.Border
+        $chip.Background   = Get-WPFBrush $ChipBackground
+        $chip.CornerRadius = [System.Windows.CornerRadius]::new(3)
+        $chip.Padding      = [System.Windows.Thickness]::new(7, 2, 4, 2)
+        $chip.Margin       = [System.Windows.Thickness]::new(0, 0, 4, 4)
+
+        $inner = New-Object System.Windows.Controls.StackPanel
+        $inner.Orientation = "Horizontal"
+
+        $text = New-Object System.Windows.Controls.TextBlock
+        $text.Text              = $groupName
+        $text.FontSize          = 11
+        $text.Foreground        = Get-WPFBrush $Accent
+        $text.VerticalAlignment = "Center"
+
+        $remove = New-Object System.Windows.Controls.Button
+        $remove.Content           = [char]0x00D7
+        $remove.FontSize          = 11
+        $remove.Background        = Get-WPFBrush "Transparent"
+        $remove.BorderThickness   = [System.Windows.Thickness]::new(0)
+        $remove.Foreground        = Get-WPFBrush "#A93226"
+        $remove.Cursor            = "Hand"
+        $remove.Padding           = [System.Windows.Thickness]::new(3, 0, 0, 0)
+        $remove.VerticalAlignment = "Center"
+        $remove.ToolTip           = "Remove '$groupName'"
+        $remove.Tag = @{ Owner = $Owner; Property = $Property; GroupName = $groupName; Label = $Label; Enabled = $GpoEnabled }
+        $remove.Add_Click({
+            $ctx     = $this.Tag
+            $current = @($ctx.Owner.($ctx.Property))
+            if ($ctx.Enabled -and $current.Count -le 1) {
+                [System.Windows.MessageBox]::Show(
+                    "'$($ctx.Label)' must keep at least one group while the GPO is enabled.`n`nDisable the GPO first, or add a replacement before removing this one.",
+                    "Cannot remove the last group",
+                    [System.Windows.MessageBoxButton]::OK,
+                    [System.Windows.MessageBoxImage]::Warning) | Out-Null
+                return
+            }
+            $ctx.Owner.($ctx.Property) = @($current | Where-Object { $_ -ne $ctx.GroupName })
+            $script:UnsavedChanges.GPO = $true
+            Invoke-GPOTabRefresh
+        })
+
+        [void]$inner.Children.Add($text)
+        [void]$inner.Children.Add($remove)
+        $chip.Child = $inner
+        [void]$wrap.Children.Add($chip)
+    }
+
+    $add = New-Object System.Windows.Controls.Button
+    $add.Content         = "+ Add group"
+    $add.Background      = Get-WPFBrush "Transparent"
+    $add.BorderThickness = [System.Windows.Thickness]::new(0)
+    $add.Foreground      = Get-WPFBrush "#0078D4"
+    $add.FontSize        = 11
+    $add.Cursor          = "Hand"
+    $add.Padding         = [System.Windows.Thickness]::new(0, 2, 0, 2)
+    $add.Margin          = [System.Windows.Thickness]::new(0, 0, 0, 4)
+    $add.Tag = @{ Owner = $Owner; Property = $Property }
+    $add.Add_Click({
+        $ctx = $this.Tag
+        $groupName = Show-ADGroupSearchDialog
+        if (-not $groupName) { return }
+        if (-not $ctx.Owner.PSObject.Properties[$ctx.Property]) {
+            $ctx.Owner | Add-Member -NotePropertyName $ctx.Property -NotePropertyValue @() -Force
+        }
+        $current = @($ctx.Owner.($ctx.Property))
+        if ($groupName -notin $current) {
+            $ctx.Owner.($ctx.Property) = $current + @($groupName)
+            $script:UnsavedChanges.GPO = $true
+        }
+        Invoke-GPOTabRefresh
+    })
+    [void]$wrap.Children.Add($add)
+
+    [void]$block.Children.Add($wrap)
+    return $block
+}
+
 function Populate-GPOTab {
     $UI.GPOTaskList.Children.Clear()
     $script:GPOToggles = @()
@@ -714,7 +908,33 @@ function Populate-GPOTab {
         $uraCount = if ($gpo.UserRightsAssignments) { $gpo.UserRightsAssignments.Count } else { 0 }
         $svcCount = if ($gpo.SystemServices) { $gpo.SystemServices.Count } else { 0 }
         $scriptCount = if ($gpo.Scripts) { $gpo.Scripts.Count } else { 0 }
+        $rgCount = if ($gpo.RestrictedGroups) { $gpo.RestrictedGroups.Count } else { 0 }
         $isLapsGPO = [bool]($gpo.RegistrySettings | Where-Object { $_.Key -like "*LAPS*" })
+
+        # Fill the badge strip. It was built and docked but never populated, so a GPO whose only
+        # content is Restricted Groups looked completely empty on the card -- which is exactly the
+        # policy type where knowing there is content matters most.
+        $badgeSpecs = @(
+            @{ N = $regCount;     T = 'reg';    F = "#0078D4"; B = "#E8F2FC" }
+            @{ N = $regPrefCount; T = 'pref';   F = "#2471A3"; B = "#E8F2FC" }
+            @{ N = $secOptCount;  T = 'SO';     F = "#B7950B"; B = "#FEF9E7" }
+            @{ N = $uraCount;     T = 'URA';    F = "#6C3483"; B = "#F3E8FC" }
+            @{ N = $rgCount;      T = 'RG';     F = "#A93226"; B = "#FDEDEC" }
+            @{ N = $svcCount;     T = 'svc';    F = "#C0392B"; B = "#FDEDEC" }
+            @{ N = $scriptCount;  T = 'script'; F = "#117A65"; B = "#E8F8F0" }
+        )
+        foreach ($spec in $badgeSpecs) {
+            if ($spec.N -le 0) { continue }
+            $badge = New-Object System.Windows.Controls.TextBlock
+            $badge.Text              = "$($spec.N) $($spec.T)"
+            $badge.FontSize          = 10
+            $badge.Foreground        = Get-WPFBrush $spec.F
+            $badge.Background        = Get-WPFBrush $spec.B
+            $badge.Padding           = [System.Windows.Thickness]::new(6, 2, 6, 2)
+            $badge.Margin            = [System.Windows.Thickness]::new(4, 0, 0, 0)
+            $badge.VerticalAlignment = "Center"
+            [void]$badgePanel.Children.Add($badge)
+        }
 
         $textStack = New-Object System.Windows.Controls.StackPanel
         $textStack.Margin = [System.Windows.Thickness]::new(14, 0, 10, 0)
@@ -1061,7 +1281,7 @@ function Populate-GPOTab {
             [void]$outerStack.Children.Add($scriptsExpander)
         }
 
-        # User Rights Assignments expander (editable groups)
+        # User Rights Assignments expander (editable) -- deny-logon GPOs live here.
         if ($uraCount -gt 0) {
             $uraExpander = New-Object System.Windows.Controls.Expander
             $uraExpander.Header = "User Rights Assignments"
@@ -1072,92 +1292,49 @@ function Populate-GPOTab {
             $uraStack.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
 
             foreach ($assignment in $gpo.UserRightsAssignments) {
-                $uraBlock = New-Object System.Windows.Controls.StackPanel
-                $uraBlock.Margin = [System.Windows.Thickness]::new(0, 2, 0, 8)
-
-                $rightLabel = New-Object System.Windows.Controls.TextBlock
-                $rightLabel.FontSize = 11
-                $rightLabel.Foreground = Get-WPFBrush "#6C3483"
-                $rightLabel.FontWeight = "SemiBold"
-                $rightLabel.ToolTip = $assignment.Right
-                $rightLabel.Text = if ($assignment.Description) { $assignment.Description } else { $assignment.Right }
-                $rightLabel.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
-                [void]$uraBlock.Children.Add($rightLabel)
-
-                $groupsWrap = New-Object System.Windows.Controls.WrapPanel
-
-                $grpList = if ($assignment.Groups) { @($assignment.Groups) } else { @() }
-                foreach ($grpName in $grpList) {
-                    $tagBorder = New-Object System.Windows.Controls.Border
-                    $tagBorder.Background = Get-WPFBrush "#EDE7F6"
-                    $tagBorder.CornerRadius = [System.Windows.CornerRadius]::new(3)
-                    $tagBorder.Padding = [System.Windows.Thickness]::new(7, 2, 4, 2)
-                    $tagBorder.Margin = [System.Windows.Thickness]::new(0, 0, 4, 4)
-
-                    $tagInner = New-Object System.Windows.Controls.StackPanel
-                    $tagInner.Orientation = "Horizontal"
-
-                    $tagLabel = New-Object System.Windows.Controls.TextBlock
-                    $tagLabel.Text = $grpName
-                    $tagLabel.FontSize = 11
-                    $tagLabel.Foreground = Get-WPFBrush "#4A235A"
-                    $tagLabel.VerticalAlignment = "Center"
-
-                    $removeGrpBtn = New-Object System.Windows.Controls.Button
-                    $removeGrpBtn.Content = [char]0x00D7
-                    $removeGrpBtn.FontSize = 11
-                    $removeGrpBtn.Background = Get-WPFBrush "Transparent"
-                    $removeGrpBtn.BorderThickness = [System.Windows.Thickness]::new(0)
-                    $removeGrpBtn.Foreground = Get-WPFBrush "#A93226"
-                    $removeGrpBtn.Cursor = "Hand"
-                    $removeGrpBtn.Padding = [System.Windows.Thickness]::new(3, 0, 0, 0)
-                    $removeGrpBtn.VerticalAlignment = "Center"
-                    $removeGrpBtn.Tag = @{ Assignment = $assignment; GroupName = $grpName }
-                    $removeGrpBtn.Add_Click({
-                        $ctx = $this.Tag
-                        $ctx.Assignment.Groups = @($ctx.Assignment.Groups | Where-Object { $_ -ne $ctx.GroupName })
-                        $script:UnsavedChanges.GPO = $true
-                        Invoke-GPOTabRefresh
-                    })
-
-                    [void]$tagInner.Children.Add($tagLabel)
-                    [void]$tagInner.Children.Add($removeGrpBtn)
-                    $tagBorder.Child = $tagInner
-                    [void]$groupsWrap.Children.Add($tagBorder)
-                }
-
-                $addGroupBtn = New-Object System.Windows.Controls.Button
-                $addGroupBtn.Content = "+ Add group"
-                $addGroupBtn.Background = Get-WPFBrush "Transparent"
-                $addGroupBtn.BorderThickness = [System.Windows.Thickness]::new(0)
-                $addGroupBtn.Foreground = Get-WPFBrush "#0078D4"
-                $addGroupBtn.FontSize = 11
-                $addGroupBtn.Cursor = "Hand"
-                $addGroupBtn.Padding = [System.Windows.Thickness]::new(0, 2, 0, 2)
-                $addGroupBtn.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
-                $addGroupBtn.Tag = $assignment
-                $addGroupBtn.Add_Click({
-                    $asgn = $this.Tag
-                    $groupName = Show-ADGroupSearchDialog
-                    if ($groupName) {
-                        if (-not $asgn.Groups) {
-                            $asgn | Add-Member -NotePropertyName Groups -NotePropertyValue @() -Force
-                        }
-                        if ($groupName -notin @($asgn.Groups)) {
-                            $asgn.Groups = @($asgn.Groups) + @($groupName)
-                            $script:UnsavedChanges.GPO = $true
-                        }
-                        Invoke-GPOTabRefresh
-                    }
-                })
-                [void]$groupsWrap.Children.Add($addGroupBtn)
-
-                [void]$uraBlock.Children.Add($groupsWrap)
-                [void]$uraStack.Children.Add($uraBlock)
+                $label = if ($assignment.Description) { $assignment.Description } else { $assignment.Right }
+                $panel = New-GPOGroupChipPanel -Owner $assignment -Property 'Groups' -Label $label `
+                            -Accent "#4A235A" -ChipBackground "#EDE7F6" -GpoEnabled ([bool]$gpo.Enabled)
+                $panel.Children[0].ToolTip = $assignment.Right
+                [void]$uraStack.Children.Add($panel)
             }
 
             $uraExpander.Content = $uraStack
             [void]$outerStack.Children.Add($uraExpander)
+        }
+
+        # Restricted Groups expander (editable) -- local Administrators enforcement.
+        #
+        # This section had no UI at all: the four SEC-Tiering-*-LocalAdmins GPOs carry nothing
+        # else, so their cards showed an interrupteur, a name and a description and nothing more.
+        # An operator could enable and link a policy that REPLACES the entire local Administrators
+        # membership without ever seeing whose membership it enforces.
+        if ($rgCount -gt 0) {
+            $rgExpander = New-Object System.Windows.Controls.Expander
+            $rgExpander.Header = "Restricted Groups (local membership)"
+            $rgExpander.Margin = [System.Windows.Thickness]::new(58, 8, 0, 0)
+            $rgExpander.FontSize = 12
+
+            $rgStack = New-Object System.Windows.Controls.StackPanel
+            $rgStack.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+
+            $rgHint = New-Object System.Windows.Controls.TextBlock
+            $rgHint.Text = "Membership is REPLACED, not added to: anyone not listed here is removed from the local group on every targeted machine."
+            $rgHint.FontSize = 10
+            $rgHint.Foreground = Get-WPFBrush "#D35400"
+            $rgHint.TextWrapping = "Wrap"
+            $rgHint.Margin = [System.Windows.Thickness]::new(0, 0, 0, 6)
+            [void]$rgStack.Children.Add($rgHint)
+
+            foreach ($rg in $gpo.RestrictedGroups) {
+                $label = if ($rg.Description) { "$($rg.Group)  -  $($rg.Description)" } else { $rg.Group }
+                $panel = New-GPOGroupChipPanel -Owner $rg -Property 'Members' -Label $label `
+                            -Accent "#7B241C" -ChipBackground "#FDEDEC" -GpoEnabled ([bool]$gpo.Enabled)
+                [void]$rgStack.Children.Add($panel)
+            }
+
+            $rgExpander.Content = $rgStack
+            [void]$outerStack.Children.Add($rgExpander)
         }
 
         # Windows LAPS dedicated configuration panel
@@ -1177,24 +1354,24 @@ function Populate-GPOTab {
             [void]$lapsGrid.ColumnDefinitions.Add($colCtrl)
 
             $lapsParamDefs = @(
-                @{ VN = "BackupDirectory";                       Label = "Répertoire de sauvegarde";                         Type = "combo";  Options = @("0 - Désactivé","1 - Microsoft Entra ID uniquement","2 - Active Directory uniquement"); Values = @(0,1,2) }
-                @{ VN = "AdministratorAccountName";              Label = "Nom du compte administrateur";                     Type = "string"; Hint = "Vide = compte Administrateur intégré (identifié par son RID)" }
-                @{ VN = "PasswordAgeDays";                       Label = "Durée max. du mot de passe (jours, 1-365)";        Type = "int" }
-                @{ VN = "PasswordLength";                        Label = "Longueur du mot de passe (8-64)";                  Type = "int" }
-                @{ VN = "PassphraseLength";                      Label = "Longueur de la phrase de passe (mots, 3-10)";      Type = "int" }
-                @{ VN = "PasswordComplexity";                    Label = "Complexité du mot de passe";                       Type = "combo";  Options = @("1 - Majuscules uniquement","2 - Maj. + minuscules","3 - Maj. + min. + chiffres","4 - Maj. + min. + chiffres + spéciaux (défaut)","5 - Maj. + min. + chiffres + spéciaux (lisibilité améliorée) *","6 - Phrase de passe (longs mots) *","7 - Phrase de passe (courts mots) *","8 - Phrase de passe (courts mots, préfixes uniques) *"); Values = @(1,2,3,4,5,6,7,8) }
-                @{ VN = "PasswordExpirationProtectionEnabled";   Label = "Protéger l'expiration du mot de passe";            Type = "bool" }
-                @{ VN = "PostAuthenticationResetDelay";          Label = "Délai post-authentification (heures, 0-24)";       Type = "int" }
-                @{ VN = "PostAuthenticationActions";             Label = "Actions post-authentification";                    Type = "combo";  Options = @("1 - Réinitialiser le mot de passe","3 - Réinitialiser + déconnecter les sessions (défaut)","5 - Réinitialiser + redémarrer","11 - Réinitialiser + déconnecter + terminer les processus *"); Values = @(1,3,5,11) }
-                @{ VN = "ADPasswordEncryptionEnabled";           Label = "Chiffrement du mot de passe dans l'AD";            Type = "bool" }
-                @{ VN = "ADPasswordEncryptionPrincipal";         Label = "Principal de déchiffrement autorisé";              Type = "string"; Hint = "Formats acceptés : DOMAINE\Groupe  •  utilisateur@domaine.com  •  S-1-5-21-...  (ex : forest\GDL-LAPS-Pwd-Read)" }
-                @{ VN = "ADEncryptedPasswordHistorySize";        Label = "Historique des mots de passe chiffrés (0-12)";    Type = "int" }
-                @{ VN = "ADBackupDSRMPassword";                  Label = "Sauvegarde du mot de passe DSRM (DCs uniquement)"; Type = "bool" }
-                @{ VN = "AutomaticAccountManagementEnabled";     Label = "Gestion automatique du compte (Win 11 24H2+) *";  Type = "bool" }
-                @{ VN = "AutomaticAccountManagementTarget";      Label = "Compte cible de la gestion automatique *";        Type = "combo";  Options = @("0 - Compte administrateur intégré","1 - Nouveau compte personnalisé (défaut)"); Values = @(0,1) }
-                @{ VN = "AutomaticAccountManagementNameOrPrefix"; Label = "Nom ou préfixe du compte automatique *";         Type = "string"; Hint = "Max 14 caractères si RandomizeName est activé (défaut : WLapsAdmin)" }
-                @{ VN = "AutomaticAccountManagementEnableAccount"; Label = "Activer le compte automatique *";               Type = "bool" }
-                @{ VN = "AutomaticAccountManagementRandomizeName"; Label = "Randomiser le nom du compte automatique *";     Type = "bool" }
+                @{ VN = "BackupDirectory";                        Label = "Password backup directory";                        Type = "combo";  Options = @("0 - Disabled","1 - Microsoft Entra ID only","2 - Active Directory only"); Values = @(0,1,2) }
+                @{ VN = "AdministratorAccountName";               Label = "Managed administrator account name";               Type = "string"; Hint = "Empty = the built-in Administrator, identified by its well-known RID" }
+                @{ VN = "PasswordAgeDays";                        Label = "Maximum password age (days, 1-365)";               Type = "int" }
+                @{ VN = "PasswordLength";                         Label = "Password length (8-64)";                           Type = "int" }
+                @{ VN = "PassphraseLength";                       Label = "Passphrase length (words, 3-10)";                  Type = "int" }
+                @{ VN = "PasswordComplexity";                     Label = "Password complexity";                              Type = "combo";  Options = @("1 - Large letters only","2 - Large + small letters","3 - Large + small + digits","4 - Large + small + digits + specials (default)","5 - Same as 4, improved readability *","6 - Passphrase, long words *","7 - Passphrase, short words *","8 - Passphrase, short words with unique prefixes *"); Values = @(1,2,3,4,5,6,7,8) }
+                @{ VN = "PasswordExpirationProtectionEnabled";    Label = "Enforce maximum password age";                     Type = "bool" }
+                @{ VN = "PostAuthenticationResetDelay";           Label = "Post-authentication grace period (hours, 0-24)";   Type = "int" }
+                @{ VN = "PostAuthenticationActions";              Label = "Post-authentication actions";                      Type = "combo";  Options = @("1 - Reset the password","3 - Reset + sign out interactive sessions (default)","5 - Reset + reboot","11 - Reset + sign out + terminate remaining processes *"); Values = @(1,3,5,11) }
+                @{ VN = "ADPasswordEncryptionEnabled";            Label = "Encrypt the password in Active Directory";         Type = "bool" }
+                @{ VN = "ADPasswordEncryptionPrincipal";          Label = "Principal allowed to decrypt";                     Type = "string"; Hint = "Leave empty so only Domain Admins can decrypt. Accepted formats: DOMAIN\Group  -  user@domain.com  -  S-1-5-21-..." }
+                @{ VN = "ADEncryptedPasswordHistorySize";         Label = "Encrypted password history size (0-12)";           Type = "int" }
+                @{ VN = "ADBackupDSRMPassword";                   Label = "Back up the DSRM password (domain controllers)";   Type = "bool" }
+                @{ VN = "AutomaticAccountManagementEnabled";      Label = "Automatic account management (Win 11 24H2+) *";    Type = "bool" }
+                @{ VN = "AutomaticAccountManagementTarget";       Label = "Account to manage automatically *";                Type = "combo";  Options = @("0 - Built-in Administrator","1 - New custom account (default)"); Values = @(0,1) }
+                @{ VN = "AutomaticAccountManagementNameOrPrefix"; Label = "Automatic account name or prefix *";               Type = "string"; Hint = "Max 14 characters when RandomizeName is enabled (default: WLapsAdmin)" }
+                @{ VN = "AutomaticAccountManagementEnableAccount"; Label = "Enable the automatic account *";                  Type = "bool" }
+                @{ VN = "AutomaticAccountManagementRandomizeName"; Label = "Randomise the automatic account name *";          Type = "bool" }
             )
 
             $lapsRowIdx = 0
@@ -4483,6 +4660,11 @@ function Initialize-GUI {
     Load-AllConfigs
     Write-ConsoleUI "Configurations loaded." "Success"
 
+    # Resolved once, here, rather than per card: Populate-HardeningTab runs on every refresh and
+    # this costs a handful of LDAP queries. Domain Admins is already guaranteed by the connection
+    # gate, so only IsSchemaAdmin is actually consumed downstream.
+    $script:Privilege = Test-LOCKmeADPrivilege -Server $script:Connection.Server -Credential $script:Connection.Credential
+
     Populate-Dashboard
     if ($script:Configs.Hardening) { Populate-HardeningTab }
     if ($script:Configs.GPO)       { Populate-GPOTab }
@@ -4984,6 +5166,16 @@ function Register-GUIEvents {
         }
         $sp.Children.Add($lb) | Out-Null
 
+        # Opt-in, and deliberately not ticked by default: restoring an ACL is reversible by
+        # re-deploying, deleting a group is not. Only groups the selected run actually created are
+        # eligible, matched on the SID recorded at creation -- see Remove-RBACDeployedGroup.
+        $chkGroups = New-Object System.Windows.Controls.CheckBox
+        $chkGroups.Content = "Also delete the groups this run created (irreversible)"
+        $chkGroups.FontSize = 12
+        $chkGroups.Foreground = Get-WPFBrush "#A93226"
+        $chkGroups.Margin = [System.Windows.Thickness]::new(0, 12, 0, 0)
+        $sp.Children.Add($chkGroups) | Out-Null
+
         $btnRestore = New-Object System.Windows.Controls.Button
         $btnRestore.Content = "Restore Run"
         $btnRestore.Width = 120
@@ -4996,9 +5188,10 @@ function Register-GUIEvents {
         $btnRestore.Cursor = "Hand"
         $btnRestore.HorizontalAlignment = "Right"
 
-        $capturedLb     = $lb
-        $capturedBW     = $bW
-        $capturedModule = Join-Path $projectRoot "Modules\RBAC\RBAC.psm1"
+        $capturedLb        = $lb
+        $capturedBW        = $bW
+        $capturedChkGroups = $chkGroups
+        $capturedModule    = Join-Path $projectRoot "Modules\RBAC\RBAC.psm1"
 
         $btnRestore.Add_Click({
             $selected = $capturedLb.SelectedItem
@@ -5017,8 +5210,12 @@ function Register-GUIEvents {
             }
 
             $runName = [System.IO.Path]::GetFileName($runPath)
+            $alsoGroups = [bool]$capturedChkGroups.IsChecked
+            $groupWarning = if ($alsoGroups) {
+                "`n`nThe groups this run created will also be DELETED. That cannot be undone, and any GPO security template referencing them by SID will be left with a dangling entry."
+            } else { "" }
             $confirm = [System.Windows.MessageBox]::Show(
-                "Restore $($files.Count) ACL backup(s) from run '$runName'?`n`nEach OU's current ACL will be fully replaced.",
+                "Restore $($files.Count) ACL backup(s) from run '$runName'?`n`nEach OU's current ACL will be fully replaced.$groupWarning",
                 "Confirm Restore",
                 [System.Windows.MessageBoxButton]::YesNo,
                 [System.Windows.MessageBoxImage]::Warning
@@ -5039,6 +5236,23 @@ function Register-GUIEvents {
                     }
                 }
                 $summary = "$okCount of $($files.Count) ACL(s) restored."
+
+                # Groups go after the ACLs, never before: dropping a group first would leave its
+                # SID orphaned in the very ACEs the restore is about to remove anyway.
+                if ($alsoGroups) {
+                    try {
+                        $g = Remove-RBACDeployedGroup -RunFolder $runPath `
+                                -Server $script:Connection.Server -Credential $script:Connection.Credential
+                        $summary += "`n$($g.Deleted) group(s) deleted, $($g.Skipped) skipped, $($g.Errors) error(s)."
+                        if ($g.SkipReasons.Count -gt 0) {
+                            $summary += "`n`nSkipped:`n" + (($g.SkipReasons | Select-Object -First 10) -join "`n")
+                        }
+                    }
+                    catch {
+                        $failMsgs += "group removal: $($_.Exception.Message)"
+                    }
+                }
+
                 if ($failMsgs.Count -gt 0) {
                     $summary += "`n`nFailed:`n" + ($failMsgs -join "`n")
                     [System.Windows.MessageBox]::Show($summary, "Restore Completed with Errors",

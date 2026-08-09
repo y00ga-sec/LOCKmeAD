@@ -96,19 +96,22 @@
       "Enabled": true,
       "Parameters": {
         "SelfPermissionOUs": [
+          "OU=Servers,OU=T0-Prod,DC=corp,DC=local",
+          "OU=PAWs,OU=T0-Prod,DC=corp,DC=local",
+          "OU=Servers,OU=T1-Prod,DC=corp,DC=local",
           "OU=Workstations,OU=T2-Prod,DC=corp,DC=local"
         ],
         "ReadPasswordOUs": [
           "OU=Workstations,OU=T2-Prod,DC=corp,DC=local"
         ],
         "ReadPasswordPrincipals": [
-          "CORP\\GDL-LAPS-Pwd-Read"
+          "CORP\\DL_T2_Workstations_Manage"
         ],
         "ResetPasswordOUs": [
           "OU=Workstations,OU=T2-Prod,DC=corp,DC=local"
         ],
         "ResetPasswordPrincipals": [
-          "CORP\\GDL-LAPS-Pwd-Reset"
+          "CORP\\DL_T2_Workstations_Manage"
         ]
       }
     }

@@ -54,7 +54,15 @@ Import-Module (Join-Path $rootDir "Modules\Common\Connection.psm1") -Force
 
 # Resolve the AD connection: implicit (domain-joined) or explicit (-Server/-Credential),
 # prompting interactively when this host is not domain-joined and nothing was supplied.
-$connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
+# A refused connection must read as a clear operator error, not as an unhandled
+# exception: Resolve-LOCKmeADConnection throws when the account is not a Domain Admin.
+try {
+    $connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
+}
+catch {
+    Write-Host "`n[ERROR] $($_.Exception.Message)`n" -ForegroundColor Red
+    exit 1
+}
 
 # ============================================================================
 # Load configuration

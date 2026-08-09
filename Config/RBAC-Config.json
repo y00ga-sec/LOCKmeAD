@@ -143,7 +143,7 @@
         },
         {
           "Name": "DL_T0_DNS_ForestZone",
-          "Description": "DL T0 - DNS record management on the forest.lol zone",
+          "Description": "DL T0 - DNS record management on the corp.local zone",
           "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=corp,DC=local",
           "Permissions": [
             {
@@ -165,6 +165,31 @@
               "AccessControlType": "Allow"
             }
           ]
+        },
+        {
+          "Name": "DL_T0_DNS_MsDcs",
+          "Description": "DL T0 - DNS record management on the _msdcs.corp.local forest zone",
+          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=corp,DC=local",
+          "Permissions": [
+            {
+              "Type": "AD",
+              "TargetOU": "DC=_msdcs.corp.local,CN=MicrosoftDNS,DC=ForestDnsZones,DC=corp,DC=local",
+              "ADRights": "CreateChild, DeleteChild",
+              "ObjectType": "dnsNode",
+              "InheritanceType": "All",
+              "InheritedObjectType": "",
+              "AccessControlType": "Allow"
+            },
+            {
+              "Type": "AD",
+              "TargetOU": "DC=_msdcs.corp.local,CN=MicrosoftDNS,DC=ForestDnsZones,DC=corp,DC=local",
+              "ADRights": "WriteProperty",
+              "ObjectType": "dnsRecord",
+              "InheritanceType": "Descendents",
+              "InheritedObjectType": "dnsNode",
+              "AccessControlType": "Allow"
+            }
+          ]
         }
       ]
     },
@@ -174,7 +199,11 @@
       "GlobalGroup": {
         "Name": "GG_T0_Admins",
         "Description": "T0 global group - Tier 0 full administrators",
-        "OU": "OU=GroupsT0,OU=Admin,DC=corp,DC=local"
+        "OU": "OU=GroupsT0,OU=Admin,DC=corp,DC=local",
+        "MemberOf": [
+          "DL_T0_Servers_LocalAdmin",
+          "DL_T0_PAWs_LocalAdmin"
+        ]
       },
       "DomainLocalGroups": [
         {
@@ -213,7 +242,7 @@
         },
         {
           "Name": "DL_T0_DNS_ForestZone",
-          "Description": "DL T0 - DNS record management on the forest.lol zone",
+          "Description": "DL T0 - DNS record management on the corp.local zone",
           "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=corp,DC=local",
           "Permissions": []
         },
@@ -255,6 +284,22 @@
               "ADRights": "WriteProperty",
               "ObjectType": "gPOptions",
               "InheritanceType": "All",
+              "InheritedObjectType": "",
+              "AccessControlType": "Allow"
+            }
+          ]
+        },
+        {
+          "Name": "DL_T0_Sites_Manage",
+          "Description": "DL T0 - Site, subnet and replication topology management",
+          "OU": "OU=Delegation,OU=GroupsT0,OU=Admin,DC=corp,DC=local",
+          "Permissions": [
+            {
+              "Type": "AD",
+              "TargetOU": "CN=Sites,CN=Configuration,DC=corp,DC=local",
+              "ADRights": "GenericAll",
+              "ObjectType": "",
+              "InheritanceType": "SelfAndChildren",
               "InheritedObjectType": "",
               "AccessControlType": "Allow"
             }
@@ -334,6 +379,22 @@
               "ObjectType": "00299570-246d-11d0-a768-00aa006e0529",
               "InheritanceType": "Descendents",
               "InheritedObjectType": "bf967aba-0de6-11d0-a285-00aa003049e2",
+              "AccessControlType": "Allow"
+            }
+          ]
+        },
+        {
+          "Name": "DL_T1_Servers_SPN",
+          "Description": "DL T1 - Validated SPN write on T1 servers",
+          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=corp,DC=local",
+          "Permissions": [
+            {
+              "Type": "AD",
+              "TargetOU": "OU=Servers,OU=T1-Prod,DC=corp,DC=local",
+              "ADRights": "Self",
+              "ObjectType": "servicePrincipalName",
+              "InheritanceType": "Descendents",
+              "InheritedObjectType": "computer",
               "AccessControlType": "Allow"
             }
           ]
@@ -435,6 +496,22 @@
               "AccessControlType": "Allow"
             }
           ]
+        },
+        {
+          "Name": "DL_T1_Groups_Members",
+          "Description": "DL T1 - Group membership management in OU=GroupsT1 (member attribute only)",
+          "OU": "OU=Delegation,OU=GroupsT1,OU=Admin,DC=corp,DC=local",
+          "Permissions": [
+            {
+              "Type": "AD",
+              "TargetOU": "OU=GroupsT1,OU=Admin,DC=corp,DC=local",
+              "ADRights": "WriteProperty",
+              "ObjectType": "member",
+              "InheritanceType": "Descendents",
+              "InheritedObjectType": "group",
+              "AccessControlType": "Allow"
+            }
+          ]
         }
       ]
     },
@@ -508,6 +585,22 @@
               "ObjectType": "28630ebf-41d5-11d1-a9c1-0000f80367c1",
               "InheritanceType": "Descendents",
               "InheritedObjectType": "bf967aba-0de6-11d0-a285-00aa003049e2",
+              "AccessControlType": "Allow"
+            }
+          ]
+        },
+        {
+          "Name": "DL_T2_Users_PersonalInfo",
+          "Description": "DL T2 - Personal information property set on production users",
+          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=corp,DC=local",
+          "Permissions": [
+            {
+              "Type": "AD",
+              "TargetOU": "OU=Users,OU=T2-Prod,DC=corp,DC=local",
+              "ADRights": "ReadProperty, WriteProperty",
+              "ObjectType": "Personal Information",
+              "InheritanceType": "Descendents",
+              "InheritedObjectType": "user",
               "AccessControlType": "Allow"
             }
           ]
@@ -674,6 +767,22 @@
               "InheritanceType": "Descendents",
               "InheritedObjectType": "msFVE-RecoveryInformation",
               "AccessControlType": "Allow"
+            }
+          ]
+        },
+        {
+          "Name": "DL_T2_Users_DenyDelete",
+          "Description": "DL T2 - Explicit deny on user deletion in OU=Users,OU=T2-Prod",
+          "OU": "OU=Delegation,OU=GroupsT2,OU=Admin,DC=corp,DC=local",
+          "Permissions": [
+            {
+              "Type": "AD",
+              "TargetOU": "OU=Users,OU=T2-Prod,DC=corp,DC=local",
+              "ADRights": "DeleteChild",
+              "ObjectType": "user",
+              "InheritanceType": "None",
+              "InheritedObjectType": "",
+              "AccessControlType": "Deny"
             }
           ]
         }

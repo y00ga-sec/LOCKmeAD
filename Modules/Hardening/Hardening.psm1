@@ -124,16 +124,33 @@ function Import-HardeningConfiguration {
             throw "Task '$($task.Name)' is missing the 'Enabled' property."
         }
 
-        # Validate required parameters per task
-        switch ($task.Name) {
-            'RaiseFunctionalLevel' {
-                if (-not $task.Parameters -or -not $task.Parameters.TargetDomainLevel -or -not $task.Parameters.TargetForestLevel) {
-                    throw "Task '$($task.Name)' requires Parameters.TargetDomainLevel and Parameters.TargetForestLevel."
+        # Validate required parameters per task.
+        #
+        # The first branch used to test 'RaiseFunctionalLevel' -- a name absent from
+        # $validTaskNames since that task was split into the Domain/Forest pair -- so it never
+        # matched and neither level task was validated. A config missing TargetDomainLevel got
+        # all the way to Set-HardeningDomainFunctionalLevel, whose -TargetDomainLevel is
+        # Mandatory, and stalled there on a parameter prompt instead of failing here.
+        #
+        # Only enabled tasks are checked: a task the operator turned off is a deliberate no-op,
+        # and rejecting the whole file over its Parameters block would abort every other task
+        # with it, since a failed Import-* exits the deployment script outright.
+        if ($task.Enabled) {
+            switch ($task.Name) {
+                'RaiseDomainFunctionalLevel' {
+                    if (-not $task.Parameters -or -not $task.Parameters.TargetDomainLevel) {
+                        throw "Task '$($task.Name)' requires Parameters.TargetDomainLevel."
+                    }
                 }
-            }
-            'DeployT0AuthPolicy' {
-                if (-not $task.Parameters -or -not $task.Parameters.PolicyName -or -not $task.Parameters.SiloName) {
-                    throw "Task '$($task.Name)' requires Parameters.PolicyName and Parameters.SiloName."
+                'RaiseForestFunctionalLevel' {
+                    if (-not $task.Parameters -or -not $task.Parameters.TargetForestLevel) {
+                        throw "Task '$($task.Name)' requires Parameters.TargetForestLevel."
+                    }
+                }
+                'DeployT0AuthPolicy' {
+                    if (-not $task.Parameters -or -not $task.Parameters.PolicyName -or -not $task.Parameters.SiloName) {
+                        throw "Task '$($task.Name)' requires Parameters.PolicyName and Parameters.SiloName."
+                    }
                 }
             }
         }
@@ -1578,6 +1595,16 @@ function Update-HardeningLAPSSchema {
     # its WinRM session is running on.
     $schemaMaster = (Get-ADForest @serverParam).SchemaMaster
 
+    # Say plainly that the account cannot do this, instead of letting Update-LapsADSchema fail
+    # somewhere inside a WinRM session with an error that never names the missing membership.
+    # Reached only when the schema is NOT already extended -- the idempotency check above returns
+    # first otherwise -- so this costs nothing on a converged forest. The GUI shows the same
+    # notice on this task's card.
+    $priv = Test-LOCKmeADPrivilege -Server $Server -Credential $Credential
+    if ($priv.Determined -and -not $priv.IsSchemaAdmin) {
+        Write-HardeningLog -Message "'$($priv.Identity)' is not a member of Schema Admins on the forest root. Extending the schema is reserved to that group, so this task will fail; every other task is unaffected." -Level Warning -LogDirectory $LogDirectory
+    }
+
     if ($PSCmdlet.ShouldProcess($schemaNC, "Extend schema for Windows LAPS (via $schemaMaster)")) {
         try {
             Invoke-HardeningLapsCommand -Command 'Update-LapsADSchema' `
@@ -1865,7 +1892,7 @@ function Set-HardeningDNSDynamicUpdate {
                         $acl.AddAccessRule($newAce)
                     }
 
-                    Set-Acl -Path $zonePath -AclObject $acl
+                    Set-Acl -Path $zonePath -AclObject $acl -ErrorAction Stop
                     Write-HardeningLog -Message "  Zone '$($zone.Name)': DNS dynamic update restricted to Domain Computers only." -Level Success -LogDirectory $LogDirectory
                 }
                 else {
@@ -2595,8 +2622,16 @@ function Test-HardeningDNSDynamicUpdate {
     $adDrive = Get-LOCKmeADDrive -Server $Server -Credential $Credential
     try {
         $domainDN    = (Get-ADDomain @serverParam).DistinguishedName
-        $dnsBase     = "CN=MicrosoftDNS,DC=DomainDnsZones,$domainDN"
-        $zones       = @(Get-ADObject -Filter { objectClass -eq 'dnsZone' } -SearchBase $dnsBase @serverParam -ErrorAction SilentlyContinue)
+        # Both application partitions, to match what Set-HardeningDNSDynamicUpdate actually
+        # modifies. Checking DomainDnsZones alone silently ignored every forest-wide zone --
+        # _msdcs.<domain> lives in ForestDnsZones -- so the task could report "OK" having never
+        # looked at a zone it had just re-ACLed.
+        $zones = @()
+        foreach ($partition in 'DomainDnsZones', 'ForestDnsZones') {
+            $zones += @(Get-ADObject -Filter { objectClass -eq 'dnsZone' } `
+                -SearchBase "CN=MicrosoftDNS,DC=$partition,$domainDN" -SearchScope OneLevel `
+                @serverParam -ErrorAction SilentlyContinue)
+        }
 
         if ($zones.Count -eq 0) {
             return New-HardeningCheckResult -Status 'Error' -Message "No AD-integrated DNS zones found"
@@ -2604,7 +2639,7 @@ function Test-HardeningDNSDynamicUpdate {
 
         $zoneWithAuthUsers = @()
         foreach ($zone in $zones) {
-            $acl = Get-Acl -Path "${adDrive}$($zone.DistinguishedName)" -ErrorAction SilentlyContinue
+            $acl = Get-Acl -Path "${adDrive}\$($zone.DistinguishedName)" -ErrorAction SilentlyContinue
             if ($acl) {
                 $bad = $acl.Access | Where-Object {
                     $_.IdentityReference -match 'Authenticated Users' -and
@@ -2751,10 +2786,24 @@ function Test-HardeningADObjectOwnership {
             return New-HardeningCheckResult -Status 'Error' -Message "No user/computer objects found"
         }
 
+        # Compare owners by SID, exactly like Set-HardeningADObjectOwnership does.
+        #
+        # This used to test the display string ($acl.Owner -notmatch 'Domain Admins'), which only
+        # works where the local LSA can resolve a domain SID to a name. Run from a host that is
+        # not domain-joined -- the very scenario -Credential exists for -- .Owner comes back as
+        # the raw "O:S-1-5-21-...-512" SDDL form, matched nothing, and the check reported every
+        # single object as wrongly owned while the deployment task correctly reported them all as
+        # already correct. Resolving the group once and comparing SID values removes the
+        # dependency on name resolution entirely, and is immune to a localized group name.
+        $domainAdminsSid = (Get-ADGroup -Identity "$((Get-ADDomain @serverParam).DomainSID.Value)-512" @serverParam).SID.Value
+
         $wrong = 0
         foreach ($obj in $objects) {
-            $acl = Get-Acl -Path "${adDrive}$($obj.DistinguishedName)" -ErrorAction SilentlyContinue
-            if ($acl -and $acl.Owner -notmatch 'Domain Admins') { $wrong++ }
+            # Drive-qualified with the separator, like every other Get-Acl call in this module.
+            $acl = Get-Acl -Path "${adDrive}\$($obj.DistinguishedName)" -ErrorAction SilentlyContinue
+            if (-not $acl) { continue }
+            $ownerSid = try { $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value } catch { $null }
+            if ($ownerSid -ne $domainAdminsSid) { $wrong++ }
         }
 
         if ($wrong -eq 0) {

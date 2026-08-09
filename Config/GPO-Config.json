@@ -7,7 +7,7 @@
     {
       "Name": "SEC-Disable-NTLMv1",
       "Description": "Enforce NTLMv2-only authentication, refuse LM and NTLMv1 responses",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "SecurityOptions": [
@@ -23,7 +23,7 @@
     {
       "Name": "SEC-Disable-LMHash",
       "Description": "Prevent storage of LAN Manager password hashes on next password change",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "SecurityOptions": [
@@ -39,7 +39,7 @@
     {
       "Name": "SEC-Disable-LLMNR",
       "Description": "Disable Link-Local Multicast Name Resolution to prevent LLMNR poisoning attacks",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "RegistrySettings": [
@@ -55,7 +55,7 @@
     {
       "Name": "SEC-Disable-mDNS",
       "Description": "Disable Multicast DNS to prevent mDNS poisoning attacks",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "RegistryPreferences": [
@@ -71,7 +71,7 @@
     {
       "Name": "SEC-Disable-NBT-NS",
       "Description": "Disable NetBIOS over TCP/IP name resolution to prevent NBT-NS poisoning attacks",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "Scripts": [
@@ -87,7 +87,7 @@
     {
       "Name": "SEC-Disable-Wdigest",
       "Description": "Disable WDigest authentication to prevent cleartext credential caching in memory",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "RegistryPreferences": [
@@ -103,7 +103,7 @@
     {
       "Name": "SEC-Disable-SMBv1",
       "Description": "Disable SMBv1 protocol (server and client) to prevent EternalBlue-class attacks",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "RegistryPreferences": [
@@ -126,7 +126,7 @@
     {
       "Name": "SEC-Tiering-T0-DenyLogon",
       "Description": "Deny all logon types to Tier 0 assets for T1 and T2 accounts - link to T0-Prod OUs",
-      "Enabled": false,
+      "Enabled": true,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": "OU=T0-Prod,DC=corp,DC=local",
       "UserRightsAssignments": [
@@ -135,7 +135,8 @@
           "Description": "Deny log on locally",
           "Groups": [
             "DL_T1",
-            "DL_T2"
+            "DL_T2",
+            "Domain Admins"
           ]
         },
         {
@@ -303,7 +304,7 @@
     {
       "Name": "SEC-GPO-RefreshCycle-15min",
       "Description": "Reduce Group Policy refresh interval to 15 minutes (default is 90 minutes) for faster policy application",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "RegistrySettings": [
@@ -326,7 +327,7 @@
     {
       "Name": "SEC-Disable-IPv6",
       "Description": "Disable all IPv6 components to reduce attack surface and prevent IPv6-based attacks",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "RegistryPreferences": [
@@ -342,7 +343,7 @@
     {
       "Name": "SEC-Enable-LDAPAudit",
       "Description": "Enable LDAP interface diagnostics logging to detect unsigned LDAP binds (Event ID 2889) on domain controllers",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "RegistryPreferences": [
@@ -358,7 +359,7 @@
     {
       "Name": "SEC-Negotiate-LDAPSigning-Client",
       "Description": "Negotiate LDAP signing on clients (sign if server supports it)",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "SecurityOptions": [
@@ -374,7 +375,7 @@
     {
       "Name": "SEC-Require-LDAPSigning-Server",
       "Description": "Require LDAP signing on domain controllers to prevent LDAP relay and man-in-the-middle attacks",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "SecurityOptions": [
@@ -390,7 +391,7 @@
     {
       "Name": "SEC-Require-LDAPSigning-Client",
       "Description": "Require LDAP signing on clients to ensure all LDAP connections use signing",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "SecurityOptions": [
@@ -406,7 +407,7 @@
     {
       "Name": "SEC-Enable-LDAPChannelBinding",
       "Description": "Enable LDAP channel binding on domain controllers with 'When Supported' mode to mitigate LDAP relay attacks",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "SecurityOptions": [
@@ -422,7 +423,7 @@
     {
       "Name": "SEC-Disable-NTLM",
       "Description": "Disable all NTLM authentication (incoming and outgoing) to force Kerberos-only authentication",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "SecurityOptions": [
@@ -445,7 +446,7 @@
     {
       "Name": "SEC-Disable-PrintSpooler",
       "Description": "Disable the Print Spooler service to prevent PrintNightmare and related print spooler exploitation",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "SystemServices": [
@@ -461,7 +462,7 @@
       "Description": "Require SMB signing on servers for all connections to prevent SMB relay attacks",
       "NoteSummary": "Server-side signing alone is what stops SMB relay",
       "Note": "Requiring SMB signing on the server side is what actually defeats SMB relay, which is why LOCKmeAD ships no client-side counterpart.\n\nIn a relay attack the attacker coerces a victim into authenticating to a host under their control, then replays that authentication against one of your machines. The attacker never holds the session key, so the relayed session cannot be signed. A server that requires signing rejects it outright.\n\nEnforcing 'require signing' on the client side only protects a client that connects to a malicious server. It does nothing to stop your own machines from being relayed to, which is the path that matters here.\n\nKeep in mind that every Windows host acts as an SMB server, not just file servers: the LanmanServer service runs on workstations too, and workstations are common relay targets. Link this GPO broadly rather than to server OUs only.",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "SecurityOptions": [
@@ -484,15 +485,15 @@
     {
       "Name": "SEC-Tiering-T0-LocalAdmins-Servers",
       "Description": "Enforce local Administrators membership on T0 servers via Restricted Groups (replaces full membership - add any additional local admin groups to the Members array below)",
-      "Enabled": false,
+      "Enabled": true,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": "OU=Servers,OU=T0-Prod,DC=corp,DC=local",
       "RestrictedGroups": [
         {
           "Group": "Administrators",
           "Members": [
-            "Domain Admins",
-            "DL_T0_Servers_LocalAdmin"
+            "DL_T0_Servers_LocalAdmin",
+            "Enterprise Admins"
           ],
           "Description": "Enforce local Administrators on T0 servers"
         }
@@ -550,7 +551,7 @@
     {
       "Name": "SEC-Kerberos-EnforceAES-DCs",
       "Description": "Disables RC4 at the domain level on domain controllers by setting DefaultDomainSupportedEncTypes to 0x38 (AES128, AES256, Future). This prevents the KDC from issuing RC4 tickets even when an account's msDS-SupportedEncryptionTypes is blank. WARNING: May be too aggressive for most organizations - only apply after all service accounts have been remediated and no RC4-dependent devices remain.",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "RegistryPreferences": [
@@ -567,7 +568,7 @@
     {
       "Name": "SEC-Kerberos-EnforceAES-Clients",
       "Description": "Restrict Kerberos encryption to AES128, AES256, and Future types only - disables RC4 and DES on clients. WARNING: Only apply to devices confirmed to have no RC4 dependencies (verify via Event ID 4768 Advertised Etypes). Devices with RC4-only keytabs, legacy NAS, or non-Windows appliances will break if targeted before remediation.",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "SecurityOptions": [
@@ -583,7 +584,7 @@
     {
       "Name": "SEC-Configure-LAPS",
       "Description": "Configure Windows LAPS to manage the built-in local administrator password and back it up to Active Directory. Enforces strong password complexity, 30-day rotation, and post-authentication password reset with session termination.",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "RegistrySettings": [
@@ -662,7 +663,7 @@
           "ValueName": "ADPasswordEncryptionPrincipal",
           "Value": "",
           "Type": "String",
-          "Description": "SID or fully-qualified name of the user or group authorized to decrypt the AD password (e.g. contoso\\LAPSAdmins). Empty = Domain Admins only. Ignored unless ADPasswordEncryptionEnabled=True."
+          "Description": "SID or fully-qualified name of the user or group authorized to decrypt the AD password. Empty = Domain Admins only. Ignored unless ADPasswordEncryptionEnabled=True."
         },
         {
           "Key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\LAPS",
@@ -718,7 +719,7 @@
     {
       "Name": "SEC-Kerberos-Armoring-DC",
       "Description": "Enable KDC support for claims, compound authentication and Kerberos armoring on Domain Controllers (Always provide claims)",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "RegistrySettings": [
@@ -741,7 +742,7 @@
     {
       "Name": "SEC-Kerberos-Armoring-Client",
       "Description": "Enable Kerberos client support for claims, compound authentication and Kerberos armoring on domain-joined computers",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
       "LinkTargets": null,
       "RegistrySettings": [

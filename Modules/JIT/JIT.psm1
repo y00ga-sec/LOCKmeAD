@@ -487,20 +487,19 @@ function New-JITDeploymentGPO {
             $iniContent | Set-Content -Path "$machineScriptsPath\psscripts.ini" -Encoding Unicode
             Write-JITLog -Message "Created psscripts.ini in '$machineScriptsPath'" -Level Info -LogDirectory $LogDirectory
 
-            # --- Step 6: Update GPT.INI version ---
-            $gptIniPath = "$sysvolBase\GPT.INI"
-            $content = Get-Content $gptIniPath -Raw
-            if ($content -match 'Version=(\d+)') {
-                $oldVer = [int]$Matches[1]
-                $newVer = $oldVer + 1
-                $content = $content -replace "Version=$oldVer", "Version=$newVer"
-                $content | Set-Content $gptIniPath -Encoding ASCII
-                Write-JITLog -Message "Updated GPT.INI version from $oldVer to $newVer." -Level Info -LogDirectory $LogDirectory
-            }
-
-            # --- Step 7: Update gPCMachineExtensionNames (Scripts CSE) ---
+            # --- Step 6: Register the Scripts CSE, then bump the version in AD and SYSVOL together ---
+            #
+            # The two counters have to move as a pair. This previously incremented GPT.INI only
+            # (Version=n+1, by regex) and never wrote the groupPolicyContainer's versionNumber,
+            # so AD stayed at 0 forever while SYSVOL climbed one per deployment. The Group Policy
+            # client keys its "has this GPO changed?" decision on the AD versionNumber: left at 0
+            # the GPO reads as empty, the startup script is not reliably processed, and a later
+            # update to the published tool is never picked up at all.
+            #
+            # Same idiom as Set-GPOScript in the GPO module: machine version in the lower 16 bits,
+            # user version in the upper 16, and GPT.INI carrying the identical combined value.
             $cse = "[{42B5FAAE-6536-11D2-AE5A-0000F87571E3}{40B6664F-4972-11D1-A7CA-0000F87571E3}]"
-            $gpoObj = Get-ADObject -Filter { Name -eq $gpoId } -SearchBase "CN=Policies,CN=System,$DomainDN" -Properties gPCMachineExtensionNames @serverParam
+            $gpoObj = Get-ADObject -Filter { Name -eq $gpoId } -SearchBase "CN=Policies,CN=System,$DomainDN" -Properties gPCMachineExtensionNames, versionNumber @serverParam
             $existing = $gpoObj.gPCMachineExtensionNames
             if (-not $existing -or $existing -notlike "*42B5FAAE*") {
                 $newExt = if ($existing) { "$existing$cse" } else { $cse }
@@ -510,6 +509,19 @@ function New-JITDeploymentGPO {
             else {
                 Write-JITLog -Message "Scripts CSE already present on GPO '$GPOName'." -Level Warning -LogDirectory $LogDirectory
             }
+
+            $currentVersion = if ($gpoObj.versionNumber) { [int]$gpoObj.versionNumber } else { 0 }
+            $userVersion    = ($currentVersion -shr 16) -band 0xFFFF
+            $machineVersion = ($currentVersion -band 0xFFFF) + 1
+            $newVersion     = ($userVersion -shl 16) -bor $machineVersion
+            Set-ADObject -Identity $gpoObj -Replace @{ versionNumber = $newVersion } @serverParam
+
+            $gptIniPath = "$sysvolBase\GPT.INI"
+            if (Test-Path $gptIniPath) {
+                $gptContent = (Get-Content $gptIniPath -Raw) -replace 'Version=\d+', "Version=$newVersion"
+                Set-Content -Path $gptIniPath -Value $gptContent -Encoding ASCII
+            }
+            Write-JITLog -Message "GPO '$GPOName' version bumped to $newVersion (AD object and GPT.INI in sync)." -Level Info -LogDirectory $LogDirectory
 
             Write-JITLog -Message "GPO '$GPOName' startup script configured successfully." -Level Success -LogDirectory $LogDirectory
         }

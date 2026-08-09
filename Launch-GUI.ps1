@@ -27,13 +27,15 @@ param(
 $ErrorActionPreference = "Stop"
 
 # --- Check required modules ---
-$requiredModules = @("ActiveDirectory", "GroupPolicy")
-$missingModules  = $requiredModules | Where-Object { -not (Get-Module -Name $_) -and -not (Get-Module -ListAvailable -Name $_) }
-if ($missingModules) {
-    Write-Host "`n[ERROR] The following required modules are not available: $($missingModules -join ', ')" -ForegroundColor Red
-    Write-Host "`nImport them in your current session and try again:" -ForegroundColor Yellow
-    Write-Host "  Import-Module $($missingModules -join ', ')`n" -ForegroundColor Cyan
+# GroupPolicy is intentionally only a warning here -- see the same check in LOCKmeAD.ps1 for why.
+if (-not (Get-Module -Name ActiveDirectory) -and -not (Get-Module -ListAvailable -Name ActiveDirectory)) {
+    Write-Host "`n[ERROR] The required module 'ActiveDirectory' is not available." -ForegroundColor Red
+    Write-Host "`nInstall RSAT (or run on a domain controller) and try again.`n" -ForegroundColor Yellow
     exit 1
+}
+if (-not (Get-Module -Name GroupPolicy) -and -not (Get-Module -ListAvailable -Name GroupPolicy)) {
+    Write-Host "`n[WARNING] The 'GroupPolicy' module is not available on this host." -ForegroundColor Yellow
+    Write-Host "  GPO/JIT deployment needs it locally only in implicit (domain-joined) mode.`n" -ForegroundColor DarkGray
 }
 $scriptRoot = $PSScriptRoot
 
@@ -50,14 +52,50 @@ Add-Type -AssemblyName WindowsBase
 
 # Resolve the AD connection: implicit if domain-joined, otherwise explicit
 # -Server/-Credential, or a connection dialog if neither was supplied.
-if ($Server -or $Credential -or (Test-LOCKmeADDomainJoined)) {
+if ($Server -or $Credential) {
     $script:Connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
 }
 else {
-    $script:Connection = Show-GUIConnectionDialog
+    # A saved profile is consulted BEFORE anything else. This branch used to jump straight to the
+    # connection dialog whenever the host was not domain-joined, so the "Remember this connection"
+    # checkbox wrote a profile that the GUI then never read -- the operator re-typed the same
+    # credentials at every launch. Resolve-LOCKmeADConnection could not be used here: with nothing
+    # to resolve it falls back to Read-Host/Get-Credential on the console, which is exactly what a
+    # GUI must not do.
+    #
+    # The profile is verified before being trusted: a stored credential goes stale as soon as the
+    # password changes, and an unchecked one would leave every module failing on authentication
+    # errors with no obvious cause. On failure the dialog opens, pre-filled with the saved server.
+    $script:Connection = $null
+    $saved = Get-LOCKmeADSavedConnection
+    if ($saved) {
+        if (-not (Test-LOCKmeADConnection -Connection $saved)) {
+            Write-Host "  The saved connection for $($saved.Server) no longer authenticates; asking again." -ForegroundColor Yellow
+        }
+        else {
+            # A profile saved before the privilege gate existed, or an account since removed from
+            # Domain Admins, must not be trusted just because it still authenticates.
+            try {
+                $null = Assert-LOCKmeADPrivilege -Connection $saved
+                $script:Connection = $saved
+                Write-Host "  Using the saved connection for $($saved.Server) ($($saved.Credential.UserName))." -ForegroundColor DarkGray
+            }
+            catch {
+                Write-Host "  Saved connection rejected: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+        }
+    }
+
+    if (-not $script:Connection -and (Test-LOCKmeADDomainJoined)) {
+        $script:Connection = Resolve-LOCKmeADConnection
+    }
+
     if (-not $script:Connection) {
-        Write-Host "  Connection cancelled." -ForegroundColor Yellow
-        exit 0
+        $script:Connection = Show-GUIConnectionDialog -DefaultServer $(if ($saved) { $saved.Server } else { '' })
+        if (-not $script:Connection) {
+            Write-Host "  Connection cancelled." -ForegroundColor Yellow
+            exit 0
+        }
     }
 }
 

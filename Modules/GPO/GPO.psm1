@@ -466,9 +466,14 @@ function Set-GPOFilteringPermission {
             $acl      = Get-Acl -Path "${adDrive}\$gpoDN" -ErrorAction Stop
 
             # --- Remove Authenticated Users (S-1-5-11) from security filtering ---
+            # Translate() is guarded: an ACE naming a principal the local LSA cannot resolve
+            # (orphaned SID, broken trust) throws, and with $ErrorActionPreference = 'Stop' in
+            # the deployment scripts that aborted the whole GPO. Such an ACE is by definition
+            # not Authenticated Users, so treating it as a non-match is the correct outcome --
+            # the SYSVOL branch below already did exactly this.
             $authUsersSID = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-11")
             $rulesToRemove = @($acl.Access | Where-Object {
-                $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq $authUsersSID.Value
+                try { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq $authUsersSID.Value } catch { $false }
             })
             foreach ($rule in $rulesToRemove) {
                 $acl.RemoveAccessRule($rule) | Out-Null
@@ -515,7 +520,7 @@ function Set-GPOFilteringPermission {
             Write-GPOLog -Message "  ACE: Deny Apply Group Policy -> $DenyGroupName" -Level Success -LogDirectory $LogDirectory
 
             # Commit AD ACL
-            Set-Acl -Path "${adDrive}\$gpoDN" -AclObject $acl
+            Set-Acl -Path "${adDrive}\$gpoDN" -AclObject $acl -ErrorAction Stop
             Write-GPOLog -Message "Filtering permissions applied to GPO '$GPOName' (AD object)." -Level Success -LogDirectory $LogDirectory
 
             # --- Sync SYSVOL folder ACL ---
@@ -540,7 +545,7 @@ function Set-GPOFilteringPermission {
                 )
                 $sysvolAcl.AddAccessRule($fsReadRule)
 
-                Set-Acl -Path $sysvolPath -AclObject $sysvolAcl
+                Set-Acl -Path $sysvolPath -AclObject $sysvolAcl -ErrorAction Stop
                 Write-GPOLog -Message "  SYSVOL ACL synced: Authenticated Users removed, ReadAndExecute granted to $ApplyGroupName." -Level Success -LogDirectory $LogDirectory
             }
             else {
@@ -602,16 +607,18 @@ function Remove-GPOAuthenticatedUsers {
             $adDrive    = Get-LOCKmeADDrive -Server $Server -Credential $Credential
 
             $acl          = Get-Acl -Path "${adDrive}\$gpoDN"
+            # Guarded for the same reason as in Set-GPOFilteringPermission: an unresolvable
+            # principal in the ACL must not abort the GPO.
             $authUsersSID = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-11")
             $rulesToRemove = @($acl.Access | Where-Object {
-                $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq $authUsersSID.Value
+                try { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq $authUsersSID.Value } catch { $false }
             })
 
             if ($rulesToRemove.Count -gt 0) {
                 foreach ($rule in $rulesToRemove) {
                     $acl.RemoveAccessRule($rule) | Out-Null
                 }
-                Set-Acl -Path "${adDrive}\$gpoDN" -AclObject $acl
+                Set-Acl -Path "${adDrive}\$gpoDN" -AclObject $acl -ErrorAction Stop
                 Write-GPOLog -Message "Removed Authenticated Users from GPO '$GPOName' AD object ($($rulesToRemove.Count) ACE(s))." -Level Success -LogDirectory $LogDirectory
             }
             else {
@@ -628,7 +635,7 @@ function Remove-GPOAuthenticatedUsers {
                 })
                 if ($sysvolAuthRules.Count -gt 0) {
                     foreach ($rule in $sysvolAuthRules) { $sysvolAcl.RemoveAccessRule($rule) | Out-Null }
-                    Set-Acl -Path $sysvolPath -AclObject $sysvolAcl
+                    Set-Acl -Path $sysvolPath -AclObject $sysvolAcl -ErrorAction Stop
                     Write-GPOLog -Message "Removed Authenticated Users from SYSVOL ACL for GPO '$GPOName' ($($sysvolAuthRules.Count) ACE(s))." -Level Success -LogDirectory $LogDirectory
                 }
                 else {
