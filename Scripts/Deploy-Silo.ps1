@@ -294,7 +294,7 @@ $modeLabel = if ($WhatIfPreference) { " (SIMULATION)" } else { "" }
 
 Write-Host "  Silos deployed$modeLabel      : $($stats.SilosDeployed)" -ForegroundColor Cyan
 Write-Host "  Silos skipped (disabled) : $($stats.SilosSkipped)" -ForegroundColor Yellow
-Write-Host "  Accounts assigned        : $($stats.AccountsAssigned)" -ForegroundColor Cyan
+Write-Host "  Accounts assigned$modeLabel        : $($stats.AccountsAssigned)" -ForegroundColor Cyan
 
 if ($stats.Errors -gt 0) {
     Write-Host "  Errors                   : $($stats.Errors)" -ForegroundColor Red

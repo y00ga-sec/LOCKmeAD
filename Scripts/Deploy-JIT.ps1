@@ -313,7 +313,7 @@ $gpoLabel = if ($stats.GPOCreated) { "Yes" } else { "No" }
 
 Write-Host "  Tool published$modeLabel     : $publishLabel" -ForegroundColor Cyan
 Write-Host "  GPO configured$modeLabel     : $gpoLabel" -ForegroundColor Cyan
-Write-Host "  GPO links created        : $($stats.LinksCreated)" -ForegroundColor Cyan
+Write-Host "  GPO links created$modeLabel        : $($stats.LinksCreated)" -ForegroundColor Cyan
 
 if ($stats.Errors -gt 0) {
     Write-Host "  Errors                   : $($stats.Errors)" -ForegroundColor Red

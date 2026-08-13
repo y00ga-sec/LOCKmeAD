@@ -539,9 +539,9 @@ $modeLabel = if ($WhatIfPreference) { " (SIMULATION)" } else { "" }
 
 Write-Host "  GPOs deployed$modeLabel       : $($stats.GPOsCreated)" -ForegroundColor Cyan
 Write-Host "  GPOs skipped (disabled) : $($stats.GPOsSkipped)" -ForegroundColor Yellow
-Write-Host "  Filtering groups created: $($stats.GroupsCreated)" -ForegroundColor Cyan
+Write-Host "  Filtering groups created${modeLabel} : $($stats.GroupsCreated)" -ForegroundColor Cyan
 Write-Host "  Filtering groups present: $($stats.GroupsExisting)" -ForegroundColor DarkGray
-Write-Host "  Links created           : $($stats.LinksCreated)" -ForegroundColor Cyan
+Write-Host "  Links created$modeLabel           : $($stats.LinksCreated)" -ForegroundColor Cyan
 Write-Host "  Links already present   : $($stats.LinksExisting)" -ForegroundColor DarkGray
 
 if ($stats.Errors -gt 0) {

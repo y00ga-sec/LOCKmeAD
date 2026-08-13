@@ -48,16 +48,21 @@ function Write-RBACLog {
         "Error"   { Write-Host $logEntry -ForegroundColor Red }
     }
 
-    # Write to log file
+    # Write to log file.
+    # -WhatIf:$false on both calls: they are ShouldProcess-aware and inherit $WhatIfPreference from
+    # the calling scope, so a line emitted by another function of this module running under -WhatIf
+    # was silently dropped -- see Write-GPOLog in Modules\GPO\GPO.psm1 for the full rationale.
+    # This module needs it most: Export-RBACDeploymentReport parses this very file to build the CSV
+    # an undo run later reads back, so a truncated journal also cost the run its rollback record.
     if ($LogDirectory) {
         if (-not (Test-Path $LogDirectory)) {
-            New-Item -Path $LogDirectory -ItemType Directory -Force | Out-Null
+            New-Item -Path $LogDirectory -ItemType Directory -Force -WhatIf:$false | Out-Null
         }
         if (-not $script:LogFilePath) {
             $logFileName = "RBAC_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
             $script:LogFilePath = Join-Path $LogDirectory $logFileName
         }
-        $logEntry | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+        $logEntry | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8 -WhatIf:$false
     }
 }
 

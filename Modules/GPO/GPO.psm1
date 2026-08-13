@@ -93,16 +93,25 @@ function Write-GPOLog {
         "Error"   { Write-Host $logEntry -ForegroundColor Red }
     }
 
-    # Write to log file
+    # Write to log file.
+    #
+    # -WhatIf:$false is required on both calls. New-Item and Out-File are ShouldProcess-aware and
+    # inherit $WhatIfPreference from the scope that calls them, so the journal used to depend on
+    # WHERE a line came from: emitted by a Deploy-*.ps1 script it was written (module session state
+    # does not see the script's preference variables), emitted by another function of this module
+    # running under -WhatIf it was silently dropped. A simulation therefore left a log holding only
+    # the deployment script's own headers, with every "[WhatIf] ... would be ..." line -- the entire
+    # point of the run -- missing, and nothing on disk to tell a simulation apart from a deployment
+    # that did nothing. The journal records what happened; it is not part of what -WhatIf suppresses.
     if ($LogDirectory) {
         if (-not (Test-Path $LogDirectory)) {
-            New-Item -Path $LogDirectory -ItemType Directory -Force | Out-Null
+            New-Item -Path $LogDirectory -ItemType Directory -Force -WhatIf:$false | Out-Null
         }
         if (-not $script:LogFilePath) {
             $logFileName = "GPO_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
             $script:LogFilePath = Join-Path $LogDirectory $logFileName
         }
-        $logEntry | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+        $logEntry | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8 -WhatIf:$false
     }
 }
 

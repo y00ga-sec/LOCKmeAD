@@ -2900,9 +2900,10 @@ $script:DeploySafeOrder = @("Hardening", "Tiering", "RBAC", "PSO", "Silo", "GPO"
 $script:SpinnerFrames = @('|', '/', '-', '\')
 
 $script:VerdictColors = @{
-    SUCCESS = "#58D68D"   # green
-    PARTIAL = "#E67E22"   # orange
-    FAIL    = "#EC7063"   # red
+    SUCCESS   = "#58D68D"   # green
+    PARTIAL   = "#E67E22"   # orange
+    FAIL      = "#EC7063"   # red
+    SIMULATED = "#87CEEB"   # blue -- nothing was written, whatever the underlying verdict
 }
 
 function New-ConsoleStatusLine {
@@ -2958,10 +2959,18 @@ function Get-DeploymentVerdict {
 
         "skipped (disabled)" counters are ignored on purpose: a module the operator turned
         off is a deliberate no-op, not work that succeeded.
+
+        Simulated is reported separately rather than folded into Verdict. Every deployment script
+        marks its counters with a "(SIMULATION)" suffix under -WhatIf, and this function has to
+        strip that suffix to recognise the label at all -- which used to make a simulated run
+        produce a console line byte-for-byte identical to a real one ("SUCCESS  GPO  GPOs
+        deployed: 22, 0 error(s)"). Nothing else in the GUI carried the distinction, so the
+        operator had no way to tell the two apart. The counts are deliberately left as they are:
+        "22 GPOs would be deployed" is the useful answer a simulation exists to give.
     .PARAMETER Lines
         Plain-text lines captured from the deployment script.
     .OUTPUTS
-        PSCustomObject with Verdict and Detail.
+        PSCustomObject with Verdict, Detail and Simulated.
     #>
     param([string[]]$Lines)
 
@@ -2970,20 +2979,25 @@ function Get-DeploymentVerdict {
         if ($Lines[$i] -match 'DEPLOYMENT SUMMARY') { $start = $i; break }
     }
     if ($start -lt 0) {
-        return [PSCustomObject]@{ Verdict = 'FAIL'; Detail = 'stopped before producing a summary' }
+        return [PSCustomObject]@{ Verdict = 'FAIL'; Detail = 'stopped before producing a summary'; Simulated = $false }
     }
 
-    $errors   = 0
-    $work     = 0
-    $headline = $null
+    $errors    = 0
+    $work      = 0
+    $headline  = $null
+    $simulated = $false
 
     for ($i = $start + 1; $i -lt $Lines.Count; $i++) {
         # Anchored on a numeric (or Yes/No) value to end-of-line, so the trailing
         # "Log file: ..." and "CSV report: ..." lines can never match.
         if ($Lines[$i] -notmatch '^\s+(?<label>\S.*?)\s*:\s*(?<value>\d+|Yes|No)\s*$') { continue }
 
-        $label = ($Matches['label'] -replace '\s*\(SIMULATION\)\s*$', '').Trim()
-        $raw   = $Matches['value']
+        # Both captures are read out of $Matches FIRST. Anything testing the label with -match
+        # would overwrite $Matches before the value is read, leaving the headline as a bare ": ".
+        $rawLabel = $Matches['label']
+        $raw      = $Matches['value']
+        if ($rawLabel -like '*(SIMULATION)*') { $simulated = $true }
+        $label = ($rawLabel -replace '\s*\(SIMULATION\)\s*$', '').Trim()
         $value = if ($raw -eq 'Yes') { 1 } elseif ($raw -eq 'No') { 0 } else { [int]$raw }
 
         if ($label -match '^Errors') { $errors = $value; continue }
@@ -2996,9 +3010,13 @@ function Get-DeploymentVerdict {
     }
 
     $verdict = if ($errors -eq 0) { 'SUCCESS' } elseif ($work -gt 0) { 'PARTIAL' } else { 'FAIL' }
-    $detail  = @($headline, ("{0} error(s)" -f $errors)) | Where-Object { $_ }
+    $detail  = @(
+        if ($simulated) { 'nothing written' }
+        $headline
+        ("{0} error(s)" -f $errors)
+    ) | Where-Object { $_ }
 
-    return [PSCustomObject]@{ Verdict = $verdict; Detail = ($detail -join ', ') }
+    return [PSCustomObject]@{ Verdict = $verdict; Detail = ($detail -join ', '); Simulated = $simulated }
 }
 
 function Start-SingleDeployment([string]$module) {
@@ -3007,8 +3025,8 @@ function Start-SingleDeployment([string]$module) {
 
     $scriptPath = $script:ScriptPaths[$module]
     if (-not $scriptPath -or -not (Test-Path $scriptPath)) {
-        New-ConsoleStatusLine ("  {0,-9} {1} script not found: {2}" -f 'FAIL', $label, $scriptPath) $script:VerdictColors.FAIL | Out-Null
-        return [PSCustomObject]@{ Module = $module; Verdict = 'FAIL' }
+        New-ConsoleStatusLine ("  {0,-11} {1} script not found: {2}" -f 'FAIL', $label, $scriptPath) $script:VerdictColors.FAIL | Out-Null
+        return [PSCustomObject]@{ Module = $module; Verdict = 'FAIL'; Simulated = $false }
     }
 
     $configPath = $script:ConfigPaths[$module]
@@ -3020,7 +3038,7 @@ function Start-SingleDeployment([string]$module) {
     if ($script:Connection -and $script:Connection.Credential) { $callParams.Credential = $script:Connection.Credential }
     if ($whatIf) { $callParams.WhatIf = $true }
 
-    $statusRun = New-ConsoleStatusLine ("  {0,-9} {1} deploying..." -f $script:SpinnerFrames[0], $label) "#87CEEB"
+    $statusRun = New-ConsoleStatusLine ("  {0,-11} {1} deploying..." -f $script:SpinnerFrames[0], $label) "#87CEEB"
 
     $lines = [System.Collections.Generic.List[string]]::new()
     $frame = 0
@@ -3043,7 +3061,7 @@ function Start-SingleDeployment([string]$module) {
             # pumping the dispatcher for every single one is pure overhead.
             if ($clock.ElapsedMilliseconds -ge 80) {
                 $frame = ($frame + 1) % $script:SpinnerFrames.Count
-                Set-ConsoleStatusLine $statusRun ("  {0,-9} {1} deploying..." -f $script:SpinnerFrames[$frame], $label)
+                Set-ConsoleStatusLine $statusRun ("  {0,-11} {1} deploying..." -f $script:SpinnerFrames[$frame], $label)
                 $script:Window.Dispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
                 $clock.Restart()
             }
@@ -3054,12 +3072,16 @@ function Start-SingleDeployment([string]$module) {
     }
     $clock.Stop()
 
-    $result = Get-DeploymentVerdict -Lines $lines
-    $color  = $script:VerdictColors[$result.Verdict]
-    Set-ConsoleStatusLine $statusRun ("  {0,-9} {1} {2}" -f $result.Verdict, $label, $result.Detail) $color
+    # A simulated run keeps its underlying verdict (a failure during -WhatIf is still a failure worth
+    # seeing) but is labelled and coloured so it can never be mistaken for a deployment: "SIM/SUCCESS"
+    # in blue, versus "SUCCESS" in green.
+    $result  = Get-DeploymentVerdict -Lines $lines
+    $verdict = if ($result.Simulated) { "SIM/$($result.Verdict)" } else { $result.Verdict }
+    $color   = if ($result.Simulated) { $script:VerdictColors.SIMULATED } else { $script:VerdictColors[$result.Verdict] }
+    Set-ConsoleStatusLine $statusRun ("  {0,-11} {1} {2}" -f $verdict, $label, $result.Detail) $color
     $script:Window.Dispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
 
-    return [PSCustomObject]@{ Module = $module; Verdict = $result.Verdict }
+    return [PSCustomObject]@{ Module = $module; Verdict = $result.Verdict; Simulated = $result.Simulated }
 }
 
 function Start-SelectedDeployments {
@@ -3099,7 +3121,10 @@ function Start-SelectedDeployments {
     $partial = @($results | Where-Object { $_.Verdict -eq 'PARTIAL' }).Count
     $failed  = @($results | Where-Object { $_.Verdict -eq 'FAIL' }).Count
     $level   = if ($failed -gt 0) { "Error" } elseif ($partial -gt 0) { "Warning" } else { "Success" }
-    Write-ConsoleUI "$ok SUCCESS, $partial PARTIAL, $failed FAIL - full output in $(Get-DeploymentLogPath $ordered[0])" $level
+    # Stated again on the closing line, because that is the one an operator reads last and quotes
+    # afterwards. The log now carries the [WhatIf] lines too, so the path is worth following.
+    $simPrefix = if (@($results | Where-Object { $_.Simulated }).Count -gt 0) { "SIMULATION - nothing was written. " } else { "" }
+    Write-ConsoleUI "$simPrefix$ok SUCCESS, $partial PARTIAL, $failed FAIL - full output in $(Get-DeploymentLogPath $ordered[0])" $level
 }
 
 function Get-DeploymentLogPath([string]$module) {

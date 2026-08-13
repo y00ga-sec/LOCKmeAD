@@ -273,7 +273,7 @@ $modeLabel = if ($WhatIfPreference) { " (SIMULATION)" } else { "" }
 
 Write-Host "  PSOs deployed$modeLabel       : $($stats.PoliciesCreated)" -ForegroundColor Cyan
 Write-Host "  PSOs skipped (disabled) : $($stats.PoliciesSkipped)" -ForegroundColor Yellow
-Write-Host "  Subjects applied        : $($stats.SubjectsApplied)" -ForegroundColor Cyan
+Write-Host "  Subjects applied$modeLabel        : $($stats.SubjectsApplied)" -ForegroundColor Cyan
 
 if ($stats.Errors -gt 0) {
     Write-Host "  Errors                  : $($stats.Errors)" -ForegroundColor Red

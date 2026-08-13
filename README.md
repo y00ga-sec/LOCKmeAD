@@ -1,8 +1,8 @@
 # LOCKmeAD
 
-**A lightweight, JSON-driven Active Directory security model and deployment tool, made by pentesters**
+**A lightweight, JSON-driven Active Directory security model and deployment tool, made py pentesters**
 
-LOCKmeAD hardens, structures, and locks down Active Directory environments through a modular PowerShell toolkit. Instead of importing bulky pre-configured GPO backups or running opaque scripts, every security policy is defined in simple, human-readable JSON files. The PowerShell modules read those configs and create everything in AD for you : groups, OUs, GPOs, password policies, authentication silos, and more. LOCKmeAD is made by pentesters who know actual AD gaps and attacks paths so that admin teams are provided with real remediations
+LOCKmeAD hardens, structures, and locks down Active Directory environments through a modular PowerShell toolkit. Instead of importing bulky pre-configured GPO backups or running opaque scripts, every security policy is defined in simple, human-readable JSON files. The PowerShell modules read those configs and create everything in AD for you : groups, OUs, GPOs, password policies, authentication silos, and more. LOCKmeAD is made by pentesters who know actual AD gaps and attacks path so that admin teams are provided with real remediations
 
 > **Full documentation is available on the [Wiki](https://github.com/y00ga-sec/LOCKmeAD/wiki).**
 
@@ -65,6 +65,35 @@ In order to avoid breaking your environnement when deploying, LOCKmeAD includes 
 3. **The PowerShell modules create everything in AD** based on your JSON — no manual steps, no GPO imports, no pre-built templates to maintain.
 
 Safe deployment order is enforced automatically: Hardening > Tiering > RBAC > PSO > Silo > GPO > JIT.
+
+---
+
+## Simulation mode (`-WhatIf`)
+
+Every module supports `-WhatIf`, and the GUI exposes it as the **WhatIf mode** toggle. Nothing is written to Active Directory: no GPO, no group, no OU, no ACL, no policy, no schema change. The run is logged to `Logs/<run>/` exactly like a real one, with every action prefixed `[WhatIf]`, and the GUI reports it as `SIM/SUCCESS` in blue rather than `SUCCESS` in green.
+
+Two things a simulation still changes, both outside the directory:
+
+- **The GUI writes your configs.** *Deploy selected* always saves `Config/*.json` first, in simulation as in a real run. This is required for fidelity: the deployment scripts read the configuration from disk, so skipping the save would simulate the previous state rather than what is on screen. Use the CLI with `-ConfigPath` pointing at a copy if you need your JSON files left untouched.
+- **Local process state.** The ownership tasks enable `SeRestorePrivilege` on the running process, and `AddDNSSecurityRecords` opens its CIM session, before reaching the point where they would write. Deliberately so — a simulation that skipped them would stop being faithful to a real run, and a connectivity problem that would break the deployment must break the simulation too.
+
+### Reading a multi-module simulation
+
+Simulating several modules at once **will report errors that a real deployment would not**. Later modules reference objects the earlier ones create, and in simulation nothing gets created, so those references cannot resolve:
+
+| Reported by | Trigger | Affects |
+|---|---|---|
+| `Set-GPOUserRightsAssignment` | groups named in `UserRightsAssignments` | `SEC-Tiering-*-DenyLogon` |
+| `Set-GPORestrictedGroups` | members named in `RestrictedGroups` | `SEC-Tiering-*-LocalAdmins` |
+| `Add-PSOSubject` | the PSO itself, not created yet | any policy with a non-empty `AppliesTo` |
+
+Group names are resolved to SIDs *before* the write is attempted, on purpose: a missing group has to surface as a clean configuration error rather than as a half-written `GptTmpl.inf`.
+
+**How to read it** — a `Group '<name>' not found` raised by the GPO or PSO module is expected noise when `<name>` is declared in `RBAC-Config.json` and RBAC is part of the same run. Any other name (a group you typed yourself, `Domain Admins`, `Enterprise Admins`) is a real configuration error worth fixing.
+
+**How to avoid it** — deploy RBAC for real first; it is idempotent and only creates empty groups. Then simulate GPO. The directory now holds the state it would have when GPO actually runs, so the simulation is exact.
+
+Tiering → RBAC is not affected: RBAC checks its target OU inside the write guard, so an OU that does not exist yet raises nothing during a simulation.
 
 ---
 
