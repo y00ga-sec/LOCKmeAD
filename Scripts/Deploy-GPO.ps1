@@ -53,6 +53,7 @@ if (-not (Test-Path $modulePath)) {
 }
 Import-Module $modulePath -Force
 Import-Module (Join-Path $rootDir "Modules\Common\Connection.psm1") -Force
+Import-Module (Join-Path $rootDir "Modules\Common\ConfigDomain.psm1") -Force
 
 # A refused connection must read as a clear operator error, not as an unhandled
 # exception: Resolve-LOCKmeADConnection throws when the account is not a Domain Admin.
@@ -68,10 +69,23 @@ catch {
 # credential every GroupPolicy cmdlet is executed on the target DC through a WinRM session
 # (they accept no -Credential), so it only has to exist there. Hence a runtime check here
 # rather than a static '#Requires -Modules GroupPolicy', which refused to start off-domain.
-if (-not $connection.Credential -and -not (Get-Module -ListAvailable -Name GroupPolicy)) {
+#
+# The availability test goes through Test-LOCKmeADGroupPolicyModule rather than
+# 'Get-Module -ListAvailable', which reports nothing under PowerShell 7 even when the module is
+# installed and working -- see that function for the full reason.
+if (-not $connection.Credential -and -not (Test-LOCKmeADGroupPolicyModule)) {
     Write-Host "`n[ERROR] The 'GroupPolicy' module is required to deploy GPOs in implicit mode." -ForegroundColor Red
     Write-Host "Install RSAT-GPMC on this host, or pass -Server/-Credential to run them on the DC.`n" -ForegroundColor Yellow
     exit 1
+}
+# Loaded up front instead of on first use: under -WhatIf, letting command discovery auto-load it
+# fails outright -- see Import-LOCKmeADGroupPolicyModule for why.
+if (-not $connection.Credential) {
+    try { Import-LOCKmeADGroupPolicyModule }
+    catch {
+        Write-Host "`n[ERROR] The 'GroupPolicy' module is installed but could not be loaded: $($_.Exception.Message)`n" -ForegroundColor Red
+        exit 1
+    }
 }
 
 # ============================================================================
@@ -130,6 +144,19 @@ catch {
 }
 
 # ============================================================================
+# Retarget the configuration onto the connected domain
+# ============================================================================
+# See Deploy-Hardening.ps1 for the rationale. The ordering is not optional here: the summary below
+# resolves FilteringGroupsOU against AD, and a DN still naming the previous domain would be found
+# missing -- which does not merely warn, it disables filtering group deployment for the whole run
+# while Authenticated Users is still removed, leaving every GPO applying to nobody.
+$domainRetargeting = Sync-LOCKmeADConfigDomain -Config $config -ConfigPath $ConfigPath `
+                        -Server $targetServer -Credential $connection.Credential
+if ($domainRetargeting.Count -gt 0) {
+    Write-GPOLog -Message "$($domainRetargeting.Count) value(s) retargeted onto $($envInfo.DomainDN) for this run; '$ConfigPath' is left unchanged." -Level Warning -LogDirectory $logDir
+}
+
+# ============================================================================
 # Configuration summary
 # ============================================================================
 
@@ -145,11 +172,34 @@ if ($filteringEnabled) {
         Write-Host "  [WARNING] FilteringGroupsOU '$filteringOU' does not reference a Tier 0 location. Consider placing filtering groups in a Tier 0 OU for proper security boundaries." -ForegroundColor Yellow
         Write-GPOLog -Message "FilteringGroupsOU '$filteringOU' does not reference a Tier 0 location. Filtering groups will still be deployed." -Level Warning -LogDirectory $logDir
     }
-    # Verify the OU exists in AD (target PDC to avoid replication lag when Tiering just created it)
+    # Verify the target exists in AD (target PDC to avoid replication lag when Tiering just created it).
+    #
+    # Resolved with Get-ADObject, NOT Get-ADOrganizationalUnit: despite the setting's name the
+    # target does not have to be an organizationalUnit. CN=Users -- the domain's default group
+    # container, and the value this config ships with -- has objectClass 'container', which
+    # Get-ADOrganizationalUnit never matches, so the check raised ADIdentityNotFoundException on a
+    # perfectly valid, existing target.
+    #
+    # The consequence was not a harmless warning. Filtering groups were skipped, while the else
+    # branch further down still called Remove-GPOAuthenticatedUsers -- so every GPO deployed with
+    # this setting ended up granted to nobody at all: Authenticated Users stripped, and no Apply
+    # group created to take its place.
+    #
+    # Resolving is not sufficient on its own, so the class is checked too: a leaf object would
+    # resolve here and only fail later inside New-ADGroup -Path, far from the setting that caused
+    # it. ObjectClass comes back on Get-ADObject by default, no -Properties needed.
     try {
         $ouCheckParam = @{ Server = $targetServer }
         if ($connection.Credential) { $ouCheckParam.Credential = $connection.Credential }
-        Get-ADOrganizationalUnit -Identity $filteringOU @ouCheckParam -ErrorAction Stop | Out-Null
+        $filteringTarget = Get-ADObject -Identity $filteringOU @ouCheckParam -ErrorAction Stop
+
+        $groupHolderClasses = @('organizationalUnit', 'container', 'domainDNS')
+        if ($filteringTarget.ObjectClass -notin $groupHolderClasses) {
+            Write-Host ""
+            Write-Host "  [ERROR] FilteringGroupsOU '$filteringOU' is a '$($filteringTarget.ObjectClass)' object, which cannot contain groups. Filtering groups will NOT be deployed." -ForegroundColor Red
+            Write-GPOLog -Message "FilteringGroupsOU '$filteringOU' resolved to objectClass '$($filteringTarget.ObjectClass)', which cannot hold group objects (expected one of: $($groupHolderClasses -join ', ')). Skipping filtering group deployment." -Level Error -LogDirectory $logDir
+            $filteringEnabled = $false
+        }
     }
     catch {
         Write-Host ""

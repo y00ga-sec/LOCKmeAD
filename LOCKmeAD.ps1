@@ -42,6 +42,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Imported before the availability checks below, not just before the connection is resolved:
+# Test-LOCKmeADGroupPolicyModule lives in this module and the GroupPolicy check needs it.
+Import-Module (Join-Path $PSScriptRoot "Modules\Common\Connection.psm1") -Force
+
 # --- Check required modules ---
 #
 # ActiveDirectory is the only hard requirement: every module uses it, and its cmdlets always
@@ -60,7 +64,7 @@ if (-not (Get-Module -Name ActiveDirectory) -and -not (Get-Module -ListAvailable
     Write-Host "`nInstall RSAT (or run on a domain controller) and try again.`n" -ForegroundColor Yellow
     exit 1
 }
-if (-not (Get-Module -Name GroupPolicy) -and -not (Get-Module -ListAvailable -Name GroupPolicy)) {
+if (-not (Test-LOCKmeADGroupPolicyModule)) {
     Write-Host "`n[WARNING] The 'GroupPolicy' module is not available on this host." -ForegroundColor Yellow
     Write-Host "  The GPO and JIT modules need it locally only when running domain-joined without" -ForegroundColor DarkGray
     Write-Host "  an explicit -Credential. With -Server/-Credential they run it on the DC instead." -ForegroundColor DarkGray
@@ -70,7 +74,6 @@ if (-not (Get-Module -Name GroupPolicy) -and -not (Get-Module -ListAvailable -Na
 # Resolve the AD connection once (implicit if domain-joined, otherwise explicit
 # -Server/-Credential or an interactive prompt) so an off-domain operator is only
 # asked once, regardless of how many modules are selected.
-Import-Module (Join-Path $PSScriptRoot "Modules\Common\Connection.psm1") -Force
 # A refused connection must read as a clear operator error, not as an unhandled
 # exception: Resolve-LOCKmeADConnection throws when the account is not a Domain Admin.
 try {

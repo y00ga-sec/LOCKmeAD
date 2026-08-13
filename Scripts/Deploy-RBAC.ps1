@@ -51,6 +51,7 @@ if (-not (Test-Path $modulePath)) {
 }
 Import-Module $modulePath -Force
 Import-Module (Join-Path $rootDir "Modules\Common\Connection.psm1") -Force
+Import-Module (Join-Path $rootDir "Modules\Common\ConfigDomain.psm1") -Force
 
 # A refused connection must read as a clear operator error, not as an unhandled
 # exception: Resolve-LOCKmeADConnection throws when the account is not a Domain Admin.
@@ -116,6 +117,18 @@ try {
 catch {
     Write-Host "  [ERROR] Unable to retrieve AD information: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
+}
+
+# ============================================================================
+# Retarget the configuration onto the connected domain
+# ============================================================================
+# See Deploy-Hardening.ps1 for the rationale. This is the module with by far the most
+# domain-dependent values: every group OU and every delegation TargetOU, including the DNS
+# application-partition DNs.
+$domainRetargeting = Sync-LOCKmeADConfigDomain -Config $config -ConfigPath $ConfigPath `
+                        -Server $targetServer -Credential $connection.Credential
+if ($domainRetargeting.Count -gt 0) {
+    Write-RBACLog -Message "$($domainRetargeting.Count) value(s) retargeted onto $($envInfo.DomainDN) for this run; '$ConfigPath' is left unchanged." -Level Warning -LogDirectory $logDir
 }
 
 # ============================================================================

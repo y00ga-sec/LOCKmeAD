@@ -55,6 +55,7 @@ if (-not (Test-Path $modulePath)) {
 }
 Import-Module $modulePath -Force
 Import-Module (Join-Path $rootDir "Modules\Common\Connection.psm1") -Force
+Import-Module (Join-Path $rootDir "Modules\Common\ConfigDomain.psm1") -Force
 
 # A refused connection must read as a clear operator error, not as an unhandled
 # exception: Resolve-LOCKmeADConnection throws when the account is not a Domain Admin.
@@ -66,11 +67,20 @@ catch {
     exit 1
 }
 
-# Same conditional GroupPolicy requirement as Deploy-GPO.ps1 -- see the comment there.
-if (-not $connection.Credential -and -not (Get-Module -ListAvailable -Name GroupPolicy)) {
+# Same conditional GroupPolicy requirement as Deploy-GPO.ps1 -- see the comment there, including
+# why availability is tested with Test-LOCKmeADGroupPolicyModule and not 'Get-Module -ListAvailable'.
+if (-not $connection.Credential -and -not (Test-LOCKmeADGroupPolicyModule)) {
     Write-Host "`n[ERROR] The 'GroupPolicy' module is required to deploy the JIT GPO in implicit mode." -ForegroundColor Red
     Write-Host "Install RSAT-GPMC on this host, or pass -Server/-Credential to run them on the DC.`n" -ForegroundColor Yellow
     exit 1
+}
+# Same reason as Deploy-GPO.ps1: auto-loading GroupPolicy fails under -WhatIf.
+if (-not $connection.Credential) {
+    try { Import-LOCKmeADGroupPolicyModule }
+    catch {
+        Write-Host "`n[ERROR] The 'GroupPolicy' module is installed but could not be loaded: $($_.Exception.Message)`n" -ForegroundColor Red
+        exit 1
+    }
 }
 
 # ============================================================================
@@ -141,6 +151,18 @@ try {
 catch {
     Write-Host "  [ERROR] Unable to retrieve AD information: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
+}
+
+# ============================================================================
+# Retarget the configuration onto the connected domain
+# ============================================================================
+# See Deploy-Hardening.ps1 for the rationale. Ordering matters here too: the summary below copies
+# ToolsSharePath, the GPO link targets and the filtering OU into local variables, and everything
+# downstream uses those copies rather than the configuration object.
+$domainRetargeting = Sync-LOCKmeADConfigDomain -Config $config -ConfigPath $ConfigPath `
+                        -Server $targetServer -Credential $connection.Credential
+if ($domainRetargeting.Count -gt 0) {
+    Write-JITLog -Message "$($domainRetargeting.Count) value(s) retargeted onto $($envInfo.DomainDN) for this run; '$ConfigPath' is left unchanged." -Level Warning -LogDirectory $logDir
 }
 
 # ============================================================================

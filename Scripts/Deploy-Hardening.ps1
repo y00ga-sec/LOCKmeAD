@@ -52,6 +52,7 @@ if (-not (Test-Path $modulePath)) {
 }
 Import-Module $modulePath -Force
 Import-Module (Join-Path $rootDir "Modules\Common\Connection.psm1") -Force
+Import-Module (Join-Path $rootDir "Modules\Common\ConfigDomain.psm1") -Force
 
 # A refused connection must read as a clear operator error, not as an unhandled
 # exception: Resolve-LOCKmeADConnection throws when the account is not a Domain Admin.
@@ -116,6 +117,19 @@ try {
 catch {
     Write-Host "  [ERROR] Unable to retrieve AD information: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
+}
+
+# ============================================================================
+# Retarget the configuration onto the connected domain
+# ============================================================================
+# The same in-memory retargeting the GUI performs at start-up, so a configuration written against
+# one domain deploys against another instead of failing DN by DN. It sits before the summary below
+# because that summary displays -- and in some modules validates against AD -- the very values
+# being corrected. $ConfigPath itself is never rewritten: see Sync-LOCKmeADConfigDomain.
+$domainRetargeting = Sync-LOCKmeADConfigDomain -Config $config -ConfigPath $ConfigPath `
+                        -Server $targetServer -Credential $connection.Credential
+if ($domainRetargeting.Count -gt 0) {
+    Write-HardeningLog -Message "$($domainRetargeting.Count) value(s) retargeted onto $($envInfo.DomainDN) for this run; '$ConfigPath' is left unchanged." -Level Warning -LogDirectory $logDir
 }
 
 # ============================================================================

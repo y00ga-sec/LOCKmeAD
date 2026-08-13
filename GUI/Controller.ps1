@@ -1866,7 +1866,7 @@ function Populate-PSOTab {
 
         # AppliesTo expander
         $appliesToExpander = New-Object System.Windows.Controls.Expander
-        $appliesToExpander.Header = "Applies To (Groups / Users)"
+        $appliesToExpander.Header = "Applies To (Groups)"
         $appliesToExpander.Margin = [System.Windows.Thickness]::new(58, 4, 0, 0)
         $appliesToExpander.FontSize = 12
 
@@ -1886,17 +1886,7 @@ function Populate-PSOTab {
         $searchGroupBtn.Cursor = "Hand"
         $searchGroupBtn.Padding = [System.Windows.Thickness]::new(0, 2, 10, 2)
 
-        $searchUserBtn = New-Object System.Windows.Controls.Button
-        $searchUserBtn.Content = "+ Add User"
-        $searchUserBtn.Background = Get-WPFBrush "Transparent"
-        $searchUserBtn.BorderThickness = [System.Windows.Thickness]::new(0)
-        $searchUserBtn.Foreground = Get-WPFBrush "#0078D4"
-        $searchUserBtn.FontSize = 11
-        $searchUserBtn.Cursor = "Hand"
-        $searchUserBtn.Padding = [System.Windows.Thickness]::new(0, 2, 0, 2)
-
         [void]$appliesToBtnRow.Children.Add($searchGroupBtn)
-        [void]$appliesToBtnRow.Children.Add($searchUserBtn)
         [void]$appliesToStack.Children.Add($appliesToBtnRow)
 
         $appliesToTextBox = New-Object System.Windows.Controls.TextBox
@@ -1915,19 +1905,7 @@ function Populate-PSOTab {
 
         $searchGroupBtn.Tag = $appliesToTextBox
         $searchGroupBtn.Add_Click({
-            $result = Show-ADObjectSearchDialog -SearchType "Group"
-            if ($result) {
-                $tb = $this.Tag
-                $existing = @($tb.Text -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-                if ($result -notin $existing) {
-                    $tb.Text = (($existing + @($result)) -join "`r`n")
-                }
-            }
-        })
-
-        $searchUserBtn.Tag = $appliesToTextBox
-        $searchUserBtn.Add_Click({
-            $result = Show-ADObjectSearchDialog -SearchType "User"
+            $result = Show-ADObjectSearchDialog
             if ($result) {
                 $tb = $this.Tag
                 $existing = @($tb.Text -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
@@ -3328,12 +3306,21 @@ function Show-ADGroupSearchDialog {
 }
 
 function Show-ADObjectSearchDialog {
-    param([ValidateSet("Group","User")][string]$SearchType = "Group")
+    <#
+    .SYNOPSIS
+        Group picker for a PSO's AppliesTo list.
+    .DESCRIPTION
+        Groups only. This used to take a -SearchType of Group or User, because the PSO tab offered
+        an "+ Add User" button beside "+ Add Group"; that button is gone, so the User branch had no
+        reachable caller left. Active Directory itself does accept a user as a PSO subject -- this
+        is LOCKmeAD's own rule, not a limitation of Fine-Grained Password Policies -- so the
+        deployment path in Modules\PSO\PSO.psm1 still resolves either kind.
+    #>
+    param()
 
-    $typeLabel = if ($SearchType -eq "User") { "User" } else { "Group" }
     $searchXaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        Title="Search AD $typeLabel" Width="460" Height="380"
+        Title="Search AD Group" Width="460" Height="380"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         Background="#F5F5F5" FontFamily="Segoe UI">
     <Grid Margin="16">
@@ -3373,7 +3360,6 @@ function Show-ADObjectSearchDialog {
 
     $script:dialogResult = $null
 
-    $capturedType = $SearchType
     $doSearch = {
         $val = $searchBox.Text.Trim()
         if ([string]::IsNullOrWhiteSpace($val)) {
@@ -3385,22 +3371,12 @@ function Show-ADObjectSearchDialog {
         $searchWindow.Cursor = [System.Windows.Input.Cursors]::Wait
         try {
             $connParam = New-LOCKmeADConnectionParam -Connection $script:Connection
-            if ($capturedType -eq "User") {
-                $results = Get-ADUser -Filter "Name -like '*$val*'" @connParam -ErrorAction Stop | Select-Object -First 50
-                foreach ($r in $results) {
-                    $item = [System.Windows.Controls.ListBoxItem]::new()
-                    $item.Content = "$($r.SamAccountName)  —  $($r.Name)"
-                    $item.Tag = $r.SamAccountName
-                    $resultList.Items.Add($item) | Out-Null
-                }
-            } else {
-                $results = Get-ADGroup -Filter "Name -like '*$val*'" @connParam -ErrorAction Stop | Select-Object -First 50
-                foreach ($r in $results) {
-                    $item = [System.Windows.Controls.ListBoxItem]::new()
-                    $item.Content = "$($r.SamAccountName)  —  $($r.Name)"
-                    $item.Tag = $r.SamAccountName
-                    $resultList.Items.Add($item) | Out-Null
-                }
+            $results = Get-ADGroup -Filter "Name -like '*$val*'" @connParam -ErrorAction Stop | Select-Object -First 50
+            foreach ($r in $results) {
+                $item = [System.Windows.Controls.ListBoxItem]::new()
+                $item.Content = "$($r.SamAccountName)  —  $($r.Name)"
+                $item.Tag = $r.SamAccountName
+                $resultList.Items.Add($item) | Out-Null
             }
             $count = $resultList.Items.Count
             $statusText.Text = if ($count -eq 0) { "No results found." }
@@ -4501,7 +4477,7 @@ function Show-AddPSODialog {
             <StackPanel>
                 <TextBlock Text="Applies To" FontSize="13" FontWeight="SemiBold"
                            Foreground="#555" Margin="0,0,0,4"/>
-                <TextBlock Text="One group or user name per line" FontSize="10"
+                <TextBlock Text="One group name per line" FontSize="10"
                            Foreground="#999" Margin="0,0,0,6"/>
                 <TextBox Name="PSOAppliesTo" FontSize="12" Padding="6,4" BorderBrush="#DDD"
                          AcceptsReturn="True" TextWrapping="Wrap" MinLines="2" MaxLines="5"
@@ -4656,9 +4632,126 @@ function Show-DeletePSODialog([string[]]$policyNames) {
 # Initialize & Register Events
 # ============================================================================
 
+function Write-GUIConfigDomainLog {
+    <#
+    .SYNOPSIS
+        Writes the per-value retargeting detail to Logs\ConfigDomain_<timestamp>.log and returns
+        its path, or $null when it could not be written.
+    .DESCRIPTION
+        The console panel gets one line; the detail comes here. Both halves matter: a single domain
+        change rewrites well over a hundred values, which buried everything else the panel had to
+        say -- but retargeting decides where every object of the next deployment is created, so
+        "113 values changed" is not, on its own, something an operator can verify afterwards.
+
+        Written at the root of the log directory rather than inside a run folder: this happens at
+        start-up, when there is no deployment run yet. Same placement as the JIT tool's own log.
+
+        Failing to write it must never cost the operator the retargeting itself, so every error is
+        swallowed and reported as a missing path -- the caller then simply omits the reference.
+    #>
+    param($Changes, $Domain, [string[]]$Foreign = @())
+
+    try {
+        $projectRoot = Split-Path (Split-Path $script:ConfigPaths.RBAC -Parent) -Parent
+        $logRoot     = if ($script:Configs.RBAC -and $script:Configs.RBAC.Settings.LogDirectory) {
+            $script:Configs.RBAC.Settings.LogDirectory
+        } else { './Logs' }
+        if (-not [System.IO.Path]::IsPathRooted($logRoot)) { $logRoot = Join-Path $projectRoot $logRoot }
+        # Normalised, because this path is now the only thing the console line shows: the raw form
+        # keeps the './Logs' setting's dot segment ("...\LOCKmeAD-dev\.\Logs\"), which is valid but
+        # reads as a typo and does not paste cleanly into Explorer. Same idiom as
+        # Get-DeploymentLogPath.
+        $logRoot = [System.IO.Path]::GetFullPath($logRoot)
+        if (-not (Test-Path $logRoot)) { New-Item -Path $logRoot -ItemType Directory -Force | Out-Null }
+
+        $logPath = Join-Path $logRoot "ConfigDomain_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+        $stamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+
+        $lines = [System.Collections.Generic.List[string]]::new()
+        [void]$lines.Add("[$stamp] Retargeted onto $($Domain.DistinguishedName)  ($($Domain.DNSRoot) / $($Domain.NetBIOSName))")
+        if ($Foreign.Count -gt 0) {
+            [void]$lines.Add("[$stamp] Domains previously referenced: $($Foreign -join ', ')")
+        }
+        [void]$lines.Add("[$stamp] $(@($Changes).Count) value(s) changed in memory. Config\*.json stays as it is until the next Save configs, or a deployment.")
+        [void]$lines.Add('')
+        foreach ($change in $Changes) {
+            [void]$lines.Add("$($change.Path)  |  $($change.From)  ->  $($change.To)")
+        }
+
+        Set-Content -Path $logPath -Value $lines -Encoding UTF8
+        return $logPath
+    }
+    catch {
+        return $null
+    }
+}
+
+function Sync-GUIConfigDomain {
+    <#
+    .SYNOPSIS
+        Retargets every domain-dependent value of the loaded configurations onto the domain this
+        session is connected to, in memory, and reports what changed.
+    .DESCRIPTION
+        Runs between Load-AllConfigs and the Populate-* calls, which is the only window where both
+        conditions hold: the configurations exist as objects, and no UI control has been filled
+        from them yet. Retargeting here therefore needs no UI refresh, and Save-AllConfigs persists
+        the corrected values through the normal path -- either when the operator clicks Save, or
+        automatically at deployment, since BtnDeploy saves before it deploys.
+    #>
+    $moduleNames = @('Hardening', 'GPO', 'Tiering', 'RBAC', 'PSO', 'Silo', 'JIT')
+
+    try {
+        $connParam = New-LOCKmeADConnectionParam -Connection $script:Connection
+        $domain    = Get-ADDomain @connParam -ErrorAction Stop
+    }
+    catch {
+        Write-ConsoleUI "Could not read the connected domain; configurations left exactly as they are on disk: $($_.Exception.Message)" "Warning"
+        return
+    }
+
+    # Discovery pass over ALL configurations before rewriting any of them. A domain named only by
+    # the RBAC delegations still has to retarget the JIT distribution share, so the source set has
+    # to be complete before the first substitution.
+    $discovered = [System.Collections.Generic.List[string]]::new()
+    foreach ($moduleName in $moduleNames) {
+        if (-not $script:Configs[$moduleName]) { continue }
+        foreach ($dn in (Get-LOCKmeADConfigDomainDN -Config $script:Configs[$moduleName])) { [void]$discovered.Add($dn) }
+    }
+    $sourceDomains = @(New-LOCKmeADSourceDomain -DomainDN @($discovered | Sort-Object -Unique))
+
+    $allChanges = [System.Collections.Generic.List[PSCustomObject]]::new()
+    foreach ($moduleName in $moduleNames) {
+        if (-not $script:Configs[$moduleName]) { continue }
+        $changes = Update-LOCKmeADConfigDomain -Config $script:Configs[$moduleName] `
+                        -SourceDomain    $sourceDomains `
+                        -TargetDomainDN  $domain.DistinguishedName `
+                        -TargetDnsRoot   $domain.DNSRoot `
+                        -TargetNetBIOS   $domain.NetBIOSName `
+                        -Label           $moduleName
+        foreach ($change in $changes) { [void]$allChanges.Add($change) }
+    }
+
+    if ($allChanges.Count -eq 0) {
+        Write-ConsoleUI "Domain detected: $($domain.DistinguishedName) - configurations already target it." "Success"
+        return
+    }
+
+    # Exactly one console line. The per-value list goes to Logs\ConfigDomain_*.log instead of the
+    # panel -- see Write-GUIConfigDomainLog.
+    $foreign = @($sourceDomains | Where-Object { $_.DomainDN -ne $domain.DistinguishedName } | ForEach-Object { $_.DomainDN })
+    $from    = if ($foreign.Count -gt 0) { " (was: $($foreign -join ', '))" } else { "" }
+    $logPath = Write-GUIConfigDomainLog -Changes $allChanges -Domain $domain -Foreign $foreign
+    $detail  = if ($logPath) { " Detail: $logPath" } else { "" }
+
+    Write-ConsoleUI "Domain detected: $($domain.DistinguishedName) - $($allChanges.Count) value(s) retargeted in memory$from.$detail" "Warning"
+}
+
 function Initialize-GUI {
     Load-AllConfigs
     Write-ConsoleUI "Configurations loaded." "Success"
+
+    # Before any Populate-*: the tabs must show what will actually be deployed.
+    Sync-GUIConfigDomain
 
     # Resolved once, here, rather than per card: Populate-HardeningTab runs on every refresh and
     # this costs a handful of LDAP queries. Domain Admins is already guaranteed by the connection
@@ -4937,6 +5030,24 @@ function Register-GUIEvents {
     $UI.TieringPropProtected.Add_Click({
         $selected = $UI.TieringTree.SelectedItem
         if ($selected) { $selected.Tag.Protected = [bool]$UI.TieringPropProtected.IsChecked }
+    })
+
+    # Base DN edits -> recompute every DN in the tree.
+    #
+    # Each node's DN is built once by Populate-TieringTab from the base DN read at load time, and
+    # was only ever recomputed when an OU was renamed. Editing the base DN therefore left the whole
+    # preview showing the old domain until something else happened to trigger a rename -- while
+    # Save-AllConfigs wrote the new base DN out, so what the operator saw and what got deployed
+    # disagreed.
+    #
+    # Update-TreeItemDN resolves a root item's parent DN from this very TextBox and recurses into
+    # its children, so refreshing each root item rewrites the entire tree.
+    $UI.TieringBaseDN.Add_TextChanged({
+        foreach ($rootItem in $UI.TieringTree.Items) {
+            Update-TreeItemDN $rootItem
+        }
+        $selected = $UI.TieringTree.SelectedItem
+        if ($selected -and $selected.Tag) { $UI.TieringPropDN.Text = $selected.Tag.DN }
     })
 
     # Tiering add/delete OU

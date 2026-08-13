@@ -26,6 +26,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Imported before the availability checks below, not just before the connection is resolved:
+# Test-LOCKmeADGroupPolicyModule lives in this module and the GroupPolicy check needs it.
+Import-Module (Join-Path $PSScriptRoot "Modules\Common\Connection.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "Modules\Common\ConfigDomain.psm1") -Force
+
 # --- Check required modules ---
 # GroupPolicy is intentionally only a warning here -- see the same check in LOCKmeAD.ps1 for why.
 if (-not (Get-Module -Name ActiveDirectory) -and -not (Get-Module -ListAvailable -Name ActiveDirectory)) {
@@ -33,13 +38,11 @@ if (-not (Get-Module -Name ActiveDirectory) -and -not (Get-Module -ListAvailable
     Write-Host "`nInstall RSAT (or run on a domain controller) and try again.`n" -ForegroundColor Yellow
     exit 1
 }
-if (-not (Get-Module -Name GroupPolicy) -and -not (Get-Module -ListAvailable -Name GroupPolicy)) {
+if (-not (Test-LOCKmeADGroupPolicyModule)) {
     Write-Host "`n[WARNING] The 'GroupPolicy' module is not available on this host." -ForegroundColor Yellow
     Write-Host "  GPO/JIT deployment needs it locally only in implicit (domain-joined) mode.`n" -ForegroundColor DarkGray
 }
 $scriptRoot = $PSScriptRoot
-
-Import-Module (Join-Path $scriptRoot "Modules\Common\Connection.psm1") -Force
 
 # Load WPF assemblies
 Add-Type -AssemblyName PresentationFramework

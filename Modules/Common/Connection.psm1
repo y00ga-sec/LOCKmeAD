@@ -34,6 +34,81 @@ function Test-LOCKmeADDomainJoined {
     }
 }
 
+function Test-LOCKmeADGroupPolicyModule {
+    <#
+    .SYNOPSIS
+        Returns $true when the GroupPolicy module is usable in this session.
+    .DESCRIPTION
+        'Get-Module -ListAvailable -Name GroupPolicy' is NOT a valid test under PowerShell 7, which
+        is the version this tool targets. RSAT-GPMC installs GroupPolicy under
+        %WINDIR%\System32\WindowsPowerShell\v1.0\Modules, and PowerShell 7 hides every module in
+        that directory from -ListAvailable unless its manifest declares CompatiblePSEditions with
+        'Core'. GroupPolicy.psd1 declares no CompatiblePSEditions at all, so -ListAvailable returns
+        nothing on a fully-equipped domain controller. ActiveDirectory is unaffected: its manifest
+        declares 'Desktop','Core', which is why only the GPO and JIT modules ever hit this.
+
+        The consequence was not cosmetic: Deploy-GPO.ps1 and Deploy-JIT.ps1 exited 1 before writing
+        a single log line, so the GUI could only report "stopped before producing a summary" with
+        no GPO_*.log to look at -- on a host where Get-GPO works perfectly, since command discovery
+        loads the module through the Windows PowerShell compatibility layer.
+
+        Checked cheapest-first: already imported, then -ListAvailable (correct on Windows
+        PowerShell 5.1, and for any copy whose manifest does mark Core), then the manifest on disk
+        under the Windows PowerShell module directory. No import is attempted -- that would spin up
+        a WinPSCompatSession, which costs seconds, on every launch of a tool most operators run
+        without ever deploying a GPO.
+    #>
+    [CmdletBinding()]
+    param()
+
+    if (Get-Module -Name GroupPolicy)               { return $true }
+    if (Get-Module -ListAvailable -Name GroupPolicy) { return $true }
+
+    $winPSManifest = Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\Modules\GroupPolicy\GroupPolicy.psd1'
+    return (Test-Path $winPSManifest)
+}
+
+function Import-LOCKmeADGroupPolicyModule {
+    <#
+    .SYNOPSIS
+        Imports the GroupPolicy module into the current session, with $WhatIfPreference
+        neutralised for the duration of the import. Throws if it cannot be loaded.
+    .DESCRIPTION
+        Only needed in implicit (domain-joined) mode: with an explicit credential every
+        GroupPolicy cmdlet runs on the DC inside a WinRM session, so nothing has to load here.
+
+        Relying on command discovery to auto-load the module is not enough. Under PowerShell 7
+        GroupPolicy comes in through the Windows PowerShell compatibility layer, which
+        materialises an implicit-remoting proxy module by COPYING files into $env:TEMP. Those
+        copies are ShouldProcess-aware and therefore honour $WhatIfPreference: under -WhatIf they
+        are only *reported*, never performed, and the import then fails with "the command was
+        found in the module 'GroupPolicy', but the module could not be loaded". Every simulated
+        GPO or JIT deployment died right there -- the one mode that is supposed to be safe to run
+        against production.
+
+        Import-Module has no -WhatIf parameter of its own (passing one is a parameter-binding
+        error), so the preference variable is the only lever available. Assigning it inside this
+        function shadows the caller's value for the scope the import runs in, which is exactly the
+        scope that matters; the original is restored in a finally so nothing leaks either way.
+
+        Importing eagerly, rather than letting the first Get-GPO trigger discovery, is what
+        guarantees the proxy module is built while WhatIf is off.
+    #>
+    [CmdletBinding()]
+    param()
+
+    if (Get-Module -Name GroupPolicy) { return }
+
+    $previousWhatIf = $WhatIfPreference
+    try {
+        $WhatIfPreference = $false
+        Import-Module GroupPolicy -ErrorAction Stop -WarningAction SilentlyContinue
+    }
+    finally {
+        $WhatIfPreference = $previousWhatIf
+    }
+}
+
 function Get-LOCKmeADConnectionProfilePath {
     [CmdletBinding()]
     param()
@@ -822,6 +897,8 @@ function New-LOCKmeADCimSession {
 
 Export-ModuleMember -Function @(
     'Test-LOCKmeADDomainJoined',
+    'Test-LOCKmeADGroupPolicyModule',
+    'Import-LOCKmeADGroupPolicyModule',
     'Resolve-LOCKmeADConnection',
     'Save-LOCKmeADConnection',
     'Get-LOCKmeADSavedConnection',
