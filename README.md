@@ -1,8 +1,8 @@
 # LOCKmeAD
 
-**A lightweight, JSON-driven Active Directory security model and deployment tool, made py pentesters**
+**A lightweight, JSON-driven Active Directory security model and deployment tool, made by pentesters**
 
-LOCKmeAD hardens, structures, and locks down Active Directory environments through a modular PowerShell toolkit. Instead of importing bulky pre-configured GPO backups or running opaque scripts, every security policy is defined in simple, human-readable JSON files. The PowerShell modules read those configs and create everything in AD for you : groups, OUs, GPOs, password policies, authentication silos, and more. LOCKmeAD is made by pentesters who know actual AD gaps and attacks path so that admin teams are provided with real remediations
+LOCKmeAD hardens, structures, and locks down Active Directory environments through a modular PowerShell toolkit. Instead of importing bulky pre-configured GPO backups or running opaque scripts, every security policy is defined in simple, human-readable JSON files. The PowerShell modules read those configs and create everything in AD for you : groups, OUs, GPOs, password policies, authentication silos, and more. LOCKmeAD is made by pentesters who know actual AD gaps and attacks paths so that admin teams are provided with real remediations
 
 > **Full documentation is available on the [Wiki](https://github.com/y00ga-sec/LOCKmeAD/wiki).**
 
