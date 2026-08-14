@@ -57,7 +57,7 @@
     },
     {
       "Name": "ConfigureCentralStore",
-      "Description": "Create the Group Policy Central Store by copying PolicyDefinitions to SYSVOL",
+      "Description": "Create the Group Policy Central Store by copying PolicyDefinitions to SYSVOL and downloading the latest ADMX from Microsoft — executed on the target domain controller, which needs outbound internet access",
       "Enabled": true
     },
     {

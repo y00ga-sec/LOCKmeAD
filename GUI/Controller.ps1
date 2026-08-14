@@ -649,6 +649,27 @@ function Populate-HardeningTab {
             [void]$outerStack.Children.Add($infoLink)
         }
 
+        # Info note — ConfigureCentralStore. Static (not conditional on connection state, unlike
+        # the Schema Admins notice below): whether the target DC has outbound internet access is
+        # not something LOCKmeAD can detect ahead of time, so every operator sees this every time.
+        if ($task.Name -eq 'ConfigureCentralStore') {
+            $centralStoreNote = New-Object System.Windows.Controls.TextBlock
+            $centralStoreNote.Text = "ⓘ  Runs on the target domain controller — needs internet access"
+            $centralStoreNote.FontSize = 11
+            $centralStoreNote.Foreground = Get-WPFBrush "#0078D4"
+            $centralStoreNote.Margin = [System.Windows.Thickness]::new(62, 4, 0, 0)
+            $centralStoreNote.Cursor = [System.Windows.Input.Cursors]::Hand
+            $centralStoreNote.TextDecorations = [System.Windows.TextDecorations]::Underline
+            $centralStoreNote.Add_MouseLeftButtonDown({
+                [System.Windows.MessageBox]::Show(
+                    "This task runs entirely on the target domain controller (the one shown in the connection banner, or the PDC Emulator if none was set explicitly), over a WinRM session — not on this machine.`n`nOn that DC it:`n  1. Copies its own local PolicyDefinitions folder into the Central Store.`n  2. Downloads the latest Windows Administrative Templates directly from Microsoft and overlays them.`n`nStep 2 requires that DC to have outbound internet access (HTTPS to www.microsoft.com and download.microsoft.com). Many hardened environments deliberately block that from domain controllers — if so, the task still succeeds, using only that DC's local PolicyDefinitions, and logs a warning saying so.",
+                    "ConfigureCentralStore — runs on the domain controller",
+                    [System.Windows.MessageBoxButton]::OK,
+                    [System.Windows.MessageBoxImage]::Information) | Out-Null
+            })
+            [void]$outerStack.Children.Add($centralStoreNote)
+        }
+
         # Schema Admins notice — ExtendLAPSSchema only.
         #
         # This is the single task in the whole tool that needs more than Domain Admins: extending

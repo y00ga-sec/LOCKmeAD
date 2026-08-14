@@ -257,6 +257,9 @@ foreach ($task in $config.Tasks) {
                                                -WhatIf:$WhatIfPreference
             }
             'ConfigureCentralStore' {
+                # Runs ON $targetServer over WinRM (see Set-HardeningCentralStore) -- that DC
+                # needs outbound internet access to fetch the latest Windows ADMX templates, or
+                # the task falls back to its own local PolicyDefinitions with a logged warning.
                 Set-HardeningCentralStore -Server $targetServer -Credential $connection.Credential `
                                            -LogDirectory $logDir `
                                            -WhatIf:$WhatIfPreference

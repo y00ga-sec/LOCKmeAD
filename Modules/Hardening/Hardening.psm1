@@ -1364,192 +1364,196 @@ function Set-HardeningReplicationNotify {
 # ============================================================================
 # Task: ConfigureCentralStore
 # ============================================================================
-
-function Find-LatestWindowsADMXPageId {
-    # Queries the Microsoft Download Center search (sorted newest first) and returns the
-    # download page ID for the latest Windows Administrative Templates package.
-    # Validates each candidate by checking that its surrounding context on the search
-    # page mentions both "Administrative Templates" and ".admx".
-    [CmdletBinding()]
-    param([string]$LogDirectory)
-
-    $searchUrl = "https://www.microsoft.com/en-us/download/search?q=Administrative+Templates+admx+Windows&p=0&r=10&t=All&s=Date&o=Descending"
-    Write-HardeningLog -Message "Searching Microsoft Download Center for the latest Windows ADMX templates..." -Level Info -LogDirectory $LogDirectory
-
-    $page    = Invoke-WebRequest -Uri $searchUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
-    $content = $page.Content
-
-    $idMatches = [regex]::Matches($content, 'details\.aspx\?id=(\d+)')
-    foreach ($m in $idMatches) {
-        # Inspect the surrounding HTML (600 chars centred on the link) to confirm
-        # this result is actually the Administrative Templates ADMX package.
-        $start   = [Math]::Max(0, $m.Index - 300)
-        $length  = [Math]::Min(600, $content.Length - $start)
-        $context = $content.Substring($start, $length)
-        if ($context -imatch 'administrative[\s\-]+templates' -and $context -imatch '\.admx') {
-            return $m.Groups[1].Value
-        }
-    }
-
-    throw "No Administrative Templates download page found in search results ($($idMatches.Count) candidates checked)."
-}
-
-function Get-HardeningWindowsADMX {
-    # Downloads the latest Windows Administrative Templates from Microsoft Download Center,
-    # extracts the MSI, and copies PolicyDefinitions to $DestinationPath.
-    # $fallbackPageId is used only when the automatic search fails.
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$DestinationPath,
-        [string]$LogDirectory
-    )
-
-    # Last-known-good MSI URL — update when Microsoft releases a new version.
-    $fallbackPageId = "108394"
-    $fallbackMsiUrl = "https://download.microsoft.com/download/f35d3000-b6c9-4ca6-bedc-5e4ec15a6b7a/Administrative%20Templates%20(admx)%20for%20Windows%2011%20Sep%202025%20Update.msi"
-
-    $downloadPageId = try {
-        Find-LatestWindowsADMXPageId -LogDirectory $LogDirectory
-    }
-    catch {
-        Write-HardeningLog -Message "Auto-detection of latest ADMX page ID failed: $_ — using last known ID ($fallbackPageId)." -Level Warning -LogDirectory $LogDirectory
-        $fallbackPageId
-    }
-
-    Write-HardeningLog -Message "Querying Microsoft Download Center (ID: $downloadPageId)..." -Level Info -LogDirectory $LogDirectory
-
-    # Microsoft now loads the download button URL via JavaScript, so basic HTML scraping
-    # often finds nothing. Try both the confirmation and details pages, then fall back to
-    # the hardcoded last-known-good URL rather than failing the whole task.
-    $downloadUrl = $null
-    foreach ($pageUrl in @(
-        "https://www.microsoft.com/en-us/download/confirmation.aspx?id=$downloadPageId",
-        "https://www.microsoft.com/en-us/download/details.aspx?id=$downloadPageId"
-    )) {
-        try {
-            $page = Invoke-WebRequest -Uri $pageUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
-            $downloadUrl = [regex]::Match($page.Content,
-                'https://download\.microsoft\.com/download/[^"''<>\s]+\.msi').Value
-            if ($downloadUrl) { break }
-        }
-        catch { }
-    }
-
-    if (-not $downloadUrl) {
-        Write-HardeningLog -Message "MSI URL not found in page HTML (Microsoft loads it via JS). Using last-known-good URL — update `$fallbackMsiUrl in the module when a newer version is released." -Level Warning -LogDirectory $LogDirectory
-        $downloadUrl = $fallbackMsiUrl
-    }
-
-    Write-HardeningLog -Message "Download URL: $downloadUrl" -Level Info -LogDirectory $LogDirectory
-
-    $tempDir    = Join-Path $env:TEMP "LOCKmeAD_ADMX_$(Get-Date -Format 'yyyyMMddHHmmss')"
-    $msiPath    = Join-Path $tempDir "AdminTemplates.msi"
-    $extractDir = Join-Path $tempDir "Extracted"
-
-    try {
-        New-Item -Path $tempDir    -ItemType Directory -Force | Out-Null
-        New-Item -Path $extractDir -ItemType Directory -Force | Out-Null
-
-        Write-HardeningLog -Message "Downloading ADMX package..." -Level Info -LogDirectory $LogDirectory
-        Invoke-WebRequest -Uri $downloadUrl -OutFile $msiPath -ErrorAction Stop
-
-        Write-HardeningLog -Message "Extracting package (msiexec admin install)..." -Level Info -LogDirectory $LogDirectory
-        $proc = Start-Process -FilePath "msiexec.exe" `
-                              -ArgumentList "/a `"$msiPath`" /qn TARGETDIR=`"$extractDir`"" `
-                              -Wait -PassThru -WindowStyle Hidden
-        if ($proc.ExitCode -notin @(0, 3010)) {
-            throw "msiexec admin install failed with exit code $($proc.ExitCode)."
-        }
-
-        $policyDefDir = Get-ChildItem -Path $extractDir -Filter "PolicyDefinitions" -Recurse -Directory |
-                        Select-Object -First 1
-        if (-not $policyDefDir) {
-            throw "PolicyDefinitions folder not found in extracted MSI content at '$extractDir'."
-        }
-
-        Copy-Item -Path "$($policyDefDir.FullName)\*" -Destination $DestinationPath -Recurse -Force
-
-        $admxCount = (Get-ChildItem -Path $DestinationPath -Filter "*.admx" -ErrorAction SilentlyContinue).Count
-        Write-HardeningLog -Message "Latest Windows ADMX templates applied to Central Store ($admxCount .admx files)." -Level Success -LogDirectory $LogDirectory
-    }
-    finally {
-        Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
+#
+# The ADMX download and install run ON the target domain controller itself, inside a WinRM
+# session opened via Invoke-LOCKmeADRemote -AlwaysRemote -- never on whatever machine happens
+# to run LOCKmeAD. Two problems this fixes at once:
+#   - the operator's own PolicyDefinitions folder (the local seed copy) is often thin,
+#     mismatched, or plain absent on a non-domain-joined admin machine, whereas every DC
+#     ships one;
+#   - the previous code reached out to Microsoft's download center from the operator's own
+#     machine, then wrote the result over SYSVOL — functionally equivalent, but the network
+#     egress now happens from the host actually meant to be centrally managed.
+#
+# Trade-off, and the reason this task logs a Warning before it runs: the chosen DC needs
+# outbound HTTPS to www.microsoft.com / download.microsoft.com to fetch the templates, and
+# plenty of hardened estates deliberately deny domain controllers internet access. When that
+# egress is blocked, the remote block below catches the failure and falls back to the DC's
+# own local PolicyDefinitions only — see the Warning it logs in that case.
 
 function Set-HardeningCentralStore {
     <#
     .SYNOPSIS
         Creates or updates the Group Policy Central Store in SYSVOL.
     .DESCRIPTION
-        If the Central Store does not exist, creates it. In both cases:
-        1. Copies all ADMX/ADML files from the local PolicyDefinitions folder.
-        2. Downloads the latest Windows Administrative Templates from Microsoft
-           and overlays them on the Central Store (overwrites with newer versions).
-        If the Microsoft download fails, the task completes with a warning using
-        local PolicyDefinitions only.
+        Runs entirely on the target domain controller (-Server), inside a WinRM session
+        opened via Invoke-LOCKmeADRemote -AlwaysRemote. On that DC:
+          1. Copies its own local PolicyDefinitions folder into the Central Store.
+          2. Downloads the latest Windows Administrative Templates from Microsoft and
+             overlays them (overwrites with newer versions).
+        If step 2 fails — most commonly because the DC has no outbound internet access — the
+        task completes with a warning using the DC's local PolicyDefinitions only.
+
+        -Server is required: this task always needs one specific DC to run on and download
+        from, regardless of whether the host running LOCKmeAD is itself domain-joined.
     .PARAMETER LogDirectory
         Log directory.
     .PARAMETER Server
-        Target DC for all AD operations. Required when not domain-joined.
+        Target domain controller the Central Store is built on. Required — see DESCRIPTION.
+        That DC needs outbound internet access for step 2 to succeed.
     .PARAMETER Credential
         Explicit credential to authenticate with. Required when not domain-joined.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [string]$LogDirectory,
+
+        [Parameter(Mandatory)]
         [string]$Server,
+
         [PSCredential]$Credential
     )
 
-    $serverParam = @{}
-    if ($Server)     { $serverParam.Server     = $Server }
+    $serverParam = @{ Server = $Server }
     if ($Credential) { $serverParam.Credential = $Credential }
 
-    $domainDNS  = (Get-ADDomain @serverParam).DNSRoot
-    $sysvolRoot = Get-LOCKmeADSysvolDrive -DomainDNSRoot $domainDNS -Credential $Credential
-    $centralStorePath = "$sysvolRoot\$domainDNS\Policies\PolicyDefinitions"
-    $sourcePath       = "$env:SystemRoot\PolicyDefinitions"
+    $domainDNS        = (Get-ADDomain @serverParam).DNSRoot
+    $centralStorePath = "\\$domainDNS\SYSVOL\$domainDNS\Policies\PolicyDefinitions"
 
-    if (-not (Test-Path $sourcePath)) {
-        Write-HardeningLog -Message "Source PolicyDefinitions not found at '$sourcePath'." -Level Error -LogDirectory $LogDirectory
-        throw "Source PolicyDefinitions not found at '$sourcePath'."
-    }
+    Write-HardeningLog -Message "ConfigureCentralStore runs ON '$Server': that domain controller needs outbound internet access (HTTPS to www.microsoft.com and download.microsoft.com) to fetch the latest Windows ADMX templates. Without it, the task falls back to '$Server''s own local PolicyDefinitions only." `
+        -Level Warning -LogDirectory $LogDirectory
 
-    $storeExists = Test-Path $centralStorePath
-    $verb        = if ($storeExists) { "Update" } else { "Create" }
-
-    if ($PSCmdlet.ShouldProcess($centralStorePath, "$verb GPO Central Store")) {
+    if ($PSCmdlet.ShouldProcess($centralStorePath, "Create/update GPO Central Store (executed on $Server)")) {
         try {
-            if (-not $storeExists) {
-                New-Item -Path $centralStorePath -ItemType Directory -Force | Out-Null
-                Write-HardeningLog -Message "Central Store directory created at '$centralStorePath'." -Level Info -LogDirectory $LogDirectory
+            $remote = Invoke-LOCKmeADRemote -Server $Server -Credential $Credential -AlwaysRemote -ScriptBlock {
+                param($CentralStorePath)
+
+                # Self-contained: this block crosses a remoting boundary (see
+                # Invoke-LOCKmeADRemote's own doc), so it cannot call back into the Hardening
+                # module — everything it needs, including its own log buffer, lives in here.
+                $log = [System.Collections.Generic.List[PSCustomObject]]::new()
+                function Add-RemoteLog([string]$Level, [string]$Message) {
+                    $log.Add([PSCustomObject]@{ Level = $Level; Message = $Message })
+                }
+
+                $sourcePath   = "$env:SystemRoot\PolicyDefinitions"
+                $storeExisted = Test-Path $CentralStorePath
+                if (-not (Test-Path $sourcePath)) {
+                    throw "Source PolicyDefinitions not found at '$sourcePath' on $env:COMPUTERNAME."
+                }
+
+                if (-not $storeExisted) {
+                    New-Item -Path $CentralStorePath -ItemType Directory -Force | Out-Null
+                    Add-RemoteLog 'Info' "Central Store directory created at '$CentralStorePath'."
+                }
+
+                # Pass 1: this DC's own local PolicyDefinitions (includes server-specific ADMX files)
+                Copy-Item -Path "$sourcePath\*" -Destination $CentralStorePath -Recurse -Force
+                Add-RemoteLog 'Info' "$env:COMPUTERNAME's local PolicyDefinitions copied to Central Store."
+
+                # Pass 2: latest Windows ADMX from Microsoft, downloaded and extracted on this DC
+                # (overlays / overwrites with newest versions). Failure here is not fatal to the
+                # task -- see the Warning below and the module-level comment above this function.
+                try {
+                    # Last-known-good fallback — update when Microsoft releases a new version.
+                    $fallbackPageId = "108394"
+                    $fallbackMsiUrl = "https://download.microsoft.com/download/f35d3000-b6c9-4ca6-bedc-5e4ec15a6b7a/Administrative%20Templates%20(admx)%20for%20Windows%2011%20Sep%202025%20Update.msi"
+
+                    $downloadPageId = $null
+                    try {
+                        # Query the Microsoft Download Center search (sorted newest first) and
+                        # validate each candidate by checking that its surrounding HTML context
+                        # mentions both "Administrative Templates" and ".admx".
+                        $searchUrl  = "https://www.microsoft.com/en-us/download/search?q=Administrative+Templates+admx+Windows&p=0&r=10&t=All&s=Date&o=Descending"
+                        $searchPage = Invoke-WebRequest -Uri $searchUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+                        foreach ($m in [regex]::Matches($searchPage.Content, 'details\.aspx\?id=(\d+)')) {
+                            $start   = [Math]::Max(0, $m.Index - 300)
+                            $length  = [Math]::Min(600, $searchPage.Content.Length - $start)
+                            $context = $searchPage.Content.Substring($start, $length)
+                            if ($context -imatch 'administrative[\s\-]+templates' -and $context -imatch '\.admx') {
+                                $downloadPageId = $m.Groups[1].Value
+                                break
+                            }
+                        }
+                        if (-not $downloadPageId) { throw "No Administrative Templates download page found in search results." }
+                    }
+                    catch {
+                        Add-RemoteLog 'Warning' "Auto-detection of the latest ADMX page ID failed on $env:COMPUTERNAME`: $_ — using last known ID ($fallbackPageId)."
+                        $downloadPageId = $fallbackPageId
+                    }
+
+                    # Microsoft now loads the download button URL via JavaScript, so basic HTML
+                    # scraping often finds nothing. Try both the confirmation and details pages,
+                    # then fall back to the hardcoded last-known-good URL.
+                    $downloadUrl = $null
+                    foreach ($pageUrl in @(
+                        "https://www.microsoft.com/en-us/download/confirmation.aspx?id=$downloadPageId",
+                        "https://www.microsoft.com/en-us/download/details.aspx?id=$downloadPageId"
+                    )) {
+                        try {
+                            $dlPage = Invoke-WebRequest -Uri $pageUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+                            $downloadUrl = [regex]::Match($dlPage.Content, 'https://download\.microsoft\.com/download/[^"''<>\s]+\.msi').Value
+                            if ($downloadUrl) { break }
+                        }
+                        catch { }
+                    }
+                    if (-not $downloadUrl) {
+                        Add-RemoteLog 'Warning' "MSI URL not found in page HTML on $env:COMPUTERNAME (Microsoft loads it via JS) — using last-known-good URL."
+                        $downloadUrl = $fallbackMsiUrl
+                    }
+
+                    $tempDir    = Join-Path $env:TEMP "LOCKmeAD_ADMX_$(Get-Date -Format 'yyyyMMddHHmmss')"
+                    $msiPath    = Join-Path $tempDir "AdminTemplates.msi"
+                    $extractDir = Join-Path $tempDir "Extracted"
+                    try {
+                        New-Item -Path $tempDir    -ItemType Directory -Force | Out-Null
+                        New-Item -Path $extractDir -ItemType Directory -Force | Out-Null
+
+                        Invoke-WebRequest -Uri $downloadUrl -OutFile $msiPath -ErrorAction Stop
+
+                        $proc = Start-Process -FilePath "msiexec.exe" `
+                                              -ArgumentList "/a `"$msiPath`" /qn TARGETDIR=`"$extractDir`"" `
+                                              -Wait -PassThru -WindowStyle Hidden
+                        if ($proc.ExitCode -notin @(0, 3010)) {
+                            throw "msiexec admin install failed with exit code $($proc.ExitCode)."
+                        }
+
+                        $policyDefDir = Get-ChildItem -Path $extractDir -Filter "PolicyDefinitions" -Recurse -Directory |
+                                        Select-Object -First 1
+                        if (-not $policyDefDir) {
+                            throw "PolicyDefinitions folder not found in extracted MSI content at '$extractDir'."
+                        }
+
+                        Copy-Item -Path "$($policyDefDir.FullName)\*" -Destination $CentralStorePath -Recurse -Force
+
+                        $admxCount = (Get-ChildItem -Path $CentralStorePath -Filter "*.admx" -ErrorAction SilentlyContinue).Count
+                        Add-RemoteLog 'Success' "Latest Windows ADMX templates downloaded and applied by $env:COMPUTERNAME ($admxCount .admx files)."
+                    }
+                    finally {
+                        Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+                    }
+                }
+                catch {
+                    Add-RemoteLog 'Warning' "$env:COMPUTERNAME could not download the latest Windows ADMX from Microsoft (likely no outbound internet access from this DC): $_ — Central Store populated from its local PolicyDefinitions only."
+                }
+
+                return [PSCustomObject]@{ StoreExisted = $storeExisted; Log = $log }
+            } -ArgumentList $centralStorePath
+
+            foreach ($entry in $remote.Log) {
+                Write-HardeningLog -Message $entry.Message -Level $entry.Level -LogDirectory $LogDirectory
             }
 
-            # Pass 1: local PolicyDefinitions (includes server-specific ADMX files)
-            Copy-Item -Path "$sourcePath\*" -Destination $centralStorePath -Recurse -Force
-            Write-HardeningLog -Message "Local PolicyDefinitions copied to Central Store." -Level Info -LogDirectory $LogDirectory
-
-            # Pass 2: latest Windows ADMX from Microsoft (overlays / overwrites with newest versions)
-            try {
-                Get-HardeningWindowsADMX -DestinationPath $centralStorePath -LogDirectory $LogDirectory
-            }
-            catch {
-                Write-HardeningLog -Message "Could not download latest Windows ADMX from Microsoft: $_ — Central Store populated from local PolicyDefinitions only." -Level Warning -LogDirectory $LogDirectory
-            }
-
-            $pastVerb = if ($storeExists) { "updated" } else { "created" }
-            Write-HardeningLog -Message "GPO Central Store $pastVerb at '$centralStorePath'." -Level Success -LogDirectory $LogDirectory
+            $pastVerb = if ($remote.StoreExisted) { "updated" } else { "created" }
+            Write-HardeningLog -Message "GPO Central Store $pastVerb at '$centralStorePath' (executed on $Server)." -Level Success -LogDirectory $LogDirectory
         }
         catch {
-            Write-HardeningLog -Message "Error configuring GPO Central Store: $_" -Level Error -LogDirectory $LogDirectory
+            Write-HardeningLog -Message "Error configuring GPO Central Store on '$Server': $_" -Level Error -LogDirectory $LogDirectory
             throw
         }
     }
     else {
-        $pastVerb = if ($storeExists) { "updated" } else { "created" }
-        Write-HardeningLog -Message "[WhatIf] GPO Central Store would be $pastVerb at '$centralStorePath'. Local PolicyDefinitions and latest Windows ADMX from Microsoft would be applied." -Level Info -LogDirectory $LogDirectory
+        Write-HardeningLog -Message "[WhatIf] GPO Central Store would be created/updated at '$centralStorePath', executed on '$Server' — that DC would need outbound internet access to fetch the latest Windows ADMX; its own local PolicyDefinitions would be used as the base either way." -Level Info -LogDirectory $LogDirectory
     }
 }
 
