@@ -54,7 +54,49 @@ In order to avoid breaking your environnement when deploying, LOCKmeAD includes 
 .\LOCKmeAD.ps1 -Module All -WhatIf
 ```
 
-**Requirements:** PowerShell 7.5, ActiveDirectory module, GroupPolicy module, domain-joined machine, administrator privileges.
+---
+
+## Requirements
+
+PowerShell 7.5 and local administrator privileges. Which PowerShell modules you need depends on
+what you deploy:
+
+| LOCKmeAD module | Required PowerShell modules |
+|---|---|
+| Tiering | `ActiveDirectory` |
+| RBAC | `ActiveDirectory` |
+| PSO | `ActiveDirectory` |
+| Silo | `ActiveDirectory` |
+| GPO | `ActiveDirectory` + `GroupPolicy` |
+| JIT (deployment) | `ActiveDirectory` + `GroupPolicy` |
+| Hardening | `ActiveDirectory` + `LAPS`¹ + `DnsServer`² |
+| GUI / menu | `ActiveDirectory` |
+
+¹ only for the `ExtendLAPSSchema` and `ConfigureLAPSADPermissions` tasks
+² only for the `AddDNSSecurityRecords` task
+
+`ActiveDirectory` is the only hard requirement — LOCKmeAD refuses to start without it. The others
+are checked when the module that needs them is actually deployed.
+
+```powershell
+# Windows Server
+Install-WindowsFeature RSAT-AD-PowerShell, GPMC, RSAT-DNS-Server
+
+# Windows 10 / 11
+Add-WindowsCapability -Online -Name Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0
+Add-WindowsCapability -Online -Name Rsat.GroupPolicy.Management.Tools~~~~0.0.1.0
+Add-WindowsCapability -Online -Name Rsat.Dns.Tools~~~~0.0.1.0
+```
+
+Nothing has to be imported by hand — LOCKmeAD loads what it needs. Two modules are never installed
+manually: `LAPS` ships in-box with Windows Server 2019+ and Windows 10+ (April 11 2023 update
+onward), and `SmbShare` is only needed on the file server, not on the host running LOCKmeAD.
+
+**Running from a non-domain-joined host** — LOCKmeAD does not require a domain-joined machine. With
+`-Server` / `-Credential`, `GroupPolicy` and `LAPS` are **not** needed locally: those cmdlets accept
+no `-Credential`, so LOCKmeAD runs them inside a WinRM session on the domain controller, where they
+must be present instead. `ActiveDirectory` is then enough on your own host, plus `DnsServer` if you
+use `AddDNSSecurityRecords`.
 
 ---
 
