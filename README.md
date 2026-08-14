@@ -142,7 +142,3 @@ Tiering → RBAC is not affected: RBAC checks its target OU inside the write gua
 ## Documentation
 
 For detailed configuration guides, JSON schema references, and deployment walkthroughs, head to the **[Wiki](https://github.com/y00ga-sec/LOCKmeAD/wiki)**.
-
----
-
-## TO DO :
