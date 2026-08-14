@@ -1079,6 +1079,55 @@ function Enable-HardeningPAMFeature {
 # Task: DisableAnonymousAccess
 # ============================================================================
 
+function Get-HardeningAnonymousLogonMemberDN {
+    <#
+    .SYNOPSIS
+        Private. Returns the DN(s) of the group's members that stand for ANONYMOUS LOGON
+        (S-1-5-7), or an empty array.
+    .DESCRIPTION
+        Shared by the deployment task and its verification so the two halves cannot disagree about
+        whether the remediation is applied.
+
+        ANONYMOUS LOGON is reachable through TWO distinct directory objects carrying the same
+        objectSid, and a 'member' value may legitimately name either:
+
+          CN=Anonymous Logon,CN=WellKnown Security Principals,CN=Configuration,<forest>
+              the forest-wide catalogue entry, named after the friendly name;
+          CN=S-1-5-7,CN=ForeignSecurityPrincipals,<domainDN>
+              the per-domain stub, named after the SID, created on demand when the SID is placed
+              into a domain group.
+
+        Matching the DN as a string therefore cannot be trusted: it recognises one form and
+        silently misses the other, which on a security remediation means reporting "already
+        secure" over a domain where anonymous access is still open -- a failure mode worse than an
+        error, because nothing surfaces. The SID is the only stable identity, so each candidate is
+        resolved and compared on objectSid.
+
+        The DN whose leading component IS the SID settles itself, so the common case costs no
+        extra query.
+    .PARAMETER Group
+        The group object, read with -Properties member.
+    .PARAMETER ConnParam
+        Splat hashtable with Server/Credential, as built by the caller.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Group,
+        [hashtable]$ConnParam = @{}
+    )
+
+    $anonymousSid = 'S-1-5-7'
+
+    return @(
+        foreach ($memberDN in @($Group.member)) {
+            if ($memberDN -like "CN=$anonymousSid,*") { $memberDN; continue }
+
+            $obj = Get-ADObject -Identity $memberDN -Properties objectSid @ConnParam -ErrorAction SilentlyContinue
+            if ($obj -and $obj.objectSid -and $obj.objectSid.Value -eq $anonymousSid) { $memberDN }
+        }
+    )
+}
+
 function Disable-HardeningAnonymousAccess {
     <#
     .SYNOPSIS
@@ -1101,36 +1150,53 @@ function Disable-HardeningAnonymousAccess {
     if ($Server)     { $serverParam.Server     = $Server }
     if ($Credential) { $serverParam.Credential = $Credential }
 
-    $groupName = "Pre-Windows 2000 Compatible Access"
-    $anonymousSID = "S-1-5-7"
+    # Resolved by its well-known SID, never by name. "Pre-Windows 2000 Compatible Access" is a
+    # BUILTIN group whose name is localized by the DC's installation language ("Accès compatible
+    # pré-Windows 2000", "Prä-Windows 2000 kompatibler Zugriff", ...), so a name lookup raises
+    # ADIdentityNotFoundException on every non-English forest. S-1-5-32-554 is the same everywhere.
+    $groupSid = "S-1-5-32-554"
 
-    # Check if ANONYMOUS LOGON is a member
     try {
-        $members = Get-ADGroupMember -Identity $groupName @serverParam -ErrorAction Stop
-        $anonymousMember = $members | Where-Object { $_.SID.Value -eq $anonymousSID }
+        $group = Get-ADGroup -Identity $groupSid -Properties member @serverParam -ErrorAction Stop
     }
     catch {
-        Write-HardeningLog -Message "Error reading members of '$groupName': $_" -Level Error -LogDirectory $LogDirectory
+        Write-HardeningLog -Message "Error reading the Pre-Windows 2000 Compatible Access group ($groupSid): $_" -Level Error -LogDirectory $LogDirectory
         throw
     }
 
-    if (-not $anonymousMember) {
-        Write-HardeningLog -Message "ANONYMOUS LOGON is not a member of '$groupName'. Already secure." -Level Warning -LogDirectory $LogDirectory
+    # Membership is read from the raw 'member' attribute, and the removal writes that same
+    # attribute directly, because ANONYMOUS LOGON cannot survive a round-trip through the
+    # membership cmdlets.
+    #
+    # It is a foreignSecurityPrincipal, not a real account. Get-ADGroupMember returns it with an
+    # EMPTY distinguishedName, an EMPTY objectClass and an all-zero objectGUID -- only the SID and
+    # the name the local LSA resolved from it are populated. Feeding that object back to
+    # Remove-ADGroupMember -Members leaves the cmdlet with no usable identity to build the
+    # modification from, and it fails with a bare "Object reference not set to an instance of an
+    # object": a .NET null dereference inside the cmdlet, with nothing naming the group, the member
+    # or the cause. It fails that way even under -WhatIf, i.e. before any write is attempted, so
+    # deployments simply lost this task on every domain where the remediation was needed.
+    #
+    # Which DN stands for ANONYMOUS LOGON is not obvious -- see Get-HardeningAnonymousLogonMemberDN.
+    $anonymousDNs = Get-HardeningAnonymousLogonMemberDN -Group $group -ConnParam $serverParam
+
+    if ($anonymousDNs.Count -eq 0) {
+        Write-HardeningLog -Message "ANONYMOUS LOGON is not a member of '$($group.Name)'. Already secure." -Level Warning -LogDirectory $LogDirectory
         return
     }
 
-    if ($PSCmdlet.ShouldProcess($groupName, "Remove ANONYMOUS LOGON (S-1-5-7)")) {
+    if ($PSCmdlet.ShouldProcess($group.Name, "Remove ANONYMOUS LOGON (S-1-5-7)")) {
         try {
-            Remove-ADGroupMember -Identity $groupName -Members $anonymousMember -Confirm:$false @serverParam
-            Write-HardeningLog -Message "ANONYMOUS LOGON removed from '$groupName'." -Level Success -LogDirectory $LogDirectory
+            Set-ADObject -Identity $group.DistinguishedName -Remove @{ member = $anonymousDNs } @serverParam -ErrorAction Stop
+            Write-HardeningLog -Message "ANONYMOUS LOGON removed from '$($group.Name)'." -Level Success -LogDirectory $LogDirectory
         }
         catch {
-            Write-HardeningLog -Message "Error removing ANONYMOUS LOGON from '$groupName': $_" -Level Error -LogDirectory $LogDirectory
+            Write-HardeningLog -Message "Error removing ANONYMOUS LOGON from '$($group.Name)': $_" -Level Error -LogDirectory $LogDirectory
             throw
         }
     }
     else {
-        Write-HardeningLog -Message "[WhatIf] ANONYMOUS LOGON would be removed from '$groupName'." -Level Info -LogDirectory $LogDirectory
+        Write-HardeningLog -Message "[WhatIf] ANONYMOUS LOGON would be removed from '$($group.Name)'." -Level Info -LogDirectory $LogDirectory
     }
 }
 
@@ -2478,12 +2544,18 @@ function Test-HardeningAnonymousAccess {
     if ($Server)     { $serverParam.Server     = $Server }
     if ($Credential) { $serverParam.Credential = $Credential }
     try {
-        $members = @(Get-ADGroupMember 'Pre-Windows 2000 Compatible Access' @serverParam -ErrorAction Stop)
-        $hasAnon = $members | Where-Object { $_.Name -eq 'ANONYMOUS LOGON' -or $_.SamAccountName -eq 'ANONYMOUS LOGON' }
+        # Resolved by well-known SID and read from the raw 'member' attribute, for the same two
+        # reasons as Disable-HardeningAnonymousAccess -- see the comments there. Matching the
+        # LSA-resolved display name was doubly fragile: it is localized on a non-English DC, and
+        # Get-ADGroupMember is the very cmdlet that mangles foreign security principals. Both
+        # halves of the task go through the same member resolver so they cannot disagree about
+        # whether it is applied.
+        $group   = Get-ADGroup -Identity "S-1-5-32-554" -Properties member @serverParam -ErrorAction Stop
+        $hasAnon = @(Get-HardeningAnonymousLogonMemberDN -Group $group -ConnParam $serverParam).Count -gt 0
         if (-not $hasAnon) {
-            New-HardeningCheckResult -Status 'OK' -Message "ANONYMOUS LOGON not in Pre-Windows 2000 Compatible Access"
+            New-HardeningCheckResult -Status 'OK' -Message "ANONYMOUS LOGON not in '$($group.Name)'"
         } else {
-            New-HardeningCheckResult -Status 'NotOK' -Message "ANONYMOUS LOGON is still a member of Pre-Windows 2000 Compatible Access"
+            New-HardeningCheckResult -Status 'NotOK' -Message "ANONYMOUS LOGON is still a member of '$($group.Name)'"
         }
     } catch { New-HardeningCheckResult -Status 'Error' -Message $_.Exception.Message }
 }
