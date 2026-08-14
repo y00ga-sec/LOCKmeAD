@@ -1,4 +1,119 @@
 # ============================================================================
+# Connection Dialog (shown at startup when the host is not domain-joined)
+# ============================================================================
+
+function Show-GUIConnectionDialog {
+    <#
+    .SYNOPSIS
+        Prompts for a target domain controller and credential when the host running
+        the GUI is not domain-joined (or a domain controller couldn't be located
+        automatically).
+    .PARAMETER DefaultServer
+        Pre-fills the domain controller field, so a saved profile whose credential no longer
+        authenticates does not also cost the operator the server name.
+    .OUTPUTS
+        PSCustomObject with Server/Credential (as Resolve-LOCKmeADConnection returns),
+        or $null if the user cancelled.
+    #>
+    param([string]$DefaultServer = '')
+
+    $dialogXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Connect to Active Directory" Width="440" SizeToContent="Height"
+        WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
+        Background="#F3F3F3" FontFamily="Segoe UI">
+    <StackPanel Margin="24">
+        <TextBlock Text="Connect to Active Directory" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,4"/>
+        <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#666666" Margin="0,0,0,16"
+                   Text="This host is not domain-joined (or no domain controller could be located automatically). Provide a target domain controller and domain credentials to continue."/>
+
+        <TextBlock Text="Domain Controller (hostname or IP)" FontSize="12" Foreground="#555" Margin="0,0,0,4"/>
+        <TextBox Name="ConnServer" FontSize="13" Padding="8,6" BorderBrush="#DDD"/>
+
+        <TextBlock Text="Username (DOMAIN\user or user@domain)" FontSize="12" Foreground="#555" Margin="0,12,0,4"/>
+        <TextBox Name="ConnUsername" FontSize="13" Padding="8,6" BorderBrush="#DDD"/>
+
+        <TextBlock Text="Password" FontSize="12" Foreground="#555" Margin="0,12,0,4"/>
+        <PasswordBox Name="ConnPassword" FontSize="13" Padding="8,6"/>
+
+        <CheckBox Name="ConnRemember" Content="Remember this connection on this computer"
+                   FontSize="12" Margin="0,14,0,0"/>
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+            <Button Name="BtnCancel" Content="Cancel" Width="90" Padding="0,8"
+                    Background="#E8E8E8" BorderThickness="0" FontSize="13" Cursor="Hand" Margin="0,0,8,0"/>
+            <Button Name="BtnConnect" Content="Connect" Width="100" Padding="0,8"
+                    Background="#0078D4" Foreground="White" BorderThickness="0"
+                    FontSize="13" FontWeight="SemiBold" Cursor="Hand"/>
+        </StackPanel>
+    </StackPanel>
+</Window>
+"@
+    [xml]$dlgDoc = $dialogXaml
+    $reader = [System.Xml.XmlNodeReader]::new($dlgDoc)
+    $dlg = [System.Windows.Markup.XamlReader]::Load($reader)
+
+    $txtServer   = $dlg.FindName("ConnServer")
+    $txtUsername = $dlg.FindName("ConnUsername")
+    $txtPassword = $dlg.FindName("ConnPassword")
+    $chkRemember = $dlg.FindName("ConnRemember")
+    $btnConnect  = $dlg.FindName("BtnConnect")
+    $btnCancel   = $dlg.FindName("BtnCancel")
+
+    # Enter validates from any field, Esc cancels. IsDefault/IsCancel are WPF's own mechanism for
+    # this, so it keeps working inside the PasswordBox, which swallows most key handlers.
+    $btnConnect.IsDefault = $true
+    $btnCancel.IsCancel   = $true
+
+    $txtServer.Text = $DefaultServer
+    # Focus lands on the first field still empty, so a pre-filled server is not in the way.
+    $dlg.Add_Loaded({
+        if ([string]::IsNullOrWhiteSpace($txtServer.Text))        { [void]$txtServer.Focus() }
+        elseif ([string]::IsNullOrWhiteSpace($txtUsername.Text))  { [void]$txtUsername.Focus() }
+        else                                                      { [void]$txtPassword.Focus() }
+    }.GetNewClosure())
+
+    $dlg.Tag = $null
+    $btnConnect.Add_Click({
+        if ([string]::IsNullOrWhiteSpace($txtServer.Text)) {
+            [System.Windows.MessageBox]::Show("Domain controller is required.", "Validation",
+                [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
+            return
+        }
+        if ([string]::IsNullOrWhiteSpace($txtUsername.Text)) {
+            [System.Windows.MessageBox]::Show("Username is required.", "Validation",
+                [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
+            return
+        }
+        $secure = $txtPassword.SecurePassword
+        $cred = [PSCredential]::new($txtUsername.Text, $secure)
+
+        # Resolve-LOCKmeADConnection throws when the account is not a Domain Admin. Catching it
+        # here keeps the dialog open so the operator can simply retype credentials, instead of
+        # letting the exception unwind and kill the launcher.
+        try {
+            $conn = Resolve-LOCKmeADConnection -Server $txtServer.Text.Trim() -Credential $cred -Remember:$chkRemember.IsChecked
+        }
+        catch {
+            [System.Windows.MessageBox]::Show($_.Exception.Message, "Connection refused",
+                [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error) | Out-Null
+            $txtPassword.Clear()
+            [void]$txtPassword.Focus()
+            return
+        }
+
+        # Schema Admins is not raised here on purpose: it only matters to ExtendLAPSSchema, and
+        # that task carries its own notice on the Hardening tab.
+        $dlg.Tag = $conn
+        $dlg.Close()
+    }.GetNewClosure())
+    $btnCancel.Add_Click({ $dlg.Close() }.GetNewClosure())
+
+    $dlg.ShowDialog() | Out-Null
+    return $dlg.Tag
+}
+
+# ============================================================================
 # Helper Functions
 # ============================================================================
 
@@ -306,9 +421,11 @@ function ConvertFrom-TreeView($items) {
 function Populate-Dashboard {
     # Environment info (try/catch in case not on a DC)
     try {
-        $domain = Get-ADDomain
-        $forest = Get-ADForest
-        $UI.DashEnvDC.Text        = "Current DC: $($env:COMPUTERNAME)"
+        $connParam = New-LOCKmeADConnectionParam -Connection $script:Connection
+        $domain = Get-ADDomain @connParam
+        $forest = Get-ADForest @connParam
+        $currentHost = if ($script:Connection -and $script:Connection.Server) { $script:Connection.Server } else { $env:COMPUTERNAME }
+        $UI.DashEnvDC.Text        = "Current DC: $currentHost"
         $UI.DashEnvPDC.Text       = "PDC Emulator: $($domain.PDCEmulator)"
         $UI.DashEnvDomain.Text    = "Domain: $($domain.DNSRoot)"
         $UI.DashEnvForest.Text    = "Forest: $($forest.Name)"
@@ -532,6 +649,34 @@ function Populate-HardeningTab {
             [void]$outerStack.Children.Add($infoLink)
         }
 
+        # Schema Admins notice — ExtendLAPSSchema only.
+        #
+        # This is the single task in the whole tool that needs more than Domain Admins: extending
+        # the schema is a forest-root operation reserved to Schema Admins. Rather than warning
+        # every operator at connection time about something most of them will never run, the
+        # notice sits on the one card it concerns, and only when the connected account actually
+        # lacks the membership.
+        if ($task.Name -eq 'ExtendLAPSSchema' -and $script:Privilege -and
+            $script:Privilege.Determined -and -not $script:Privilege.IsSchemaAdmin) {
+            $schemaNote = New-Object System.Windows.Controls.TextBlock
+            $schemaNote.Text = [char]0x24D8 + "  $($script:Privilege.Identity) is not a Schema Admin - this task will fail"
+            $schemaNote.FontSize = 11
+            $schemaNote.Foreground = Get-WPFBrush "#D35400"
+            $schemaNote.Margin = [System.Windows.Thickness]::new(62, 4, 0, 0)
+            $schemaNote.Cursor = [System.Windows.Input.Cursors]::Hand
+            $schemaNote.TextWrapping = "Wrap"
+            $schemaNote.TextDecorations = [System.Windows.TextDecorations]::Underline
+            $noteIdentity = [string]$script:Privilege.Identity
+            $schemaNote.Add_MouseLeftButtonDown({
+                [System.Windows.MessageBox]::Show(
+                    "Extending the Active Directory schema for Windows LAPS is a forest-root operation reserved to the Schema Admins group. '$noteIdentity' is a Domain Admin but not a member of it, so this task will fail.`n`nEvery other task and module deploys normally.`n`nTwo ways forward:`n  - add the account to Schema Admins on the forest root, temporarily, for this one run;`n  - or leave the task disabled if the schema already carries the msLAPS-* attributes, in which case it is a no-op anyway. The Verify All button tells you which.",
+                    "Schema Admins required",
+                    [System.Windows.MessageBoxButton]::OK,
+                    [System.Windows.MessageBoxImage]::Information) | Out-Null
+            }.GetNewClosure())
+            [void]$outerStack.Children.Add($schemaNote)
+        }
+
         # Prerequisites check button — for RaiseDomainFunctionalLevel and RaiseForestFunctionalLevel
         $prereqScope    = $null
         $prereqParamKey = $null
@@ -584,6 +729,136 @@ function Update-GPOFilteringOUWarning {
     }
 }
 
+function New-GPOGroupChipPanel {
+    <#
+    .SYNOPSIS
+        Builds the editable "list of AD groups" block shared by the User Rights Assignments and
+        Restricted Groups editors: one removable chip per group, plus an AD-backed add button.
+    .DESCRIPTION
+        Both editors manipulate the same thing -- a string array of group names hanging off an
+        entry in GPO-Config.json -- so they share one builder rather than two near-identical
+        copies. Edits mutate the configuration object in place, which is what makes them survive
+        "Save configs" without any change to Save-AllConfigs.
+
+        Removing the last entry is refused while the GPO is enabled: Import-GPOConfiguration
+        rejects an enabled GPO whose assignment has no Groups (or whose restricted group has no
+        Members), so allowing it here would only produce a configuration that fails at deployment
+        with a message pointing at the JSON rather than at the click that caused it.
+    .PARAMETER Owner
+        The object holding the list -- a UserRightsAssignments entry or a RestrictedGroups entry.
+    .PARAMETER Property
+        Name of the string-array property on that object: 'Groups' or 'Members'.
+    .PARAMETER Label
+        Heading shown above the chips.
+    .PARAMETER Accent
+        Chip foreground colour, to keep the two editors visually distinct.
+    .PARAMETER ChipBackground
+        Chip background colour.
+    .PARAMETER GpoEnabled
+        Whether the owning GPO is enabled, which decides if the list may be emptied.
+    #>
+    param(
+        [Parameter(Mandatory)] $Owner,
+        [Parameter(Mandatory)][string]$Property,
+        [Parameter(Mandatory)][string]$Label,
+        [string]$Accent         = "#4A235A",
+        [string]$ChipBackground = "#EDE7F6",
+        [bool]$GpoEnabled       = $true
+    )
+
+    $block = New-Object System.Windows.Controls.StackPanel
+    $block.Margin = [System.Windows.Thickness]::new(0, 2, 0, 8)
+
+    $heading = New-Object System.Windows.Controls.TextBlock
+    $heading.Text       = $Label
+    $heading.FontSize   = 11
+    $heading.FontWeight = "SemiBold"
+    $heading.Foreground = Get-WPFBrush "#6C3483"
+    $heading.Margin     = [System.Windows.Thickness]::new(0, 0, 0, 4)
+    [void]$block.Children.Add($heading)
+
+    $wrap = New-Object System.Windows.Controls.WrapPanel
+
+    $list = if ($Owner.$Property) { @($Owner.$Property) } else { @() }
+    foreach ($groupName in $list) {
+        $chip = New-Object System.Windows.Controls.Border
+        $chip.Background   = Get-WPFBrush $ChipBackground
+        $chip.CornerRadius = [System.Windows.CornerRadius]::new(3)
+        $chip.Padding      = [System.Windows.Thickness]::new(7, 2, 4, 2)
+        $chip.Margin       = [System.Windows.Thickness]::new(0, 0, 4, 4)
+
+        $inner = New-Object System.Windows.Controls.StackPanel
+        $inner.Orientation = "Horizontal"
+
+        $text = New-Object System.Windows.Controls.TextBlock
+        $text.Text              = $groupName
+        $text.FontSize          = 11
+        $text.Foreground        = Get-WPFBrush $Accent
+        $text.VerticalAlignment = "Center"
+
+        $remove = New-Object System.Windows.Controls.Button
+        $remove.Content           = [char]0x00D7
+        $remove.FontSize          = 11
+        $remove.Background        = Get-WPFBrush "Transparent"
+        $remove.BorderThickness   = [System.Windows.Thickness]::new(0)
+        $remove.Foreground        = Get-WPFBrush "#A93226"
+        $remove.Cursor            = "Hand"
+        $remove.Padding           = [System.Windows.Thickness]::new(3, 0, 0, 0)
+        $remove.VerticalAlignment = "Center"
+        $remove.ToolTip           = "Remove '$groupName'"
+        $remove.Tag = @{ Owner = $Owner; Property = $Property; GroupName = $groupName; Label = $Label; Enabled = $GpoEnabled }
+        $remove.Add_Click({
+            $ctx     = $this.Tag
+            $current = @($ctx.Owner.($ctx.Property))
+            if ($ctx.Enabled -and $current.Count -le 1) {
+                [System.Windows.MessageBox]::Show(
+                    "'$($ctx.Label)' must keep at least one group while the GPO is enabled.`n`nDisable the GPO first, or add a replacement before removing this one.",
+                    "Cannot remove the last group",
+                    [System.Windows.MessageBoxButton]::OK,
+                    [System.Windows.MessageBoxImage]::Warning) | Out-Null
+                return
+            }
+            $ctx.Owner.($ctx.Property) = @($current | Where-Object { $_ -ne $ctx.GroupName })
+            $script:UnsavedChanges.GPO = $true
+            Invoke-GPOTabRefresh
+        })
+
+        [void]$inner.Children.Add($text)
+        [void]$inner.Children.Add($remove)
+        $chip.Child = $inner
+        [void]$wrap.Children.Add($chip)
+    }
+
+    $add = New-Object System.Windows.Controls.Button
+    $add.Content         = "+ Add group"
+    $add.Background      = Get-WPFBrush "Transparent"
+    $add.BorderThickness = [System.Windows.Thickness]::new(0)
+    $add.Foreground      = Get-WPFBrush "#0078D4"
+    $add.FontSize        = 11
+    $add.Cursor          = "Hand"
+    $add.Padding         = [System.Windows.Thickness]::new(0, 2, 0, 2)
+    $add.Margin          = [System.Windows.Thickness]::new(0, 0, 0, 4)
+    $add.Tag = @{ Owner = $Owner; Property = $Property }
+    $add.Add_Click({
+        $ctx = $this.Tag
+        $groupName = Show-ADGroupSearchDialog
+        if (-not $groupName) { return }
+        if (-not $ctx.Owner.PSObject.Properties[$ctx.Property]) {
+            $ctx.Owner | Add-Member -NotePropertyName $ctx.Property -NotePropertyValue @() -Force
+        }
+        $current = @($ctx.Owner.($ctx.Property))
+        if ($groupName -notin $current) {
+            $ctx.Owner.($ctx.Property) = $current + @($groupName)
+            $script:UnsavedChanges.GPO = $true
+        }
+        Invoke-GPOTabRefresh
+    })
+    [void]$wrap.Children.Add($add)
+
+    [void]$block.Children.Add($wrap)
+    return $block
+}
+
 function Populate-GPOTab {
     $UI.GPOTaskList.Children.Clear()
     $script:GPOToggles = @()
@@ -633,7 +908,33 @@ function Populate-GPOTab {
         $uraCount = if ($gpo.UserRightsAssignments) { $gpo.UserRightsAssignments.Count } else { 0 }
         $svcCount = if ($gpo.SystemServices) { $gpo.SystemServices.Count } else { 0 }
         $scriptCount = if ($gpo.Scripts) { $gpo.Scripts.Count } else { 0 }
+        $rgCount = if ($gpo.RestrictedGroups) { $gpo.RestrictedGroups.Count } else { 0 }
         $isLapsGPO = [bool]($gpo.RegistrySettings | Where-Object { $_.Key -like "*LAPS*" })
+
+        # Fill the badge strip. It was built and docked but never populated, so a GPO whose only
+        # content is Restricted Groups looked completely empty on the card -- which is exactly the
+        # policy type where knowing there is content matters most.
+        $badgeSpecs = @(
+            @{ N = $regCount;     T = 'reg';    F = "#0078D4"; B = "#E8F2FC" }
+            @{ N = $regPrefCount; T = 'pref';   F = "#2471A3"; B = "#E8F2FC" }
+            @{ N = $secOptCount;  T = 'SO';     F = "#B7950B"; B = "#FEF9E7" }
+            @{ N = $uraCount;     T = 'URA';    F = "#6C3483"; B = "#F3E8FC" }
+            @{ N = $rgCount;      T = 'RG';     F = "#A93226"; B = "#FDEDEC" }
+            @{ N = $svcCount;     T = 'svc';    F = "#C0392B"; B = "#FDEDEC" }
+            @{ N = $scriptCount;  T = 'script'; F = "#117A65"; B = "#E8F8F0" }
+        )
+        foreach ($spec in $badgeSpecs) {
+            if ($spec.N -le 0) { continue }
+            $badge = New-Object System.Windows.Controls.TextBlock
+            $badge.Text              = "$($spec.N) $($spec.T)"
+            $badge.FontSize          = 10
+            $badge.Foreground        = Get-WPFBrush $spec.F
+            $badge.Background        = Get-WPFBrush $spec.B
+            $badge.Padding           = [System.Windows.Thickness]::new(6, 2, 6, 2)
+            $badge.Margin            = [System.Windows.Thickness]::new(4, 0, 0, 0)
+            $badge.VerticalAlignment = "Center"
+            [void]$badgePanel.Children.Add($badge)
+        }
 
         $textStack = New-Object System.Windows.Controls.StackPanel
         $textStack.Margin = [System.Windows.Thickness]::new(14, 0, 10, 0)
@@ -980,7 +1281,7 @@ function Populate-GPOTab {
             [void]$outerStack.Children.Add($scriptsExpander)
         }
 
-        # User Rights Assignments expander (editable groups)
+        # User Rights Assignments expander (editable) -- deny-logon GPOs live here.
         if ($uraCount -gt 0) {
             $uraExpander = New-Object System.Windows.Controls.Expander
             $uraExpander.Header = "User Rights Assignments"
@@ -991,92 +1292,49 @@ function Populate-GPOTab {
             $uraStack.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
 
             foreach ($assignment in $gpo.UserRightsAssignments) {
-                $uraBlock = New-Object System.Windows.Controls.StackPanel
-                $uraBlock.Margin = [System.Windows.Thickness]::new(0, 2, 0, 8)
-
-                $rightLabel = New-Object System.Windows.Controls.TextBlock
-                $rightLabel.FontSize = 11
-                $rightLabel.Foreground = Get-WPFBrush "#6C3483"
-                $rightLabel.FontWeight = "SemiBold"
-                $rightLabel.ToolTip = $assignment.Right
-                $rightLabel.Text = if ($assignment.Description) { $assignment.Description } else { $assignment.Right }
-                $rightLabel.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
-                [void]$uraBlock.Children.Add($rightLabel)
-
-                $groupsWrap = New-Object System.Windows.Controls.WrapPanel
-
-                $grpList = if ($assignment.Groups) { @($assignment.Groups) } else { @() }
-                foreach ($grpName in $grpList) {
-                    $tagBorder = New-Object System.Windows.Controls.Border
-                    $tagBorder.Background = Get-WPFBrush "#EDE7F6"
-                    $tagBorder.CornerRadius = [System.Windows.CornerRadius]::new(3)
-                    $tagBorder.Padding = [System.Windows.Thickness]::new(7, 2, 4, 2)
-                    $tagBorder.Margin = [System.Windows.Thickness]::new(0, 0, 4, 4)
-
-                    $tagInner = New-Object System.Windows.Controls.StackPanel
-                    $tagInner.Orientation = "Horizontal"
-
-                    $tagLabel = New-Object System.Windows.Controls.TextBlock
-                    $tagLabel.Text = $grpName
-                    $tagLabel.FontSize = 11
-                    $tagLabel.Foreground = Get-WPFBrush "#4A235A"
-                    $tagLabel.VerticalAlignment = "Center"
-
-                    $removeGrpBtn = New-Object System.Windows.Controls.Button
-                    $removeGrpBtn.Content = [char]0x00D7
-                    $removeGrpBtn.FontSize = 11
-                    $removeGrpBtn.Background = Get-WPFBrush "Transparent"
-                    $removeGrpBtn.BorderThickness = [System.Windows.Thickness]::new(0)
-                    $removeGrpBtn.Foreground = Get-WPFBrush "#A93226"
-                    $removeGrpBtn.Cursor = "Hand"
-                    $removeGrpBtn.Padding = [System.Windows.Thickness]::new(3, 0, 0, 0)
-                    $removeGrpBtn.VerticalAlignment = "Center"
-                    $removeGrpBtn.Tag = @{ Assignment = $assignment; GroupName = $grpName }
-                    $removeGrpBtn.Add_Click({
-                        $ctx = $this.Tag
-                        $ctx.Assignment.Groups = @($ctx.Assignment.Groups | Where-Object { $_ -ne $ctx.GroupName })
-                        $script:UnsavedChanges.GPO = $true
-                        Invoke-GPOTabRefresh
-                    })
-
-                    [void]$tagInner.Children.Add($tagLabel)
-                    [void]$tagInner.Children.Add($removeGrpBtn)
-                    $tagBorder.Child = $tagInner
-                    [void]$groupsWrap.Children.Add($tagBorder)
-                }
-
-                $addGroupBtn = New-Object System.Windows.Controls.Button
-                $addGroupBtn.Content = "+ Add group"
-                $addGroupBtn.Background = Get-WPFBrush "Transparent"
-                $addGroupBtn.BorderThickness = [System.Windows.Thickness]::new(0)
-                $addGroupBtn.Foreground = Get-WPFBrush "#0078D4"
-                $addGroupBtn.FontSize = 11
-                $addGroupBtn.Cursor = "Hand"
-                $addGroupBtn.Padding = [System.Windows.Thickness]::new(0, 2, 0, 2)
-                $addGroupBtn.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
-                $addGroupBtn.Tag = $assignment
-                $addGroupBtn.Add_Click({
-                    $asgn = $this.Tag
-                    $groupName = Show-ADGroupSearchDialog
-                    if ($groupName) {
-                        if (-not $asgn.Groups) {
-                            $asgn | Add-Member -NotePropertyName Groups -NotePropertyValue @() -Force
-                        }
-                        if ($groupName -notin @($asgn.Groups)) {
-                            $asgn.Groups = @($asgn.Groups) + @($groupName)
-                            $script:UnsavedChanges.GPO = $true
-                        }
-                        Invoke-GPOTabRefresh
-                    }
-                })
-                [void]$groupsWrap.Children.Add($addGroupBtn)
-
-                [void]$uraBlock.Children.Add($groupsWrap)
-                [void]$uraStack.Children.Add($uraBlock)
+                $label = if ($assignment.Description) { $assignment.Description } else { $assignment.Right }
+                $panel = New-GPOGroupChipPanel -Owner $assignment -Property 'Groups' -Label $label `
+                            -Accent "#4A235A" -ChipBackground "#EDE7F6" -GpoEnabled ([bool]$gpo.Enabled)
+                $panel.Children[0].ToolTip = $assignment.Right
+                [void]$uraStack.Children.Add($panel)
             }
 
             $uraExpander.Content = $uraStack
             [void]$outerStack.Children.Add($uraExpander)
+        }
+
+        # Restricted Groups expander (editable) -- local Administrators enforcement.
+        #
+        # This section had no UI at all: the four SEC-Tiering-*-LocalAdmins GPOs carry nothing
+        # else, so their cards showed an interrupteur, a name and a description and nothing more.
+        # An operator could enable and link a policy that REPLACES the entire local Administrators
+        # membership without ever seeing whose membership it enforces.
+        if ($rgCount -gt 0) {
+            $rgExpander = New-Object System.Windows.Controls.Expander
+            $rgExpander.Header = "Restricted Groups (local membership)"
+            $rgExpander.Margin = [System.Windows.Thickness]::new(58, 8, 0, 0)
+            $rgExpander.FontSize = 12
+
+            $rgStack = New-Object System.Windows.Controls.StackPanel
+            $rgStack.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+
+            $rgHint = New-Object System.Windows.Controls.TextBlock
+            $rgHint.Text = "Membership is REPLACED, not added to: anyone not listed here is removed from the local group on every targeted machine."
+            $rgHint.FontSize = 10
+            $rgHint.Foreground = Get-WPFBrush "#D35400"
+            $rgHint.TextWrapping = "Wrap"
+            $rgHint.Margin = [System.Windows.Thickness]::new(0, 0, 0, 6)
+            [void]$rgStack.Children.Add($rgHint)
+
+            foreach ($rg in $gpo.RestrictedGroups) {
+                $label = if ($rg.Description) { "$($rg.Group)  -  $($rg.Description)" } else { $rg.Group }
+                $panel = New-GPOGroupChipPanel -Owner $rg -Property 'Members' -Label $label `
+                            -Accent "#7B241C" -ChipBackground "#FDEDEC" -GpoEnabled ([bool]$gpo.Enabled)
+                [void]$rgStack.Children.Add($panel)
+            }
+
+            $rgExpander.Content = $rgStack
+            [void]$outerStack.Children.Add($rgExpander)
         }
 
         # Windows LAPS dedicated configuration panel
@@ -1096,24 +1354,24 @@ function Populate-GPOTab {
             [void]$lapsGrid.ColumnDefinitions.Add($colCtrl)
 
             $lapsParamDefs = @(
-                @{ VN = "BackupDirectory";                       Label = "Répertoire de sauvegarde";                         Type = "combo";  Options = @("0 - Désactivé","1 - Microsoft Entra ID uniquement","2 - Active Directory uniquement"); Values = @(0,1,2) }
-                @{ VN = "AdministratorAccountName";              Label = "Nom du compte administrateur";                     Type = "string"; Hint = "Vide = compte Administrateur intégré (identifié par son RID)" }
-                @{ VN = "PasswordAgeDays";                       Label = "Durée max. du mot de passe (jours, 1-365)";        Type = "int" }
-                @{ VN = "PasswordLength";                        Label = "Longueur du mot de passe (8-64)";                  Type = "int" }
-                @{ VN = "PassphraseLength";                      Label = "Longueur de la phrase de passe (mots, 3-10)";      Type = "int" }
-                @{ VN = "PasswordComplexity";                    Label = "Complexité du mot de passe";                       Type = "combo";  Options = @("1 - Majuscules uniquement","2 - Maj. + minuscules","3 - Maj. + min. + chiffres","4 - Maj. + min. + chiffres + spéciaux (défaut)","5 - Maj. + min. + chiffres + spéciaux (lisibilité améliorée) *","6 - Phrase de passe (longs mots) *","7 - Phrase de passe (courts mots) *","8 - Phrase de passe (courts mots, préfixes uniques) *"); Values = @(1,2,3,4,5,6,7,8) }
-                @{ VN = "PasswordExpirationProtectionEnabled";   Label = "Protéger l'expiration du mot de passe";            Type = "bool" }
-                @{ VN = "PostAuthenticationResetDelay";          Label = "Délai post-authentification (heures, 0-24)";       Type = "int" }
-                @{ VN = "PostAuthenticationActions";             Label = "Actions post-authentification";                    Type = "combo";  Options = @("1 - Réinitialiser le mot de passe","3 - Réinitialiser + déconnecter les sessions (défaut)","5 - Réinitialiser + redémarrer","11 - Réinitialiser + déconnecter + terminer les processus *"); Values = @(1,3,5,11) }
-                @{ VN = "ADPasswordEncryptionEnabled";           Label = "Chiffrement du mot de passe dans l'AD";            Type = "bool" }
-                @{ VN = "ADPasswordEncryptionPrincipal";         Label = "Principal de déchiffrement autorisé";              Type = "string"; Hint = "Formats acceptés : DOMAINE\Groupe  •  utilisateur@domaine.com  •  S-1-5-21-...  (ex : forest\GDL-LAPS-Pwd-Read)" }
-                @{ VN = "ADEncryptedPasswordHistorySize";        Label = "Historique des mots de passe chiffrés (0-12)";    Type = "int" }
-                @{ VN = "ADBackupDSRMPassword";                  Label = "Sauvegarde du mot de passe DSRM (DCs uniquement)"; Type = "bool" }
-                @{ VN = "AutomaticAccountManagementEnabled";     Label = "Gestion automatique du compte (Win 11 24H2+) *";  Type = "bool" }
-                @{ VN = "AutomaticAccountManagementTarget";      Label = "Compte cible de la gestion automatique *";        Type = "combo";  Options = @("0 - Compte administrateur intégré","1 - Nouveau compte personnalisé (défaut)"); Values = @(0,1) }
-                @{ VN = "AutomaticAccountManagementNameOrPrefix"; Label = "Nom ou préfixe du compte automatique *";         Type = "string"; Hint = "Max 14 caractères si RandomizeName est activé (défaut : WLapsAdmin)" }
-                @{ VN = "AutomaticAccountManagementEnableAccount"; Label = "Activer le compte automatique *";               Type = "bool" }
-                @{ VN = "AutomaticAccountManagementRandomizeName"; Label = "Randomiser le nom du compte automatique *";     Type = "bool" }
+                @{ VN = "BackupDirectory";                        Label = "Password backup directory";                        Type = "combo";  Options = @("0 - Disabled","1 - Microsoft Entra ID only","2 - Active Directory only"); Values = @(0,1,2) }
+                @{ VN = "AdministratorAccountName";               Label = "Managed administrator account name";               Type = "string"; Hint = "Empty = the built-in Administrator, identified by its well-known RID" }
+                @{ VN = "PasswordAgeDays";                        Label = "Maximum password age (days, 1-365)";               Type = "int" }
+                @{ VN = "PasswordLength";                         Label = "Password length (8-64)";                           Type = "int" }
+                @{ VN = "PassphraseLength";                       Label = "Passphrase length (words, 3-10)";                  Type = "int" }
+                @{ VN = "PasswordComplexity";                     Label = "Password complexity";                              Type = "combo";  Options = @("1 - Large letters only","2 - Large + small letters","3 - Large + small + digits","4 - Large + small + digits + specials (default)","5 - Same as 4, improved readability *","6 - Passphrase, long words *","7 - Passphrase, short words *","8 - Passphrase, short words with unique prefixes *"); Values = @(1,2,3,4,5,6,7,8) }
+                @{ VN = "PasswordExpirationProtectionEnabled";    Label = "Enforce maximum password age";                     Type = "bool" }
+                @{ VN = "PostAuthenticationResetDelay";           Label = "Post-authentication grace period (hours, 0-24)";   Type = "int" }
+                @{ VN = "PostAuthenticationActions";              Label = "Post-authentication actions";                      Type = "combo";  Options = @("1 - Reset the password","3 - Reset + sign out interactive sessions (default)","5 - Reset + reboot","11 - Reset + sign out + terminate remaining processes *"); Values = @(1,3,5,11) }
+                @{ VN = "ADPasswordEncryptionEnabled";            Label = "Encrypt the password in Active Directory";         Type = "bool" }
+                @{ VN = "ADPasswordEncryptionPrincipal";          Label = "Principal allowed to decrypt";                     Type = "string"; Hint = "Leave empty so only Domain Admins can decrypt. Accepted formats: DOMAIN\Group  -  user@domain.com  -  S-1-5-21-..." }
+                @{ VN = "ADEncryptedPasswordHistorySize";         Label = "Encrypted password history size (0-12)";           Type = "int" }
+                @{ VN = "ADBackupDSRMPassword";                   Label = "Back up the DSRM password (domain controllers)";   Type = "bool" }
+                @{ VN = "AutomaticAccountManagementEnabled";      Label = "Automatic account management (Win 11 24H2+) *";    Type = "bool" }
+                @{ VN = "AutomaticAccountManagementTarget";       Label = "Account to manage automatically *";                Type = "combo";  Options = @("0 - Built-in Administrator","1 - New custom account (default)"); Values = @(0,1) }
+                @{ VN = "AutomaticAccountManagementNameOrPrefix"; Label = "Automatic account name or prefix *";               Type = "string"; Hint = "Max 14 characters when RandomizeName is enabled (default: WLapsAdmin)" }
+                @{ VN = "AutomaticAccountManagementEnableAccount"; Label = "Enable the automatic account *";                  Type = "bool" }
+                @{ VN = "AutomaticAccountManagementRandomizeName"; Label = "Randomise the automatic account name *";          Type = "bool" }
             )
 
             $lapsRowIdx = 0
@@ -1221,6 +1479,38 @@ function Populate-GPOTab {
 
             $lapsExpander.Content = $lapsGrid
             [void]$outerStack.Children.Add($lapsExpander)
+        }
+
+        # Optional explanatory note, driven by the optional "Note"/"NoteSummary" fields on a
+        # GPO in Config\GPO-Config.json rather than by a hardcoded test on the GPO name, so
+        # any GPO needing a rationale gets one for free. NoteSummary stays visible on the
+        # card (the takeaway), Note opens on click -- same idiom as the Hardening tab's
+        # "How OUs and groups interact" link, which keeps a long rationale from bloating
+        # the card.
+        if ($gpo.Note) {
+            $noteSummary = if ($gpo.NoteSummary) { $gpo.NoteSummary } else { "Deployment note" }
+
+            $noteLink = New-Object System.Windows.Controls.TextBlock
+            $noteLink.Text = [char]0x24D8 + "  $noteSummary"
+            $noteLink.FontSize = 11
+            $noteLink.Foreground = Get-WPFBrush "#0078D4"
+            $noteLink.Margin = [System.Windows.Thickness]::new(58, 6, 0, 0)
+            $noteLink.Cursor = [System.Windows.Input.Cursors]::Hand
+            $noteLink.TextWrapping = "Wrap"
+            $noteLink.TextDecorations = [System.Windows.TextDecorations]::Underline
+
+            # GetNewClosure captures this iteration's values. A plain scriptblock would
+            # resolve $gpo at click time and every card would show the last GPO's note.
+            $noteTitle = [string]$gpo.Name
+            $noteBody  = [string]$gpo.Note
+            $noteLink.Add_MouseLeftButtonDown({
+                [System.Windows.MessageBox]::Show(
+                    $noteBody, $noteTitle,
+                    [System.Windows.MessageBoxButton]::OK,
+                    [System.Windows.MessageBoxImage]::Information)
+            }.GetNewClosure())
+
+            [void]$outerStack.Children.Add($noteLink)
         }
 
         # Link Targets expander
@@ -1576,7 +1866,7 @@ function Populate-PSOTab {
 
         # AppliesTo expander
         $appliesToExpander = New-Object System.Windows.Controls.Expander
-        $appliesToExpander.Header = "Applies To (Groups / Users)"
+        $appliesToExpander.Header = "Applies To (Groups)"
         $appliesToExpander.Margin = [System.Windows.Thickness]::new(58, 4, 0, 0)
         $appliesToExpander.FontSize = 12
 
@@ -1596,17 +1886,7 @@ function Populate-PSOTab {
         $searchGroupBtn.Cursor = "Hand"
         $searchGroupBtn.Padding = [System.Windows.Thickness]::new(0, 2, 10, 2)
 
-        $searchUserBtn = New-Object System.Windows.Controls.Button
-        $searchUserBtn.Content = "+ Add User"
-        $searchUserBtn.Background = Get-WPFBrush "Transparent"
-        $searchUserBtn.BorderThickness = [System.Windows.Thickness]::new(0)
-        $searchUserBtn.Foreground = Get-WPFBrush "#0078D4"
-        $searchUserBtn.FontSize = 11
-        $searchUserBtn.Cursor = "Hand"
-        $searchUserBtn.Padding = [System.Windows.Thickness]::new(0, 2, 0, 2)
-
         [void]$appliesToBtnRow.Children.Add($searchGroupBtn)
-        [void]$appliesToBtnRow.Children.Add($searchUserBtn)
         [void]$appliesToStack.Children.Add($appliesToBtnRow)
 
         $appliesToTextBox = New-Object System.Windows.Controls.TextBox
@@ -1625,19 +1905,7 @@ function Populate-PSOTab {
 
         $searchGroupBtn.Tag = $appliesToTextBox
         $searchGroupBtn.Add_Click({
-            $result = Show-ADObjectSearchDialog -SearchType "Group"
-            if ($result) {
-                $tb = $this.Tag
-                $existing = @($tb.Text -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-                if ($result -notin $existing) {
-                    $tb.Text = (($existing + @($result)) -join "`r`n")
-                }
-            }
-        })
-
-        $searchUserBtn.Tag = $appliesToTextBox
-        $searchUserBtn.Add_Click({
-            $result = Show-ADObjectSearchDialog -SearchType "User"
+            $result = Show-ADObjectSearchDialog
             if ($result) {
                 $tb = $this.Tag
                 $existing = @($tb.Text -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
@@ -1952,10 +2220,12 @@ function Show-FunctionalLevelPrereqDialog {
     try {
         Import-Module $modulePath -Force -ErrorAction Stop
         if ($Scope -eq 'Domain') {
-            $checks = @(Test-HardeningDomainFunctionalLevelPrerequisites -TargetDomainLevel $TargetLevel)
+            $checks = @(Test-HardeningDomainFunctionalLevelPrerequisites -TargetDomainLevel $TargetLevel `
+                -Server $script:Connection.Server -Credential $script:Connection.Credential)
         }
         else {
-            $checks = @(Test-HardeningForestFunctionalLevelPrerequisites -TargetForestLevel $TargetLevel)
+            $checks = @(Test-HardeningForestFunctionalLevelPrerequisites -TargetForestLevel $TargetLevel `
+                -Server $script:Connection.Server -Credential $script:Connection.Credential)
         }
     }
     catch {
@@ -2624,33 +2894,194 @@ function Invoke-Search([string]$query) {
 # Canonical safe execution order
 $script:DeploySafeOrder = @("Hardening", "Tiering", "RBAC", "PSO", "Silo", "GPO", "JIT")
 
+# Spinner frames for the per-module progress line. Deliberately plain ASCII: the console
+# panel renders in Cascadia Mono/Consolas, which have no Braille or spinner glyphs and
+# would show tofu boxes instead.
+$script:SpinnerFrames = @('|', '/', '-', '\')
+
+$script:VerdictColors = @{
+    SUCCESS   = "#58D68D"   # green
+    PARTIAL   = "#E67E22"   # orange
+    FAIL      = "#EC7063"   # red
+    SIMULATED = "#87CEEB"   # blue -- nothing was written, whatever the underlying verdict
+}
+
+function New-ConsoleStatusLine {
+    <#
+    .SYNOPSIS
+        Appends a console line and hands back its Run, so the caller can rewrite that same
+        line in place instead of appending a new one.
+    .DESCRIPTION
+        This is what lets one line spin while a module deploys and then turn into that
+        module's verdict, rather than scrolling the panel with hundreds of log lines.
+    #>
+    param([string]$Text, [string]$Color = "#CCCCCC")
+
+    $para = New-Object System.Windows.Documents.Paragraph
+    $para.Margin = [System.Windows.Thickness]::new(0)
+    $run = New-Object System.Windows.Documents.Run($Text)
+    $run.Foreground = Get-WPFBrush $Color
+    $para.Inlines.Add($run)
+    $UI.ConsoleOutput.Document.Blocks.Add($para)
+    $UI.ConsoleOutput.ScrollToEnd()
+    return $run
+}
+
+function Set-ConsoleStatusLine {
+    <#
+    .SYNOPSIS
+        Rewrites a line previously created by New-ConsoleStatusLine.
+    #>
+    param($Run, [string]$Text, [string]$Color)
+
+    $Run.Text = $Text
+    if ($Color) { $Run.Foreground = Get-WPFBrush $Color }
+    $UI.ConsoleOutput.ScrollToEnd()
+}
+
+function Get-DeploymentVerdict {
+    <#
+    .SYNOPSIS
+        Turns a deployment script's own "DEPLOYMENT SUMMARY" block into a
+        SUCCESS / PARTIAL / FAIL verdict plus a one-line detail.
+    .DESCRIPTION
+        Every Scripts\Deploy-*.ps1 closes with a summary of "<label> : <n>" counters and an
+        "Errors : <n>" line. Only lines *after* the DEPLOYMENT SUMMARY header are read: the
+        pre-flight configuration summary printed above it uses the very same
+        "label : number" shape (Total tasks, Enabled, Disabled, ...) and would otherwise be
+        mistaken for results.
+
+        Verdict:
+          SUCCESS - no errors reported
+          PARTIAL - errors, but at least one unit of work still went through
+          FAIL    - errors and nothing went through, or the script died before printing a
+                    summary at all (bad config, no AD connectivity, ...)
+
+        "skipped (disabled)" counters are ignored on purpose: a module the operator turned
+        off is a deliberate no-op, not work that succeeded.
+
+        Simulated is reported separately rather than folded into Verdict. Every deployment script
+        marks its counters with a "(SIMULATION)" suffix under -WhatIf, and this function has to
+        strip that suffix to recognise the label at all -- which used to make a simulated run
+        produce a console line byte-for-byte identical to a real one ("SUCCESS  GPO  GPOs
+        deployed: 22, 0 error(s)"). Nothing else in the GUI carried the distinction, so the
+        operator had no way to tell the two apart. The counts are deliberately left as they are:
+        "22 GPOs would be deployed" is the useful answer a simulation exists to give.
+    .PARAMETER Lines
+        Plain-text lines captured from the deployment script.
+    .OUTPUTS
+        PSCustomObject with Verdict, Detail and Simulated.
+    #>
+    param([string[]]$Lines)
+
+    $start = -1
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        if ($Lines[$i] -match 'DEPLOYMENT SUMMARY') { $start = $i; break }
+    }
+    if ($start -lt 0) {
+        return [PSCustomObject]@{ Verdict = 'FAIL'; Detail = 'stopped before producing a summary'; Simulated = $false }
+    }
+
+    $errors    = 0
+    $work      = 0
+    $headline  = $null
+    $simulated = $false
+
+    for ($i = $start + 1; $i -lt $Lines.Count; $i++) {
+        # Anchored on a numeric (or Yes/No) value to end-of-line, so the trailing
+        # "Log file: ..." and "CSV report: ..." lines can never match.
+        if ($Lines[$i] -notmatch '^\s+(?<label>\S.*?)\s*:\s*(?<value>\d+|Yes|No)\s*$') { continue }
+
+        # Both captures are read out of $Matches FIRST. Anything testing the label with -match
+        # would overwrite $Matches before the value is read, leaving the headline as a bare ": ".
+        $rawLabel = $Matches['label']
+        $raw      = $Matches['value']
+        if ($rawLabel -like '*(SIMULATION)*') { $simulated = $true }
+        $label = ($rawLabel -replace '\s*\(SIMULATION\)\s*$', '').Trim()
+        $value = if ($raw -eq 'Yes') { 1 } elseif ($raw -eq 'No') { 0 } else { [int]$raw }
+
+        if ($label -match '^Errors') { $errors = $value; continue }
+        if ($label -match 'skipped') { continue }
+
+        $work += $value
+        # First counter of the block is the module's headline figure (OUs created,
+        # GPOs deployed, Groups created, ...) -- reuse it verbatim as the detail.
+        if (-not $headline) { $headline = "${label}: $raw" }
+    }
+
+    $verdict = if ($errors -eq 0) { 'SUCCESS' } elseif ($work -gt 0) { 'PARTIAL' } else { 'FAIL' }
+    $detail  = @(
+        if ($simulated) { 'nothing written' }
+        $headline
+        ("{0} error(s)" -f $errors)
+    ) | Where-Object { $_ }
+
+    return [PSCustomObject]@{ Verdict = $verdict; Detail = ($detail -join ', '); Simulated = $simulated }
+}
+
 function Start-SingleDeployment([string]$module) {
     $whatIf = [bool]$UI.WhatIfToggle.IsChecked
+    $label  = $module.PadRight(10)
 
     $scriptPath = $script:ScriptPaths[$module]
     if (-not $scriptPath -or -not (Test-Path $scriptPath)) {
-        Write-ConsoleUI "Script not found: $scriptPath" "Error"
-        return
+        New-ConsoleStatusLine ("  {0,-11} {1} script not found: {2}" -f 'FAIL', $label, $scriptPath) $script:VerdictColors.FAIL | Out-Null
+        return [PSCustomObject]@{ Module = $module; Verdict = 'FAIL'; Simulated = $false }
     }
 
     $configPath = $script:ConfigPaths[$module]
-    $cmd = "& '$scriptPath' -ConfigPath '$configPath' -NoConfirm"
-    if ($whatIf) { $cmd += " -WhatIf" }
+    $callParams = @{
+        ConfigPath = $configPath
+        NoConfirm  = $true
+    }
+    if ($script:Connection -and $script:Connection.Server)     { $callParams.Server     = $script:Connection.Server }
+    if ($script:Connection -and $script:Connection.Credential) { $callParams.Credential = $script:Connection.Credential }
+    if ($whatIf) { $callParams.WhatIf = $true }
+
+    $statusRun = New-ConsoleStatusLine ("  {0,-11} {1} deploying..." -f $script:SpinnerFrames[0], $label) "#87CEEB"
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $frame = 0
+    $clock = [System.Diagnostics.Stopwatch]::StartNew()
 
     try {
-        $output = Invoke-Expression $cmd 2>&1
-        foreach ($line in $output) {
-            $lvl = "Info"
-            $text = $line.ToString()
-            if ($text -match '\[Success\]') { $lvl = "Success" }
-            elseif ($text -match '\[Warning\]') { $lvl = "Warning" }
-            elseif ($text -match '\[Error\]' -or $line -is [System.Management.Automation.ErrorRecord]) { $lvl = "Error" }
-            Write-ConsoleUI $text $lvl
+        # Captured with `*>&1` (all streams), not `2>&1` (error stream only): every
+        # Write-*Log writes through Write-Host, i.e. the Information stream, which `2>&1`
+        # never merged. The lines now drive the spinner and the verdict instead of being
+        # printed one by one -- the full transcript is still written to
+        # Logs\<run>\<Module>_*.log by the modules themselves.
+        & $scriptPath @callParams *>&1 | ForEach-Object {
+            $record = $_
+            $lines.Add($(
+                if ($record -is [System.Management.Automation.InformationRecord]) { "$($record.MessageData)" }
+                else { "$record" }
+            ))
+
+            # Repaint at ~12 fps at most. A GPO deployment emits several hundred lines and
+            # pumping the dispatcher for every single one is pure overhead.
+            if ($clock.ElapsedMilliseconds -ge 80) {
+                $frame = ($frame + 1) % $script:SpinnerFrames.Count
+                Set-ConsoleStatusLine $statusRun ("  {0,-11} {1} deploying..." -f $script:SpinnerFrames[$frame], $label)
+                $script:Window.Dispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
+                $clock.Restart()
+            }
         }
-        Write-ConsoleUI "$module deployment completed." "Success"
-    } catch {
-        Write-ConsoleUI "$module deployment failed: $_" "Error"
     }
+    catch {
+        $lines.Add("[Error] $_")
+    }
+    $clock.Stop()
+
+    # A simulated run keeps its underlying verdict (a failure during -WhatIf is still a failure worth
+    # seeing) but is labelled and coloured so it can never be mistaken for a deployment: "SIM/SUCCESS"
+    # in blue, versus "SUCCESS" in green.
+    $result  = Get-DeploymentVerdict -Lines $lines
+    $verdict = if ($result.Simulated) { "SIM/$($result.Verdict)" } else { $result.Verdict }
+    $color   = if ($result.Simulated) { $script:VerdictColors.SIMULATED } else { $script:VerdictColors[$result.Verdict] }
+    Set-ConsoleStatusLine $statusRun ("  {0,-11} {1} {2}" -f $verdict, $label, $result.Detail) $color
+    $script:Window.Dispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
+
+    return [PSCustomObject]@{ Module = $module; Verdict = $result.Verdict; Simulated = $result.Simulated }
 }
 
 function Start-SelectedDeployments {
@@ -2671,18 +3102,52 @@ function Start-SelectedDeployments {
     # Create a shared run folder so all modules log into the same directory
     $global:LOCKmeAD_RunFolder = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
 
-    # Enforce safe order
-    $ordered = $script:DeploySafeOrder | Where-Object { $selected -contains $_ }
+    # Enforce safe order. Wrapped in @() because Where-Object returns a bare string when a
+    # single module is selected, and indexing a string yields its first character.
+    $ordered = @($script:DeploySafeOrder | Where-Object { $selected -contains $_ })
 
     $whatIf = [bool]$UI.WhatIfToggle.IsChecked
     $whatIfLabel = if ($whatIf) { " (WhatIf)" } else { "" }
     Write-ConsoleUI "Deploying: $($ordered -join ' > ')$whatIfLabel" "Info"
 
+    # No "=== $module ===" header any more: each module now owns a single line that spins
+    # while it runs and settles into its own verdict.
+    $results = @()
     foreach ($module in $ordered) {
-        Write-ConsoleUI "=== $module ===" "Info"
-        Start-SingleDeployment $module
+        $results += Start-SingleDeployment $module
     }
-    Write-ConsoleUI "All selected deployments completed." "Success"
+
+    $ok      = @($results | Where-Object { $_.Verdict -eq 'SUCCESS' }).Count
+    $partial = @($results | Where-Object { $_.Verdict -eq 'PARTIAL' }).Count
+    $failed  = @($results | Where-Object { $_.Verdict -eq 'FAIL' }).Count
+    $level   = if ($failed -gt 0) { "Error" } elseif ($partial -gt 0) { "Warning" } else { "Success" }
+    # Stated again on the closing line, because that is the one an operator reads last and quotes
+    # afterwards. The log now carries the [WhatIf] lines too, so the path is worth following.
+    $simPrefix = if (@($results | Where-Object { $_.Simulated }).Count -gt 0) { "SIMULATION - nothing was written. " } else { "" }
+    Write-ConsoleUI "$simPrefix$ok SUCCESS, $partial PARTIAL, $failed FAIL - full output in $(Get-DeploymentLogPath $ordered[0])" $level
+}
+
+function Get-DeploymentLogPath([string]$module) {
+    <#
+    .SYNOPSIS
+        Absolute path of the folder the current run's log files were written to.
+    .DESCRIPTION
+        Since the console panel only reports a verdict per module, the operator has to open
+        the logs to find out what actually failed -- so the closing line has to hand over a
+        path that can be pasted straight into Explorer, not a project-relative one.
+
+        Resolved exactly the way every Scripts\Deploy-*.ps1 resolves it: the module config's
+        Settings.LogDirectory, treated as relative to the project root unless already rooted,
+        then the shared run folder. Reading it from the config rather than hardcoding "Logs"
+        keeps this correct if the LogDirectory setting is ever changed.
+    #>
+    $projectRoot = Split-Path (Split-Path $script:ConfigPaths.RBAC -Parent) -Parent
+
+    $logRoot = $script:Configs[$module].Settings.LogDirectory
+    if (-not $logRoot) { $logRoot = './Logs' }
+    if (-not [System.IO.Path]::IsPathRooted($logRoot)) { $logRoot = Join-Path $projectRoot $logRoot }
+
+    return [System.IO.Path]::GetFullPath((Join-Path $logRoot $global:LOCKmeAD_RunFolder))
 }
 
 function Update-DeployOrderHint {
@@ -2714,11 +3179,12 @@ $script:GuidToNameMap = @{}
 function Build-GuidToNameMap {
     if ($script:GuidToNameMap.Count -gt 0) { return }
     try {
-        $rootDse = Get-ADRootDSE -ErrorAction Stop
+        $connParam = New-LOCKmeADConnectionParam -Connection $script:Connection
+        $rootDse = Get-ADRootDSE @connParam -ErrorAction Stop
         Get-ADObject -SearchBase $rootDse.schemaNamingContext `
                      -LDAPFilter "(schemaidguid=*)" `
                      -Properties lDAPDisplayName, schemaIDGUID `
-                     -ErrorAction Stop |
+                     @connParam -ErrorAction Stop |
             ForEach-Object {
                 $g = [System.Guid]$_.schemaIDGUID
                 $script:GuidToNameMap[$g.ToString().ToLower()] = $_.lDAPDisplayName
@@ -2726,7 +3192,7 @@ function Build-GuidToNameMap {
         Get-ADObject -SearchBase $rootDse.configurationNamingContext `
                      -LDAPFilter "(&(objectclass=controlAccessRight)(rightsguid=*))" `
                      -Properties displayName, rightsGuid `
-                     -ErrorAction Stop |
+                     @connParam -ErrorAction Stop |
             ForEach-Object {
                 $g = [System.Guid]$_.rightsGuid
                 $script:GuidToNameMap[$g.ToString().ToLower()] = $_.displayName
@@ -2809,7 +3275,8 @@ function Show-ADGroupSearchDialog {
         $statusText.Text = "Searching..."
         $searchWindow.Cursor = [System.Windows.Input.Cursors]::Wait
         try {
-            $results = Get-ADGroup -Filter "Name -like '*$val*'" -ErrorAction Stop | Select-Object -First 50
+            $connParam = New-LOCKmeADConnectionParam -Connection $script:Connection
+            $results = Get-ADGroup -Filter "Name -like '*$val*'" @connParam -ErrorAction Stop | Select-Object -First 50
             foreach ($r in $results) {
                 $item = [System.Windows.Controls.ListBoxItem]::new()
                 $item.Content = "$($r.SamAccountName)  —  $($r.Name)"
@@ -2864,12 +3331,21 @@ function Show-ADGroupSearchDialog {
 }
 
 function Show-ADObjectSearchDialog {
-    param([ValidateSet("Group","User")][string]$SearchType = "Group")
+    <#
+    .SYNOPSIS
+        Group picker for a PSO's AppliesTo list.
+    .DESCRIPTION
+        Groups only. This used to take a -SearchType of Group or User, because the PSO tab offered
+        an "+ Add User" button beside "+ Add Group"; that button is gone, so the User branch had no
+        reachable caller left. Active Directory itself does accept a user as a PSO subject -- this
+        is LOCKmeAD's own rule, not a limitation of Fine-Grained Password Policies -- so the
+        deployment path in Modules\PSO\PSO.psm1 still resolves either kind.
+    #>
+    param()
 
-    $typeLabel = if ($SearchType -eq "User") { "User" } else { "Group" }
     $searchXaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        Title="Search AD $typeLabel" Width="460" Height="380"
+        Title="Search AD Group" Width="460" Height="380"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         Background="#F5F5F5" FontFamily="Segoe UI">
     <Grid Margin="16">
@@ -2909,7 +3385,6 @@ function Show-ADObjectSearchDialog {
 
     $script:dialogResult = $null
 
-    $capturedType = $SearchType
     $doSearch = {
         $val = $searchBox.Text.Trim()
         if ([string]::IsNullOrWhiteSpace($val)) {
@@ -2920,22 +3395,13 @@ function Show-ADObjectSearchDialog {
         $statusText.Text = "Searching..."
         $searchWindow.Cursor = [System.Windows.Input.Cursors]::Wait
         try {
-            if ($capturedType -eq "User") {
-                $results = Get-ADUser -Filter "Name -like '*$val*'" -ErrorAction Stop | Select-Object -First 50
-                foreach ($r in $results) {
-                    $item = [System.Windows.Controls.ListBoxItem]::new()
-                    $item.Content = "$($r.SamAccountName)  —  $($r.Name)"
-                    $item.Tag = $r.SamAccountName
-                    $resultList.Items.Add($item) | Out-Null
-                }
-            } else {
-                $results = Get-ADGroup -Filter "Name -like '*$val*'" -ErrorAction Stop | Select-Object -First 50
-                foreach ($r in $results) {
-                    $item = [System.Windows.Controls.ListBoxItem]::new()
-                    $item.Content = "$($r.SamAccountName)  —  $($r.Name)"
-                    $item.Tag = $r.SamAccountName
-                    $resultList.Items.Add($item) | Out-Null
-                }
+            $connParam = New-LOCKmeADConnectionParam -Connection $script:Connection
+            $results = Get-ADGroup -Filter "Name -like '*$val*'" @connParam -ErrorAction Stop | Select-Object -First 50
+            foreach ($r in $results) {
+                $item = [System.Windows.Controls.ListBoxItem]::new()
+                $item.Content = "$($r.SamAccountName)  —  $($r.Name)"
+                $item.Tag = $r.SamAccountName
+                $resultList.Items.Add($item) | Out-Null
             }
             $count = $resultList.Items.Count
             $statusText.Text = if ($count -eq 0) { "No results found." }
@@ -3008,12 +3474,13 @@ function Show-CASearchDialog {
     $script:caList = @()
 
     try {
-        $domainDN   = (Get-ADDomain).DistinguishedName
+        $connParam  = New-LOCKmeADConnectionParam -Connection $script:Connection
+        $domainDN   = (Get-ADDomain @connParam).DistinguishedName
         $enrollBase = "CN=Enrollment Services,CN=Public Key Services,CN=Services,CN=Configuration,$domainDN"
         $cas = Get-ADObject -LDAPFilter "(objectClass=pKIEnrollmentService)" `
                             -SearchBase $enrollBase `
                             -Properties dNSHostName `
-                            -ErrorAction Stop
+                            @connParam -ErrorAction Stop
         $script:caList = @($cas | ForEach-Object {
             [PSCustomObject]@{ CAName = $_.Name; CAHostname = $_.dNSHostName }
         })
@@ -3414,12 +3881,13 @@ function Show-ADSchemaSearchDialog {
     $allItems = [System.Collections.Generic.List[PSCustomObject]]::new()
 
     try {
-        $rootDse = Get-ADRootDSE -ErrorAction Stop
+        $connParam = New-LOCKmeADConnectionParam -Connection $script:Connection
+        $rootDse = Get-ADRootDSE @connParam -ErrorAction Stop
 
         Get-ADObject -SearchBase $rootDse.schemaNamingContext `
                      -LDAPFilter "(schemaidguid=*)" `
                      -Properties lDAPDisplayName, objectClass `
-                     -ErrorAction Stop |
+                     @connParam -ErrorAction Stop |
             ForEach-Object {
                 $type = if ('classSchema' -in $_.objectClass) { 'Class' } else { 'Attribute' }
                 $allItems.Add([PSCustomObject]@{ Name = $_.lDAPDisplayName; Type = $type })
@@ -3428,7 +3896,7 @@ function Show-ADSchemaSearchDialog {
         Get-ADObject -SearchBase $rootDse.configurationNamingContext `
                      -LDAPFilter "(&(objectclass=controlAccessRight)(rightsguid=*))" `
                      -Properties displayName `
-                     -ErrorAction Stop |
+                     @connParam -ErrorAction Stop |
             ForEach-Object {
                 $allItems.Add([PSCustomObject]@{ Name = $_.displayName; Type = 'ExtendedRight' })
             }
@@ -4034,7 +4502,7 @@ function Show-AddPSODialog {
             <StackPanel>
                 <TextBlock Text="Applies To" FontSize="13" FontWeight="SemiBold"
                            Foreground="#555" Margin="0,0,0,4"/>
-                <TextBlock Text="One group or user name per line" FontSize="10"
+                <TextBlock Text="One group name per line" FontSize="10"
                            Foreground="#999" Margin="0,0,0,6"/>
                 <TextBox Name="PSOAppliesTo" FontSize="12" Padding="6,4" BorderBrush="#DDD"
                          AcceptsReturn="True" TextWrapping="Wrap" MinLines="2" MaxLines="5"
@@ -4189,9 +4657,131 @@ function Show-DeletePSODialog([string[]]$policyNames) {
 # Initialize & Register Events
 # ============================================================================
 
+function Write-GUIConfigDomainLog {
+    <#
+    .SYNOPSIS
+        Writes the per-value retargeting detail to Logs\ConfigDomain_<timestamp>.log and returns
+        its path, or $null when it could not be written.
+    .DESCRIPTION
+        The console panel gets one line; the detail comes here. Both halves matter: a single domain
+        change rewrites well over a hundred values, which buried everything else the panel had to
+        say -- but retargeting decides where every object of the next deployment is created, so
+        "113 values changed" is not, on its own, something an operator can verify afterwards.
+
+        Written at the root of the log directory rather than inside a run folder: this happens at
+        start-up, when there is no deployment run yet. Same placement as the JIT tool's own log.
+
+        Failing to write it must never cost the operator the retargeting itself, so every error is
+        swallowed and reported as a missing path -- the caller then simply omits the reference.
+    #>
+    param($Changes, $Domain, [string[]]$Foreign = @())
+
+    try {
+        $projectRoot = Split-Path (Split-Path $script:ConfigPaths.RBAC -Parent) -Parent
+        $logRoot     = if ($script:Configs.RBAC -and $script:Configs.RBAC.Settings.LogDirectory) {
+            $script:Configs.RBAC.Settings.LogDirectory
+        } else { './Logs' }
+        if (-not [System.IO.Path]::IsPathRooted($logRoot)) { $logRoot = Join-Path $projectRoot $logRoot }
+        # Normalised, because this path is now the only thing the console line shows: the raw form
+        # keeps the './Logs' setting's dot segment ("...\LOCKmeAD-dev\.\Logs\"), which is valid but
+        # reads as a typo and does not paste cleanly into Explorer. Same idiom as
+        # Get-DeploymentLogPath.
+        $logRoot = [System.IO.Path]::GetFullPath($logRoot)
+        if (-not (Test-Path $logRoot)) { New-Item -Path $logRoot -ItemType Directory -Force | Out-Null }
+
+        $logPath = Join-Path $logRoot "ConfigDomain_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+        $stamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+
+        $lines = [System.Collections.Generic.List[string]]::new()
+        [void]$lines.Add("[$stamp] Retargeted onto $($Domain.DistinguishedName)  ($($Domain.DNSRoot) / $($Domain.NetBIOSName))")
+        if ($Foreign.Count -gt 0) {
+            [void]$lines.Add("[$stamp] Domains previously referenced: $($Foreign -join ', ')")
+        }
+        [void]$lines.Add("[$stamp] $(@($Changes).Count) value(s) changed in memory. Config\*.json stays as it is until the next Save configs, or a deployment.")
+        [void]$lines.Add('')
+        foreach ($change in $Changes) {
+            [void]$lines.Add("$($change.Path)  |  $($change.From)  ->  $($change.To)")
+        }
+
+        Set-Content -Path $logPath -Value $lines -Encoding UTF8
+        return $logPath
+    }
+    catch {
+        return $null
+    }
+}
+
+function Sync-GUIConfigDomain {
+    <#
+    .SYNOPSIS
+        Retargets every domain-dependent value of the loaded configurations onto the domain this
+        session is connected to, in memory, and reports what changed.
+    .DESCRIPTION
+        Runs between Load-AllConfigs and the Populate-* calls, which is the only window where both
+        conditions hold: the configurations exist as objects, and no UI control has been filled
+        from them yet. Retargeting here therefore needs no UI refresh, and Save-AllConfigs persists
+        the corrected values through the normal path -- either when the operator clicks Save, or
+        automatically at deployment, since BtnDeploy saves before it deploys.
+    #>
+    $moduleNames = @('Hardening', 'GPO', 'Tiering', 'RBAC', 'PSO', 'Silo', 'JIT')
+
+    try {
+        $connParam = New-LOCKmeADConnectionParam -Connection $script:Connection
+        $domain    = Get-ADDomain @connParam -ErrorAction Stop
+    }
+    catch {
+        Write-ConsoleUI "Could not read the connected domain; configurations left exactly as they are on disk: $($_.Exception.Message)" "Warning"
+        return
+    }
+
+    # Discovery pass over ALL configurations before rewriting any of them. A domain named only by
+    # the RBAC delegations still has to retarget the JIT distribution share, so the source set has
+    # to be complete before the first substitution.
+    $discovered = [System.Collections.Generic.List[string]]::new()
+    foreach ($moduleName in $moduleNames) {
+        if (-not $script:Configs[$moduleName]) { continue }
+        foreach ($dn in (Get-LOCKmeADConfigDomainDN -Config $script:Configs[$moduleName])) { [void]$discovered.Add($dn) }
+    }
+    $sourceDomains = @(New-LOCKmeADSourceDomain -DomainDN @($discovered | Sort-Object -Unique))
+
+    $allChanges = [System.Collections.Generic.List[PSCustomObject]]::new()
+    foreach ($moduleName in $moduleNames) {
+        if (-not $script:Configs[$moduleName]) { continue }
+        $changes = Update-LOCKmeADConfigDomain -Config $script:Configs[$moduleName] `
+                        -SourceDomain    $sourceDomains `
+                        -TargetDomainDN  $domain.DistinguishedName `
+                        -TargetDnsRoot   $domain.DNSRoot `
+                        -TargetNetBIOS   $domain.NetBIOSName `
+                        -Label           $moduleName
+        foreach ($change in $changes) { [void]$allChanges.Add($change) }
+    }
+
+    if ($allChanges.Count -eq 0) {
+        Write-ConsoleUI "Domain detected: $($domain.DistinguishedName) - configurations already target it." "Success"
+        return
+    }
+
+    # Exactly one console line. The per-value list goes to Logs\ConfigDomain_*.log instead of the
+    # panel -- see Write-GUIConfigDomainLog.
+    $foreign = @($sourceDomains | Where-Object { $_.DomainDN -ne $domain.DistinguishedName } | ForEach-Object { $_.DomainDN })
+    $from    = if ($foreign.Count -gt 0) { " (was: $($foreign -join ', '))" } else { "" }
+    $logPath = Write-GUIConfigDomainLog -Changes $allChanges -Domain $domain -Foreign $foreign
+    $detail  = if ($logPath) { " Detail: $logPath" } else { "" }
+
+    Write-ConsoleUI "Domain detected: $($domain.DistinguishedName) - $($allChanges.Count) value(s) retargeted in memory$from.$detail" "Warning"
+}
+
 function Initialize-GUI {
     Load-AllConfigs
     Write-ConsoleUI "Configurations loaded." "Success"
+
+    # Before any Populate-*: the tabs must show what will actually be deployed.
+    Sync-GUIConfigDomain
+
+    # Resolved once, here, rather than per card: Populate-HardeningTab runs on every refresh and
+    # this costs a handful of LDAP queries. Domain Admins is already guaranteed by the connection
+    # gate, so only IsSchemaAdmin is actually consumed downstream.
+    $script:Privilege = Test-LOCKmeADPrivilege -Server $script:Connection.Server -Credential $script:Connection.Credential
 
     Populate-Dashboard
     if ($script:Configs.Hardening) { Populate-HardeningTab }
@@ -4267,7 +4857,8 @@ function Register-GUIEvents {
             if (-not $b) { continue }
 
             try {
-                $result = Test-HardeningTask -TaskName $task.Name -TaskParameters $task.Parameters
+                $result = Test-HardeningTask -TaskName $task.Name -TaskParameters $task.Parameters `
+                    -Server $script:Connection.Server -Credential $script:Connection.Credential
                 switch ($result.Status) {
                     'OK'      {
                         $b.Border.Background = Get-WPFBrush "#E8F5E9"
@@ -4464,6 +5055,24 @@ function Register-GUIEvents {
     $UI.TieringPropProtected.Add_Click({
         $selected = $UI.TieringTree.SelectedItem
         if ($selected) { $selected.Tag.Protected = [bool]$UI.TieringPropProtected.IsChecked }
+    })
+
+    # Base DN edits -> recompute every DN in the tree.
+    #
+    # Each node's DN is built once by Populate-TieringTab from the base DN read at load time, and
+    # was only ever recomputed when an OU was renamed. Editing the base DN therefore left the whole
+    # preview showing the old domain until something else happened to trigger a rename -- while
+    # Save-AllConfigs wrote the new base DN out, so what the operator saw and what got deployed
+    # disagreed.
+    #
+    # Update-TreeItemDN resolves a root item's parent DN from this very TextBox and recurses into
+    # its children, so refreshing each root item rewrites the entire tree.
+    $UI.TieringBaseDN.Add_TextChanged({
+        foreach ($rootItem in $UI.TieringTree.Items) {
+            Update-TreeItemDN $rootItem
+        }
+        $selected = $UI.TieringTree.SelectedItem
+        if ($selected -and $selected.Tag) { $UI.TieringPropDN.Text = $selected.Tag.DN }
     })
 
     # Tiering add/delete OU
@@ -4693,6 +5302,16 @@ function Register-GUIEvents {
         }
         $sp.Children.Add($lb) | Out-Null
 
+        # Opt-in, and deliberately not ticked by default: restoring an ACL is reversible by
+        # re-deploying, deleting a group is not. Only groups the selected run actually created are
+        # eligible, matched on the SID recorded at creation -- see Remove-RBACDeployedGroup.
+        $chkGroups = New-Object System.Windows.Controls.CheckBox
+        $chkGroups.Content = "Also delete the groups this run created (irreversible)"
+        $chkGroups.FontSize = 12
+        $chkGroups.Foreground = Get-WPFBrush "#A93226"
+        $chkGroups.Margin = [System.Windows.Thickness]::new(0, 12, 0, 0)
+        $sp.Children.Add($chkGroups) | Out-Null
+
         $btnRestore = New-Object System.Windows.Controls.Button
         $btnRestore.Content = "Restore Run"
         $btnRestore.Width = 120
@@ -4705,9 +5324,10 @@ function Register-GUIEvents {
         $btnRestore.Cursor = "Hand"
         $btnRestore.HorizontalAlignment = "Right"
 
-        $capturedLb     = $lb
-        $capturedBW     = $bW
-        $capturedModule = Join-Path $projectRoot "Modules\RBAC\RBAC.psm1"
+        $capturedLb        = $lb
+        $capturedBW        = $bW
+        $capturedChkGroups = $chkGroups
+        $capturedModule    = Join-Path $projectRoot "Modules\RBAC\RBAC.psm1"
 
         $btnRestore.Add_Click({
             $selected = $capturedLb.SelectedItem
@@ -4726,8 +5346,12 @@ function Register-GUIEvents {
             }
 
             $runName = [System.IO.Path]::GetFileName($runPath)
+            $alsoGroups = [bool]$capturedChkGroups.IsChecked
+            $groupWarning = if ($alsoGroups) {
+                "`n`nThe groups this run created will also be DELETED. That cannot be undone, and any GPO security template referencing them by SID will be left with a dangling entry."
+            } else { "" }
             $confirm = [System.Windows.MessageBox]::Show(
-                "Restore $($files.Count) ACL backup(s) from run '$runName'?`n`nEach OU's current ACL will be fully replaced.",
+                "Restore $($files.Count) ACL backup(s) from run '$runName'?`n`nEach OU's current ACL will be fully replaced.$groupWarning",
                 "Confirm Restore",
                 [System.Windows.MessageBoxButton]::YesNo,
                 [System.Windows.MessageBoxImage]::Warning
@@ -4740,13 +5364,31 @@ function Register-GUIEvents {
                 $failMsgs  = @()
                 foreach ($f in $files) {
                     try {
-                        Restore-RBACAdPermission -BackupFile $f.FullName | Out-Null
+                        Restore-RBACAdPermission -BackupFile $f.FullName `
+                            -Server $script:Connection.Server -Credential $script:Connection.Credential | Out-Null
                         $okCount++
                     } catch {
                         $failMsgs += "$($f.Name): $($_.Exception.Message)"
                     }
                 }
                 $summary = "$okCount of $($files.Count) ACL(s) restored."
+
+                # Groups go after the ACLs, never before: dropping a group first would leave its
+                # SID orphaned in the very ACEs the restore is about to remove anyway.
+                if ($alsoGroups) {
+                    try {
+                        $g = Remove-RBACDeployedGroup -RunFolder $runPath `
+                                -Server $script:Connection.Server -Credential $script:Connection.Credential
+                        $summary += "`n$($g.Deleted) group(s) deleted, $($g.Skipped) skipped, $($g.Errors) error(s)."
+                        if ($g.SkipReasons.Count -gt 0) {
+                            $summary += "`n`nSkipped:`n" + (($g.SkipReasons | Select-Object -First 10) -join "`n")
+                        }
+                    }
+                    catch {
+                        $failMsgs += "group removal: $($_.Exception.Message)"
+                    }
+                }
+
                 if ($failMsgs.Count -gt 0) {
                     $summary += "`n`nFailed:`n" + ($failMsgs -join "`n")
                     [System.Windows.MessageBox]::Show($summary, "Restore Completed with Errors",

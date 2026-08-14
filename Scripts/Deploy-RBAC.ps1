@@ -11,16 +11,29 @@
     Path to the JSON configuration file. Default: .\Config\RBAC-Config.json
 .PARAMETER WhatIf
     Simulation mode: displays actions without executing them.
+.PARAMETER Server
+    Explicit target domain controller. Required when this host is not domain-joined
+    and no domain controller can be located automatically.
+.PARAMETER Credential
+    Explicit domain credential. Prompted for interactively when this host is not
+    domain-joined and no credential is supplied.
+.PARAMETER RememberConnection
+    Persists the resolved -Server/-Credential (DPAPI-protected, current user only)
+    for reuse on the next run.
 .EXAMPLE
     .\Deploy-RBAC.ps1
     .\Deploy-RBAC.ps1 -ConfigPath "C:\Config\custom.json"
     .\Deploy-RBAC.ps1 -WhatIf
+    .\Deploy-RBAC.ps1 -Server dc01.forest.lol -Credential (Get-Credential)
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\RBAC-Config.json"),
-    [switch]$NoConfirm
+    [switch]$NoConfirm,
+    [string]$Server,
+    [PSCredential]$Credential,
+    [switch]$RememberConnection
 )
 
 # ============================================================================
@@ -37,6 +50,18 @@ if (-not (Test-Path $modulePath)) {
     exit 1
 }
 Import-Module $modulePath -Force
+Import-Module (Join-Path $rootDir "Modules\Common\Connection.psm1") -Force
+Import-Module (Join-Path $rootDir "Modules\Common\ConfigDomain.psm1") -Force
+
+# A refused connection must read as a clear operator error, not as an unhandled
+# exception: Resolve-LOCKmeADConnection throws when the account is not a Domain Admin.
+try {
+    $connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
+}
+catch {
+    Write-Host "`n[ERROR] $($_.Exception.Message)`n" -ForegroundColor Red
+    exit 1
+}
 
 # ============================================================================
 # Load configuration
@@ -73,8 +98,8 @@ Write-Host "--- Environment Information ---" -ForegroundColor White
 Write-Host ""
 
 try {
-    $envInfo = Get-RBACEnvironmentInfo
-    $targetServer = $envInfo.PDCEmulator
+    $envInfo = Get-RBACEnvironmentInfo -Server $connection.Server -Credential $connection.Credential
+    $targetServer = if ($connection.Server) { $connection.Server } else { $envInfo.PDCEmulator }
 
     Write-Host "  Current DC        : $($envInfo.CurrentDC)" -ForegroundColor Cyan
     if ($envInfo.IsPDC) {
@@ -95,6 +120,18 @@ catch {
 }
 
 # ============================================================================
+# Retarget the configuration onto the connected domain
+# ============================================================================
+# See Deploy-Hardening.ps1 for the rationale. This is the module with by far the most
+# domain-dependent values: every group OU and every delegation TargetOU, including the DNS
+# application-partition DNs.
+$domainRetargeting = Sync-LOCKmeADConfigDomain -Config $config -ConfigPath $ConfigPath `
+                        -Server $targetServer -Credential $connection.Credential
+if ($domainRetargeting.Count -gt 0) {
+    Write-RBACLog -Message "$($domainRetargeting.Count) value(s) retargeted onto $($envInfo.DomainDN) for this run; '$ConfigPath' is left unchanged." -Level Warning -LogDirectory $logDir
+}
+
+# ============================================================================
 # Load GUID resolution maps
 # ============================================================================
 
@@ -103,8 +140,8 @@ Write-Host "--- Loading GUID maps ---" -ForegroundColor White
 Write-Host ""
 
 try {
-    Get-RBACGuidMap -Server $targetServer
-    Get-RBACExtendedRightMap -Server $targetServer
+    Get-RBACGuidMap -Server $targetServer -Credential $connection.Credential
+    Get-RBACExtendedRightMap -Server $targetServer -Credential $connection.Credential
     Write-RBACLog -Message "GUID maps loaded (schema attributes + extended rights)." -Level Success -LogDirectory $logDir
 }
 catch {
@@ -177,8 +214,33 @@ if (-not $WhatIfPreference -and -not $NoConfirm) {
 Write-RBACLog -Message "Starting RBAC deployment..." -Level Info -LogDirectory $logDir
 Write-Host ""
 
+# Connection splat reused by the group existence pre-checks below.
+$connParam = @{ Server = $targetServer }
+if ($connection.Credential) { $connParam.Credential = $connection.Credential }
+
+function Test-RBACGroupPresent([string]$Name) {
+    <#
+    .SYNOPSIS
+        Returns whether an AD group already exists, so the caller can tell "created" from
+        "already there" before calling New-RBACGroup.
+    .DESCRIPTION
+        New-RBACGroup returns the group object whether it created it or found it, so the
+        caller cannot otherwise distinguish the two: a no-op re-run reported a full
+        deployment, and a config that references the same DL group from two roles (which
+        RBAC-Config.json does, by design) inflated the count even on a first run.
+
+        -ErrorAction SilentlyContinue is NOT enough here: Get-ADGroup -Identity raises
+        ADIdentityNotFoundException as a TERMINATING error, which SilentlyContinue does not
+        suppress. Same typed-catch idiom, and for the same reason, as
+        Deploy-TieringOUStructure.
+    #>
+    try   { return $null -ne (Get-ADGroup -Identity $Name @connParam -ErrorAction Stop) }
+    catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] { return $false }
+}
+
 $stats = @{
     GroupsCreated            = 0
+    GroupsExisting           = 0
     MembershipsSet           = 0
     RootGroupsMemberships    = 0
     NTFSPermissionsSet       = 0
@@ -194,15 +256,17 @@ foreach ($role in $config.Roles) {
     # --- Global Group ---
     $ggOU = if ($role.GlobalGroup.OU) { $role.GlobalGroup.OU } else { $config.Settings.DefaultOU.Global }
 
+    $ggPresent = Test-RBACGroupPresent $role.GlobalGroup.Name
     try {
         New-RBACGroup -Name $role.GlobalGroup.Name `
                       -Description $role.GlobalGroup.Description `
                       -GroupScope Global `
                       -OU $ggOU `
                       -Server $targetServer `
+                                        -Credential $connection.Credential `
                       -LogDirectory $logDir `
                       -WhatIf:$WhatIfPreference
-        $stats.GroupsCreated++
+        if ($ggPresent) { $stats.GroupsExisting++ } else { $stats.GroupsCreated++ }
     }
     catch {
         Write-RBACLog -Message "Failed to create Global group '$($role.GlobalGroup.Name)': $_" -Level Error -LogDirectory $logDir
@@ -217,6 +281,7 @@ foreach ($role in $config.Roles) {
                 Add-RBACGroupMember -GlobalGroupName $role.GlobalGroup.Name `
                                     -DomainLocalGroupName $targetGroup `
                                     -Server $targetServer `
+                                        -Credential $connection.Credential `
                                     -LogDirectory $logDir `
                                     -WhatIf:$WhatIfPreference
                 $stats.MembershipsSet++
@@ -233,15 +298,17 @@ foreach ($role in $config.Roles) {
         $dlOU = if ($dlGroup.OU) { $dlGroup.OU } else { $config.Settings.DefaultOU.DomainLocal }
 
         # Create DL group
+        $dlPresent = Test-RBACGroupPresent $dlGroup.Name
         try {
             New-RBACGroup -Name $dlGroup.Name `
                           -Description $dlGroup.Description `
                           -GroupScope DomainLocal `
                           -OU $dlOU `
                           -Server $targetServer `
+                                        -Credential $connection.Credential `
                           -LogDirectory $logDir `
                           -WhatIf:$WhatIfPreference
-            $stats.GroupsCreated++
+            if ($dlPresent) { $stats.GroupsExisting++ } else { $stats.GroupsCreated++ }
         }
         catch {
             Write-RBACLog -Message "Failed to create DL group '$($dlGroup.Name)': $_" -Level Error -LogDirectory $logDir
@@ -254,6 +321,7 @@ foreach ($role in $config.Roles) {
             Add-RBACGroupMember -GlobalGroupName $role.GlobalGroup.Name `
                                 -DomainLocalGroupName $dlGroup.Name `
                                 -Server $targetServer `
+                                        -Credential $connection.Credential `
                                 -LogDirectory $logDir `
                                 -WhatIf:$WhatIfPreference
             $stats.MembershipsSet++
@@ -271,6 +339,7 @@ foreach ($role in $config.Roles) {
                         Set-RBACNTFSPermission -GroupName $dlGroup.Name `
                                                -Permission $perm `
                                                -Server $targetServer `
+                                        -Credential $connection.Credential `
                                                -LogDirectory $logDir `
                                                -WhatIf:$WhatIfPreference
                         $stats.NTFSPermissionsSet++
@@ -279,6 +348,7 @@ foreach ($role in $config.Roles) {
                         Set-RBACADPermission -GroupName $dlGroup.Name `
                                              -Permission $perm `
                                              -Server $targetServer `
+                                        -Credential $connection.Credential `
                                              -LogDirectory $logDir `
                                              -BackupDirectory $backupDir `
                                              -WhatIf:$WhatIfPreference
@@ -288,6 +358,7 @@ foreach ($role in $config.Roles) {
                         Set-RBACADCSPermission -GroupName $dlGroup.Name `
                                                -Permission $perm `
                                                -Server $targetServer `
+                                        -Credential $connection.Credential `
                                                -LogDirectory $logDir `
                                                -WhatIf:$WhatIfPreference
                         $stats.ADCSPermissionsSet++
@@ -296,6 +367,7 @@ foreach ($role in $config.Roles) {
                         Set-RBACSharePermission -GroupName $dlGroup.Name `
                                                 -Permission $perm `
                                                 -Server $targetServer `
+                                        -Credential $connection.Credential `
                                                 -LogDirectory $logDir `
                                                 -WhatIf:$WhatIfPreference
                         $stats.SharePermissionsSet++
@@ -325,15 +397,17 @@ if ($config.RootGroups) {
         $rgOU = if ($rootGroup.OU) { $rootGroup.OU } else { $config.Settings.DefaultOU.DomainLocal }
 
         # Create root group (DomainLocal)
+        $rgPresent = Test-RBACGroupPresent $rootGroup.Name
         try {
             New-RBACGroup -Name $rootGroup.Name `
                           -Description $rootGroup.Description `
                           -GroupScope DomainLocal `
                           -OU $rgOU `
                           -Server $targetServer `
+                                        -Credential $connection.Credential `
                           -LogDirectory $logDir `
                           -WhatIf:$WhatIfPreference
-            $stats.GroupsCreated++
+            if ($rgPresent) { $stats.GroupsExisting++ } else { $stats.GroupsCreated++ }
         }
         catch {
             Write-RBACLog -Message "Failed to create root group '$($rootGroup.Name)': $_" -Level Error -LogDirectory $logDir
@@ -348,6 +422,7 @@ if ($config.RootGroups) {
                     Add-RBACGroupMember -GlobalGroupName $ggName `
                                         -DomainLocalGroupName $rootGroup.Name `
                                         -Server $targetServer `
+                                        -Credential $connection.Credential `
                                         -LogDirectory $logDir `
                                         -WhatIf:$WhatIfPreference
                     $stats.RootGroupsMemberships++
@@ -366,6 +441,7 @@ if ($config.RootGroups) {
                     Add-RBACGroupMember -GlobalGroupName $rootGroup.Name `
                                         -DomainLocalGroupName $targetDL `
                                         -Server $targetServer `
+                                        -Credential $connection.Credential `
                                         -LogDirectory $logDir `
                                         -WhatIf:$WhatIfPreference
                     $stats.RootGroupsMemberships++
@@ -392,6 +468,7 @@ Write-Host ""
 $modeLabel = if ($WhatIfPreference) { " (SIMULATION)" } else { "" }
 
 Write-Host "  Groups created$modeLabel          : $($stats.GroupsCreated)" -ForegroundColor Cyan
+Write-Host "  Groups already present     : $($stats.GroupsExisting)" -ForegroundColor DarkGray
 Write-Host "  AGDLP memberships$modeLabel       : $($stats.MembershipsSet)" -ForegroundColor Cyan
 Write-Host "  Root memberships$modeLabel        : $($stats.RootGroupsMemberships)" -ForegroundColor Cyan
 Write-Host "  NTFS permissions$modeLabel        : $($stats.NTFSPermissionsSet)" -ForegroundColor Cyan

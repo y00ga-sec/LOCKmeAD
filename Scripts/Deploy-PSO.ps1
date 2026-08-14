@@ -14,16 +14,29 @@
     Simulation mode: displays actions without executing them.
 .PARAMETER NoConfirm
     Skips the interactive confirmation prompt (used by the GUI).
+.PARAMETER Server
+    Explicit target domain controller. Required when this host is not domain-joined
+    and no domain controller can be located automatically.
+.PARAMETER Credential
+    Explicit domain credential. Prompted for interactively when this host is not
+    domain-joined and no credential is supplied.
+.PARAMETER RememberConnection
+    Persists the resolved -Server/-Credential (DPAPI-protected, current user only)
+    for reuse on the next run.
 .EXAMPLE
     .\Deploy-PSO.ps1
     .\Deploy-PSO.ps1 -ConfigPath "C:\Config\custom-pso.json"
     .\Deploy-PSO.ps1 -WhatIf
+    .\Deploy-PSO.ps1 -Server dc01.forest.lol -Credential (Get-Credential)
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\PSO-Config.json"),
-    [switch]$NoConfirm
+    [switch]$NoConfirm,
+    [string]$Server,
+    [PSCredential]$Credential,
+    [switch]$RememberConnection
 )
 
 # ============================================================================
@@ -40,6 +53,18 @@ if (-not (Test-Path $modulePath)) {
     exit 1
 }
 Import-Module $modulePath -Force
+Import-Module (Join-Path $rootDir "Modules\Common\Connection.psm1") -Force
+Import-Module (Join-Path $rootDir "Modules\Common\ConfigDomain.psm1") -Force
+
+# A refused connection must read as a clear operator error, not as an unhandled
+# exception: Resolve-LOCKmeADConnection throws when the account is not a Domain Admin.
+try {
+    $connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
+}
+catch {
+    Write-Host "`n[ERROR] $($_.Exception.Message)`n" -ForegroundColor Red
+    exit 1
+}
 
 # ============================================================================
 # Load configuration
@@ -75,8 +100,8 @@ Write-Host "--- Environment Information ---" -ForegroundColor White
 Write-Host ""
 
 try {
-    $envInfo = Get-PSOEnvironmentInfo
-    $targetServer = $envInfo.PDCEmulator
+    $envInfo = Get-PSOEnvironmentInfo -Server $connection.Server -Credential $connection.Credential
+    $targetServer = if ($connection.Server) { $connection.Server } else { $envInfo.PDCEmulator }
 
     Write-Host "  Current DC        : $($envInfo.CurrentDC)" -ForegroundColor Cyan
     if ($envInfo.IsPDC) {
@@ -94,6 +119,18 @@ try {
 catch {
     Write-Host "  [ERROR] Unable to retrieve AD information: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
+}
+
+# ============================================================================
+# Retarget the configuration onto the connected domain
+# ============================================================================
+# See Deploy-Hardening.ps1 for the rationale. The shipped PSO config names its subjects by
+# sAMAccountName and needs nothing here, but AppliesTo accepts a distinguished name just as well,
+# so the call is kept for the day one is written there.
+$domainRetargeting = Sync-LOCKmeADConfigDomain -Config $config -ConfigPath $ConfigPath `
+                        -Server $targetServer -Credential $connection.Credential
+if ($domainRetargeting.Count -gt 0) {
+    Write-PSOLog -Message "$($domainRetargeting.Count) value(s) retargeted onto $($envInfo.DomainDN) for this run; '$ConfigPath' is left unchanged." -Level Warning -LogDirectory $logDir
 }
 
 # ============================================================================
@@ -190,6 +227,7 @@ foreach ($policy in $config.Policies) {
                                -ReversibleEncryptionEnabled ([bool]$policy.ReversibleEncryptionEnabled) `
                                -ProtectedFromAccidentalDeletion ([bool]$policy.ProtectedFromAccidentalDeletion) `
                                -Server $targetServer `
+                               -Credential $connection.Credential `
                                -LogDirectory $logDir `
                                -WhatIf:$WhatIfPreference
         $stats.PoliciesCreated++
@@ -208,6 +246,7 @@ foreach ($policy in $config.Policies) {
                 Add-PSOSubject -PolicyName $policy.Name `
                                 -Subjects $validSubjects `
                                 -Server $targetServer `
+                                -Credential $connection.Credential `
                                 -LogDirectory $logDir `
                                 -WhatIf:$WhatIfPreference
                 $stats.SubjectsApplied += $validSubjects.Count
@@ -234,7 +273,7 @@ $modeLabel = if ($WhatIfPreference) { " (SIMULATION)" } else { "" }
 
 Write-Host "  PSOs deployed$modeLabel       : $($stats.PoliciesCreated)" -ForegroundColor Cyan
 Write-Host "  PSOs skipped (disabled) : $($stats.PoliciesSkipped)" -ForegroundColor Yellow
-Write-Host "  Subjects applied        : $($stats.SubjectsApplied)" -ForegroundColor Cyan
+Write-Host "  Subjects applied$modeLabel        : $($stats.SubjectsApplied)" -ForegroundColor Cyan
 
 if ($stats.Errors -gt 0) {
     Write-Host "  Errors                  : $($stats.Errors)" -ForegroundColor Red

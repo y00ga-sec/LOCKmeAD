@@ -1,4 +1,4 @@
-#Requires -Modules ActiveDirectory, GroupPolicy
+#Requires -Modules ActiveDirectory
 #Requires -RunAsAdministrator
 
 <#
@@ -15,16 +15,29 @@
     Simulation mode: displays actions without executing them.
 .PARAMETER NoConfirm
     Skips the interactive confirmation prompt (used by the GUI).
+.PARAMETER Server
+    Explicit target domain controller. Required when this host is not domain-joined
+    and no domain controller can be located automatically.
+.PARAMETER Credential
+    Explicit domain credential. Prompted for interactively when this host is not
+    domain-joined and no credential is supplied.
+.PARAMETER RememberConnection
+    Persists the resolved -Server/-Credential (DPAPI-protected, current user only)
+    for reuse on the next run.
 .EXAMPLE
     .\Deploy-JIT.ps1
     .\Deploy-JIT.ps1 -ConfigPath "C:\Config\custom-jit.json"
     .\Deploy-JIT.ps1 -WhatIf
+    .\Deploy-JIT.ps1 -Server dc01.forest.lol -Credential (Get-Credential)
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\JIT-Config.json"),
-    [switch]$NoConfirm
+    [switch]$NoConfirm,
+    [string]$Server,
+    [PSCredential]$Credential,
+    [switch]$RememberConnection
 )
 
 # ============================================================================
@@ -41,6 +54,34 @@ if (-not (Test-Path $modulePath)) {
     exit 1
 }
 Import-Module $modulePath -Force
+Import-Module (Join-Path $rootDir "Modules\Common\Connection.psm1") -Force
+Import-Module (Join-Path $rootDir "Modules\Common\ConfigDomain.psm1") -Force
+
+# A refused connection must read as a clear operator error, not as an unhandled
+# exception: Resolve-LOCKmeADConnection throws when the account is not a Domain Admin.
+try {
+    $connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
+}
+catch {
+    Write-Host "`n[ERROR] $($_.Exception.Message)`n" -ForegroundColor Red
+    exit 1
+}
+
+# Same conditional GroupPolicy requirement as Deploy-GPO.ps1 -- see the comment there, including
+# why availability is tested with Test-LOCKmeADGroupPolicyModule and not 'Get-Module -ListAvailable'.
+if (-not $connection.Credential -and -not (Test-LOCKmeADGroupPolicyModule)) {
+    Write-Host "`n[ERROR] The 'GroupPolicy' module is required to deploy the JIT GPO in implicit mode." -ForegroundColor Red
+    Write-Host "Install RSAT-GPMC on this host, or pass -Server/-Credential to run them on the DC.`n" -ForegroundColor Yellow
+    exit 1
+}
+# Same reason as Deploy-GPO.ps1: auto-loading GroupPolicy fails under -WhatIf.
+if (-not $connection.Credential) {
+    try { Import-LOCKmeADGroupPolicyModule }
+    catch {
+        Write-Host "`n[ERROR] The 'GroupPolicy' module is installed but could not be loaded: $($_.Exception.Message)`n" -ForegroundColor Red
+        exit 1
+    }
+}
 
 # ============================================================================
 # Load configuration
@@ -80,8 +121,8 @@ Write-Host "--- Environment Information ---" -ForegroundColor White
 Write-Host ""
 
 try {
-    $envInfo = Get-JITEnvironmentInfo
-    $targetServer = $envInfo.PDCEmulator
+    $envInfo = Get-JITEnvironmentInfo -Server $connection.Server -Credential $connection.Credential
+    $targetServer = if ($connection.Server) { $connection.Server } else { $envInfo.PDCEmulator }
 
     Write-Host "  Current DC        : $($envInfo.CurrentDC)" -ForegroundColor Cyan
     if ($envInfo.IsPDC) {
@@ -110,6 +151,18 @@ try {
 catch {
     Write-Host "  [ERROR] Unable to retrieve AD information: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
+}
+
+# ============================================================================
+# Retarget the configuration onto the connected domain
+# ============================================================================
+# See Deploy-Hardening.ps1 for the rationale. Ordering matters here too: the summary below copies
+# ToolsSharePath, the GPO link targets and the filtering OU into local variables, and everything
+# downstream uses those copies rather than the configuration object.
+$domainRetargeting = Sync-LOCKmeADConfigDomain -Config $config -ConfigPath $ConfigPath `
+                        -Server $targetServer -Credential $connection.Credential
+if ($domainRetargeting.Count -gt 0) {
+    Write-JITLog -Message "$($domainRetargeting.Count) value(s) retargeted onto $($envInfo.DomainDN) for this run; '$ConfigPath' is left unchanged." -Level Warning -LogDirectory $logDir
 }
 
 # ============================================================================
@@ -189,6 +242,7 @@ $sourcePath = Join-Path $rootDir "Scripts\Start-JIT.ps1"
 try {
     Publish-JITTool -SourcePath $sourcePath `
                     -DistributionSharePath $sharePath `
+                    -Credential $connection.Credential `
                     -LogDirectory $logDir `
                     -WhatIf:$WhatIfPreference
     $stats.Published = $true
@@ -209,6 +263,7 @@ try {
                          -DistributionSharePath $sharePath `
                          -DomainDN $envInfo.DomainDN `
                          -Server $targetServer `
+                         -Credential $connection.Credential `
                          -LogDirectory $logDir `
                          -WhatIf:$WhatIfPreference
     $stats.GPOCreated = $true
@@ -227,6 +282,7 @@ if ($validTargets.Count -gt 0) {
         Set-JITGPOLink -GPOName $gpoName `
                        -LinkTargets $validTargets `
                        -Server $targetServer `
+                       -Credential $connection.Credential `
                        -LogDirectory $logDir `
                        -WhatIf:$WhatIfPreference
         $stats.LinksCreated = $validTargets.Count
@@ -257,7 +313,7 @@ $gpoLabel = if ($stats.GPOCreated) { "Yes" } else { "No" }
 
 Write-Host "  Tool published$modeLabel     : $publishLabel" -ForegroundColor Cyan
 Write-Host "  GPO configured$modeLabel     : $gpoLabel" -ForegroundColor Cyan
-Write-Host "  GPO links created        : $($stats.LinksCreated)" -ForegroundColor Cyan
+Write-Host "  GPO links created$modeLabel        : $($stats.LinksCreated)" -ForegroundColor Cyan
 
 if ($stats.Errors -gt 0) {
     Write-Host "  Errors                   : $($stats.Errors)" -ForegroundColor Red

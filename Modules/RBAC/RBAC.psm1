@@ -1,8 +1,12 @@
-#Requires -Modules ActiveDirectory
-
 # ============================================================================
 # RBAC Module - Functions for deploying RBAC roles in Active Directory
 # ============================================================================
+# No #Requires -Modules ActiveDirectory here -- every entry point (LOCKmeAD.ps1,
+# Launch-GUI.ps1, each Scripts\Deploy-*.ps1) already checks that the module is
+# available before importing this one, so a per-module #Requires would only be a
+# redundant second layer.
+
+Import-Module (Join-Path $PSScriptRoot "..\Common\Connection.psm1") -Force
 
 # Module variable for the current log file path
 $script:LogFilePath = $null
@@ -44,16 +48,21 @@ function Write-RBACLog {
         "Error"   { Write-Host $logEntry -ForegroundColor Red }
     }
 
-    # Write to log file
+    # Write to log file.
+    # -WhatIf:$false on both calls: they are ShouldProcess-aware and inherit $WhatIfPreference from
+    # the calling scope, so a line emitted by another function of this module running under -WhatIf
+    # was silently dropped -- see Write-GPOLog in Modules\GPO\GPO.psm1 for the full rationale.
+    # This module needs it most: Export-RBACDeploymentReport parses this very file to build the CSV
+    # an undo run later reads back, so a truncated journal also cost the run its rollback record.
     if ($LogDirectory) {
         if (-not (Test-Path $LogDirectory)) {
-            New-Item -Path $LogDirectory -ItemType Directory -Force | Out-Null
+            New-Item -Path $LogDirectory -ItemType Directory -Force -WhatIf:$false | Out-Null
         }
         if (-not $script:LogFilePath) {
             $logFileName = "RBAC_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
             $script:LogFilePath = Join-Path $LogDirectory $logFileName
         }
-        $logEntry | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+        $logEntry | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8 -WhatIf:$false
     }
 }
 
@@ -136,16 +145,20 @@ function Get-RBACEnvironmentInfo {
         Retrieves Active Directory environment information.
     .PARAMETER Server
         Target DC for all AD operations (avoids replication lag).
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     .OUTPUTS
         PSCustomObject with environment information.
     #>
     [CmdletBinding()]
     param(
-        [string]$Server
+        [string]$Server,
+        [PSCredential]$Credential
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     try {
         $domain = Get-ADDomain @serverParam
@@ -204,11 +217,14 @@ function New-RBACGroup {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     # Check if group already exists
     try {
@@ -231,7 +247,10 @@ function New-RBACGroup {
                 Path           = $OU
             }
             $newGroup = New-ADGroup @params @serverParam -PassThru
-            Write-RBACLog -Message "Group '$Name' ($GroupScope) created in '$OU'." -Level Success -LogDirectory $LogDirectory
+            # The SID is recorded so an undo can identify this exact object later. A name is not
+            # enough: delete a group and recreate it with the same name and you get a new SID, and
+            # anything keying on the name alone would happily delete the replacement.
+            Write-RBACLog -Message "Group '$Name' ($GroupScope) created in '$OU' (SID: $($newGroup.SID.Value))." -Level Success -LogDirectory $LogDirectory
             return $newGroup
         }
         catch {
@@ -267,11 +286,14 @@ function Add-RBACGroupMember {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     # Check if member is already present
     try {
@@ -324,11 +346,14 @@ function Set-RBACNTFSPermission {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $path = $Permission.Path
     $rights = $Permission.Rights
@@ -338,6 +363,27 @@ function Set-RBACNTFSPermission {
 
     $shareName  = $Permission.ShareName
     $shareRight = $Permission.ShareRight
+
+    # Extract the file server from the original UNC path before any drive substitution below.
+    $fileServer = if ($path -match '^\\\\([^\\]+)') { $Matches[1] } else { $null }
+
+    # Plain filesystem cmdlets can't carry alternate credentials on a UNC path — when an
+    # explicit credential is supplied, map the target share first so Get-Acl/Set-Acl/Test-Path
+    # authenticate as that account instead of the current (possibly non-domain) session.
+    if ($Credential -and $path -match '^(\\\\[^\\]+\\[^\\]+)') {
+        $shareRoot = $Matches[1]
+        $ntfsDriveName = "LOCKmeADNTFS"
+        if (-not (Get-PSDrive -Name $ntfsDriveName -ErrorAction SilentlyContinue)) {
+            try {
+                New-PSDrive -Name $ntfsDriveName -PSProvider FileSystem -Root $shareRoot -Credential $Credential -Scope Global -ErrorAction Stop | Out-Null
+            }
+            catch {
+                Write-RBACLog -Message "Could not map '$shareRoot' with the supplied credential: $_" -Level Error -LogDirectory $LogDirectory
+                throw
+            }
+        }
+        $path = $path -replace [regex]::Escape($shareRoot), "${ntfsDriveName}:"
+    }
 
     if ($PSCmdlet.ShouldProcess("$path", "Apply NTFS ACE ($rights) for '$GroupName'")) {
         if (-not (Test-Path $path)) {
@@ -358,7 +404,7 @@ function Set-RBACNTFSPermission {
             )
 
             $acl.AddAccessRule($aceRule)
-            Set-Acl -Path $path -AclObject $acl
+            Set-Acl -Path $path -AclObject $acl -ErrorAction Stop
             Write-RBACLog -Message "NTFS ACE '$rights' applied on '$path' for '$GroupName'." -Level Success -LogDirectory $LogDirectory
         }
         catch {
@@ -367,17 +413,16 @@ function Set-RBACNTFSPermission {
         }
 
         if ($shareName) {
-            if ($path -notmatch '^\\\\([^\\]+)') {
+            if (-not $fileServer) {
                 Write-RBACLog -Message "SMB share permission skipped: path '$path' is not a UNC path. Use \\server\share format." -Level Warning -LogDirectory $LogDirectory
             }
             else {
-                $fileServer = $Matches[1]
-                $identity   = (Get-ADDomain @serverParam).NetBIOSName + "\$GroupName"
+                $identity = (Get-ADDomain @serverParam).NetBIOSName + "\$GroupName"
                 try {
-                    Invoke-Command -ComputerName $fileServer -ScriptBlock {
+                    Invoke-LOCKmeADRemote -Server $fileServer -Credential $Credential -AlwaysRemote -ArgumentList $shareName, $identity, $shareRight -ScriptBlock {
                         param($sn, $acct, $right)
                         Grant-SmbShareAccess -Name $sn -AccountName $acct -AccessRight $right -Force -ErrorAction Stop
-                    } -ArgumentList $shareName, $identity, $shareRight -ErrorAction Stop
+                    } | Out-Null
                     Write-RBACLog -Message "SMB share permission '$shareRight' applied on '\\$fileServer\$shareName' for '$GroupName'." -Level Success -LogDirectory $LogDirectory
                 }
                 catch {
@@ -412,24 +457,56 @@ function Backup-RBACAdPermission {
         [string]$TargetOU,
 
         [Parameter(Mandatory)]
-        [string]$BackupDirectory
+        [string]$BackupDirectory,
+
+        [string]$Server,
+        [PSCredential]$Credential
     )
 
     if (-not (Test-Path $BackupDirectory)) {
         New-Item -Path $BackupDirectory -ItemType Directory -Force | Out-Null
     }
 
+    $sanitized = $TargetOU -replace '[\\/:*?"<>|,=]', '_'
+
+    # One pre-image per target per run -- deliberately NOT one per permission.
+    #
+    # Two reasons, and the first one is a data-loss bug. The file name embeds a timestamp at
+    # SECOND resolution, and the write uses -Force: two permissions applied to the same target
+    # inside the same second produced the identical file name and the second silently overwrote
+    # the first. A 44-permission deployment left only 20 backups, and each survivor was the
+    # pre-image of the LAST permission of its second -- an image that already contained the ACEs
+    # applied just before it. Rolling that run back removed 28 of 44 delegations and left 16
+    # behind, with nothing in the logs to suggest the backup set was incomplete.
+    #
+    # The second reason is semantic: for a rollback, the useful image is the state of the target
+    # BEFORE the run touched it at all. Keeping the first one and skipping the rest gives exactly
+    # that, and makes "restore every backup of this run" mean "undo this run" -- which is what the
+    # GUI's Restore button does. Returning the existing path keeps the caller's logging intact.
+    # The DN part is compared exactly, never by suffix: a sanitized child DN ends with its
+    # parent's sanitized DN ("..._OU_GroupsT0_OU_Admin_DC_corp_DC_local" ends with
+    # "_OU_Admin_DC_corp_DC_local"), so a suffix test makes the parent look already backed up and
+    # silently drops its pre-image.
+    $existing = @(Get-ChildItem -Path $BackupDirectory -Filter 'ACL_*.xml' -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match '^ACL_\d{8}_\d{6}_(?<dn>.+)\.xml$' -and $Matches['dn'] -eq $sanitized } |
+                    Sort-Object Name)
+    if ($existing.Count -gt 0) {
+        return $existing[0].FullName
+    }
+
+    $adDrive = Get-LOCKmeADDrive -Server $Server -Credential $Credential
+
     try {
-        $acl       = Get-Acl -Path "AD:\$TargetOU" -ErrorAction Stop
+        $acl       = Get-Acl -Path "${adDrive}\$TargetOU" -ErrorAction Stop
         $sddl      = $acl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access)
-        $sanitized = $TargetOU -replace '[\\/:*?"<>|,=]', '_'
         $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
         $backupFile = Join-Path $BackupDirectory "ACL_${timestamp}_${sanitized}.xml"
 
+        $auditUser = if ($Credential) { $Credential.UserName } else { [System.Security.Principal.WindowsIdentity]::GetCurrent().Name }
         @{
             OU        = $TargetOU
             Timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-            User      = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+            User      = $auditUser
             SDDL      = $sddl
         } | Export-Clixml -Path $backupFile -Force
 
@@ -458,7 +535,9 @@ function Restore-RBACAdPermission {
         [Parameter(Mandatory)]
         [string]$BackupFile,
 
-        [string]$LogDirectory
+        [string]$LogDirectory,
+        [string]$Server,
+        [PSCredential]$Credential
     )
 
     if ([string]::IsNullOrWhiteSpace($BackupFile)) {
@@ -467,6 +546,8 @@ function Restore-RBACAdPermission {
     if (-not (Test-Path $BackupFile)) {
         throw "Backup file not found: '$BackupFile'"
     }
+
+    $adDrive = Get-LOCKmeADDrive -Server $Server -Credential $Credential
 
     try {
         $data = Import-Clixml -Path $BackupFile
@@ -481,11 +562,18 @@ function Restore-RBACAdPermission {
             throw "Backup file '$BackupFile' is in an unsupported format (no SDDL). Re-deploy to generate a new backup."
         }
 
-        $targetPath = "AD:\$($data.OU)"
+        $targetPath = "${adDrive}\$($data.OU)"
 
         if ($PSCmdlet.ShouldProcess($data.OU, "Restore AD ACL from '$BackupFile' (taken $($data.Timestamp) by $($data.User))")) {
             $acl = Get-Acl -Path $targetPath -ErrorAction Stop
-            $acl.SetSecurityDescriptorSddlForm($sddl)
+            # The section MUST be stated explicitly. Backup-RBACAdPermission saves only the DACL
+            # (GetSecurityDescriptorSddlForm(Access) -> "D:AI(...)", with no O:/G: fields), but the
+            # single-argument SetSecurityDescriptorSddlForm() overload defaults to
+            # AccessControlSections.All, so it overwrote owner and primary group with nothing.
+            # Committing that made AD substitute the default owner: restoring a DNS zone owned by
+            # SYSTEM silently handed ownership to Domain Admins. Naming Access restores exactly
+            # what was backed up -- the DACL -- and leaves owner and group untouched.
+            $acl.SetSecurityDescriptorSddlForm($sddl, [System.Security.AccessControl.AccessControlSections]::Access)
             Set-Acl -Path $targetPath -AclObject $acl -ErrorAction Stop
             Write-RBACLog -Message "ACL restored on '$($data.OU)' from '$BackupFile' (backup: $($data.Timestamp), user: $($data.User))." -Level Success -LogDirectory $LogDirectory
             return $true
@@ -501,21 +589,170 @@ function Restore-RBACAdPermission {
     }
 }
 
+function Remove-RBACDeployedGroup {
+    <#
+    .SYNOPSIS
+        Deletes the groups that one RBAC deployment run created, turning the ACL rollback into a
+        full undo of that run.
+    .DESCRIPTION
+        Restore-RBACAdPermission only puts DACLs back; the groups it granted rights to survive.
+        This completes the picture, but deleting AD groups is irreversible and must never touch a
+        group the run did not create -- so the run's own CSV report is the source of truth. It
+        already records, per group, whether the deployment created it or found it
+        (Category=GroupCreated, Status=Created|AlreadyExists), together with the OU it went into.
+        Only Status=Created rows are candidates.
+
+        Four rails, all of which must pass before a single delete:
+          1. The group still exists at exactly CN=<Name>,<the OU recorded at creation>. A group of
+             the same name living somewhere else is a different object and is left alone.
+          2. Its RID is >= 1000, so no built-in or well-known principal can ever be reached.
+          3. Its whenCreated falls inside the run's own time window. This is what separates the
+             object the run created from a later re-creation that merely reuses the name -- a real
+             case here, since a deleted group coming back gets a brand new SID.
+          4. Its SID must not appear in any GptTmpl.inf in SYSVOL. Security templates embed raw
+             SIDs for User Rights Assignments and Restricted Groups, so deleting a group named
+             there leaves a dangling SID that the Security CSE will keep trying to apply. That one
+             is a warning rather than a veto -- it is legitimate when the GPOs are being rolled
+             back too -- but it is always reported.
+    .PARAMETER RunFolder
+        The Logs\<run> folder of the deployment to undo. Must contain that run's RBAC_*.csv report.
+    .PARAMETER Server
+        Target DC for all AD operations.
+    .PARAMETER Credential
+        Explicit credential to authenticate with.
+    .PARAMETER LogDirectory
+        Log directory.
+    .OUTPUTS
+        PSCustomObject with Deleted, Skipped, Errors and the list of skip reasons.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)]
+        [string]$RunFolder,
+
+        [string]$Server,
+        [PSCredential]$Credential,
+        [string]$LogDirectory
+    )
+
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+
+    $report = Get-ChildItem -Path $RunFolder -Filter 'RBAC_*.csv' -ErrorAction SilentlyContinue |
+                Sort-Object Name | Select-Object -First 1
+    if (-not $report) {
+        throw "No RBAC_*.csv report found in '$RunFolder'. Without it there is no record of which groups this run created, and deleting groups on a guess is not acceptable."
+    }
+
+    $allRows = @(Import-Csv -Path $report.FullName)
+    $created = @($allRows | Where-Object { $_.Category -eq 'GroupCreated' -and $_.Status -eq 'Created' })
+    if ($created.Count -eq 0) {
+        Write-RBACLog -Message "Run '$([System.IO.Path]::GetFileName($RunFolder))' created no group; nothing to delete." -Level Warning -LogDirectory $LogDirectory
+        return [PSCustomObject]@{ Deleted = 0; Skipped = 0; Errors = 0; SkipReasons = @() }
+    }
+
+    # Run window, widened by five minutes on each side to absorb clock skew between this host and
+    # the DC that stamps whenCreated.
+    $stamps   = @($allRows | ForEach-Object { [datetime]$_.Timestamp } | Sort-Object)
+    $windowLo = $stamps[0].AddMinutes(-5)
+    $windowHi = $stamps[-1].AddMinutes(5)
+
+    # Every security template in SYSVOL, read once, for rail 4.
+    $sysvolBlob = ''
+    try {
+        $domainDNS  = (Get-ADDomain @serverParam).DNSRoot
+        $sysvolRoot = Get-LOCKmeADSysvolDrive -DomainDNSRoot $domainDNS -Credential $Credential
+        $sysvolBlob = (Get-ChildItem -Path "$sysvolRoot\$domainDNS\Policies" -Filter 'GptTmpl.inf' -Recurse -ErrorAction SilentlyContinue |
+                        ForEach-Object { Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue }) -join "`n"
+    }
+    catch {
+        Write-RBACLog -Message "Could not read SYSVOL security templates to check for SID references: $_. Deletions will proceed without that check." -Level Warning -LogDirectory $LogDirectory
+    }
+
+    $stats = [PSCustomObject]@{ Deleted = 0; Skipped = 0; Errors = 0; SkipReasons = @() }
+
+    foreach ($row in $created) {
+        $name       = $row.Name
+        $expectedDN = "CN=$name,$($row.Target)"
+
+        $group = $null
+        try   { $group = Get-ADGroup -Identity $expectedDN -Properties whenCreated @serverParam -ErrorAction Stop }
+        catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {
+            $stats.Skipped++; $stats.SkipReasons += "$name : already absent from '$($row.Target)'"
+            continue
+        }
+        catch {
+            $stats.Errors++
+            Write-RBACLog -Message "  Error reading group '$name': $_" -Level Error -LogDirectory $LogDirectory
+            continue
+        }
+
+        $rid = [int]($group.SID.Value -split '-')[-1]
+        if ($rid -lt 1000) {
+            $stats.Skipped++; $stats.SkipReasons += "$name : RID $rid is a built-in principal"
+            continue
+        }
+        # Identity check. When the report carries the SID recorded at creation, that is exact and
+        # settles it outright. Older reports have no SID, so they fall back to the creation-time
+        # window -- which is only an approximation: a group deleted and recreated within the
+        # margin passes it (observed in testing), which is precisely why the SID is now logged.
+        if ($row.Details -match '^S-1-') {
+            if ($group.SID.Value -ne $row.Details) {
+                $stats.Skipped++
+                $stats.SkipReasons += "$name : SID $($group.SID.Value) differs from the one this run created ($($row.Details)) - a different object reusing the name"
+                continue
+            }
+        }
+        elseif ($group.whenCreated -lt $windowLo -or $group.whenCreated -gt $windowHi) {
+            $stats.Skipped++
+            $stats.SkipReasons += "$name : created $($group.whenCreated.ToString('yyyy-MM-dd HH:mm:ss')), outside this run's window - a different object reusing the name"
+            continue
+        }
+        if ($sysvolBlob -and $sysvolBlob.Contains($group.SID.Value)) {
+            Write-RBACLog -Message "  '$name' is referenced by SID in a GPO security template; deleting it leaves a dangling SID until those GPOs are rolled back too." -Level Warning -LogDirectory $LogDirectory
+        }
+
+        if ($PSCmdlet.ShouldProcess($group.DistinguishedName, "Delete AD group created by this run")) {
+            try {
+                Remove-ADGroup -Identity $group.DistinguishedName -Confirm:$false @serverParam
+                Write-RBACLog -Message "  Group '$name' deleted from '$($row.Target)'." -Level Success -LogDirectory $LogDirectory
+                $stats.Deleted++
+            }
+            catch {
+                Write-RBACLog -Message "  Error deleting group '$name': $_" -Level Error -LogDirectory $LogDirectory
+                $stats.Errors++
+            }
+        }
+        else {
+            Write-RBACLog -Message "  [WhatIf] Group '$name' would be deleted from '$($row.Target)'." -Level Info -LogDirectory $LogDirectory
+        }
+    }
+
+    Write-RBACLog -Message "Group removal: $($stats.Deleted) deleted, $($stats.Skipped) skipped, $($stats.Errors) error(s)." `
+        -Level $(if ($stats.Errors -gt 0) { 'Warning' } else { 'Success' }) -LogDirectory $LogDirectory
+    return $stats
+}
+
 function Get-RBACGuidMap {
     <#
     .SYNOPSIS
         Builds a name→GUID map from the AD schema (attributes and classes).
     .PARAMETER Server
         Target DC for all AD operations.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     #>
     [CmdletBinding()]
-    param([string]$Server)
+    param([string]$Server, [PSCredential]$Credential)
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $script:GuidMap = @{}
     $script:DefaultServer = $Server
+    $script:DefaultCredential = $Credential
     $schemaNamingContext = (Get-ADRootDSE @serverParam).schemaNamingContext
 
     Get-ADObject -SearchBase $schemaNamingContext `
@@ -536,12 +773,15 @@ function Get-RBACExtendedRightMap {
         Builds a name→GUID map from the AD configuration partition (extended rights).
     .PARAMETER Server
         Target DC for all AD operations.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     #>
     [CmdletBinding()]
-    param([string]$Server)
+    param([string]$Server, [PSCredential]$Credential)
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $script:ExtendedRightMap = @{}
     $configNamingContext = (Get-ADRootDSE @serverParam).configurationNamingContext
@@ -598,7 +838,8 @@ function Resolve-RBACNameToGuid {
     # Cache miss — query AD directly as fallback
     try {
         $rootDseParams = @{ ErrorAction = 'Stop' }
-        if ($script:DefaultServer) { $rootDseParams['Server'] = $script:DefaultServer }
+        if ($script:DefaultServer)     { $rootDseParams['Server']     = $script:DefaultServer }
+        if ($script:DefaultCredential) { $rootDseParams['Credential'] = $script:DefaultCredential }
         $rootDse = Get-ADRootDSE @rootDseParams
 
         $schemaParams = @{
@@ -607,7 +848,8 @@ function Resolve-RBACNameToGuid {
             Properties  = @('schemaIDGUID')
             ErrorAction = 'Stop'
         }
-        if ($script:DefaultServer) { $schemaParams['Server'] = $script:DefaultServer }
+        if ($script:DefaultServer)     { $schemaParams['Server']     = $script:DefaultServer }
+        if ($script:DefaultCredential) { $schemaParams['Credential'] = $script:DefaultCredential }
 
         $schemaObj = Get-ADObject @schemaParams | Select-Object -First 1
         if ($schemaObj -and $schemaObj.schemaIDGUID) {
@@ -622,7 +864,8 @@ function Resolve-RBACNameToGuid {
             Properties  = @('rightsGuid')
             ErrorAction = 'Stop'
         }
-        if ($script:DefaultServer) { $rightParams['Server'] = $script:DefaultServer }
+        if ($script:DefaultServer)     { $rightParams['Server']     = $script:DefaultServer }
+        if ($script:DefaultCredential) { $rightParams['Credential'] = $script:DefaultCredential }
 
         $rightObj = Get-ADObject @rightParams | Select-Object -First 1
         if ($rightObj -and $rightObj.rightsGuid) {
@@ -660,13 +903,16 @@ function Set-RBACADPermission {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory,
 
         [string]$BackupDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $targetOU            = $Permission.TargetOU
     $adRights            = $Permission.ADRights
@@ -686,11 +932,15 @@ function Set-RBACADPermission {
     }
 
     if ($BackupDirectory) {
-        $backupFile = Backup-RBACAdPermission -TargetOU $targetOU -BackupDirectory $BackupDirectory
+        $backupFile = Backup-RBACAdPermission -TargetOU $targetOU -BackupDirectory $BackupDirectory -Server $Server -Credential $Credential
         if ($backupFile) {
-            Write-RBACLog -Message "ACL backup created: '$backupFile'." -Level Info -LogDirectory $LogDirectory
+            # "pre-image", not "created": the first permission touching a target writes the file,
+            # every later one reuses it -- see Backup-RBACAdPermission for why.
+            Write-RBACLog -Message "ACL pre-image for '$targetOU': '$backupFile'." -Level Info -LogDirectory $LogDirectory
         }
     }
+
+    $adDrive = Get-LOCKmeADDrive -Server $Server -Credential $Credential
 
     if ($PSCmdlet.ShouldProcess("$targetOU", "Apply AD delegation ($adRights) for '$GroupName'")) {
         try {
@@ -709,10 +959,16 @@ function Set-RBACADPermission {
             )
 
             # Apply the ACE on the target OU
-            $ouPath = "AD:\$targetOU"
-            $acl = Get-Acl -Path $ouPath
+            $ouPath = "${adDrive}\$targetOU"
+            if (-not (Test-Path -Path $ouPath)) {
+                throw "Target object '$targetOU' does not exist in this environment."
+            }
+            $acl = Get-Acl -Path $ouPath -ErrorAction Stop
+            if (-not $acl) {
+                throw "Could not read the security descriptor of '$targetOU'."
+            }
             $acl.AddAccessRule($ace)
-            Set-Acl -Path $ouPath -AclObject $acl
+            Set-Acl -Path $ouPath -AclObject $acl -ErrorAction Stop
 
             Write-RBACLog -Message "AD delegation '$adRights' applied on '$targetOU' for '$GroupName'." -Level Success -LogDirectory $LogDirectory
         }
@@ -733,7 +989,12 @@ function Set-RBACADCSPermission {
     .DESCRIPTION
         Modifies the CA security descriptor via the remote registry of the CA server.
         Supported rights: ManageCA (0x01), ManageCertificates (0x02), Enroll (0x04), Read (0x100).
-        Requires remote registry access (Remote Registry) on the CA server.
+        Requires remote registry access (Remote Registry) on the CA server when running
+        domain-joined/implicit. When an explicit -Credential is supplied (e.g. running
+        off-domain), the raw remote-registry API can't carry delegated credentials, so this
+        instead runs the same logic inside an Invoke-Command -Credential session against
+        -CAHostname — which requires WinRM (5985/5986) reachable on the CA server, in
+        addition to the RPC/DCOM (135) needed for the implicit-mode remote registry path.
     .PARAMETER GroupName
         Name of the group to grant permissions to.
     .PARAMETER Permission
@@ -753,11 +1014,14 @@ function Set-RBACADCSPermission {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $caName = $Permission.CAName
     $caHostname = $Permission.CAHostname
@@ -776,70 +1040,86 @@ function Set-RBACADCSPermission {
         }
     }
 
+    # The ACE-building/registry logic is identical whether it runs locally against the
+    # remote-registry handle (implicit mode) or inside an Invoke-Command session (explicit
+    # credential) — expressed once here and invoked either directly or remotely below.
+    $applyAceScript = {
+        param($caName, $caHostname, $groupSID, $rightMask, $right, $groupName, $caConfig)
+
+        $reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey(
+            [Microsoft.Win32.RegistryHive]::LocalMachine,
+            $caHostname
+        )
+        $regPath = "SYSTEM\CurrentControlSet\Services\CertSvc\Configuration\$caName"
+        $key = $reg.OpenSubKey($regPath, $true)
+
+        if (-not $key) {
+            throw "Registry key not found: HKLM:\$regPath on $caHostname. Verify the CA name and connectivity."
+        }
+
+        # Read the current security descriptor
+        $sdBytes = [byte[]]$key.GetValue("Security")
+        $sd = New-Object System.Security.AccessControl.RawSecurityDescriptor($sdBytes, 0)
+
+        # Check if the ACE already exists
+        $aceExists = $false
+        foreach ($existingAce in $sd.DiscretionaryAcl) {
+            if ($existingAce.SecurityIdentifier -eq $groupSID -and
+                $existingAce.AceQualifier -eq [System.Security.AccessControl.AceQualifier]::AccessAllowed -and
+                ($existingAce.AccessMask -band $rightMask) -eq $rightMask) {
+                $aceExists = $true
+                break
+            }
+        }
+
+        if ($aceExists) {
+            $key.Close()
+            $reg.Close()
+            return "AlreadyExists"
+        }
+
+        # Create the new ACE (Allow)
+        $ace = New-Object System.Security.AccessControl.CommonAce(
+            [System.Security.AccessControl.AceFlags]::None,
+            [System.Security.AccessControl.AceQualifier]::AccessAllowed,
+            $rightMask,
+            $groupSID,
+            $false,
+            $null
+        )
+
+        # Add the ACE to the DACL
+        $sd.DiscretionaryAcl.InsertAce($sd.DiscretionaryAcl.Count, $ace)
+
+        # Write the modified SD back to the registry
+        $newSdBytes = New-Object byte[] $sd.BinaryLength
+        $sd.GetBinaryForm($newSdBytes, 0)
+        $key.SetValue("Security", [byte[]]$newSdBytes, [Microsoft.Win32.RegistryValueKind]::Binary)
+
+        $key.Close()
+        $reg.Close()
+
+        # Restart CertSvc service to apply changes
+        Restart-Service -Name CertSvc -Force
+        return "Applied"
+    }
+
     if ($PSCmdlet.ShouldProcess("$caConfig", "Apply ADCS right '$right' for '$GroupName'")) {
         try {
             # Retrieve the group SID
             $group = Get-ADGroup -Identity $GroupName @serverParam
             $groupSID = $group.SID
 
-            # Open the remote registry on the CA server
-            $reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey(
-                [Microsoft.Win32.RegistryHive]::LocalMachine,
-                $caHostname
-            )
-            $regPath = "SYSTEM\CurrentControlSet\Services\CertSvc\Configuration\$caName"
-            $key = $reg.OpenSubKey($regPath, $true)
-
-            if (-not $key) {
-                throw "Registry key not found: HKLM:\$regPath on $caHostname. Verify the CA name and connectivity."
+            $scriptArgs = @($caName, $caHostname, $groupSID, $rightMask, $right, $GroupName, $caConfig)
+            if ($Credential) {
+                Write-RBACLog -Message "Applying ADCS right '$right' on '$caConfig' via remote session (explicit credential)..." -Level Info -LogDirectory $LogDirectory
             }
+            $result = Invoke-LOCKmeADRemote -Server $caHostname -Credential $Credential -ArgumentList $scriptArgs -ScriptBlock $applyAceScript
 
-            # Read the current security descriptor
-            $sdBytes = [byte[]]$key.GetValue("Security")
-            $sd = New-Object System.Security.AccessControl.RawSecurityDescriptor($sdBytes, 0)
-
-            # Check if the ACE already exists
-            $aceExists = $false
-            foreach ($existingAce in $sd.DiscretionaryAcl) {
-                if ($existingAce.SecurityIdentifier -eq $groupSID -and
-                    $existingAce.AceQualifier -eq [System.Security.AccessControl.AceQualifier]::AccessAllowed -and
-                    ($existingAce.AccessMask -band $rightMask) -eq $rightMask) {
-                    $aceExists = $true
-                    break
-                }
-            }
-
-            if ($aceExists) {
+            if ($result -eq "AlreadyExists") {
                 Write-RBACLog -Message "ADCS right '$right' already exists on '$caConfig' for '$GroupName'." -Level Warning -LogDirectory $LogDirectory
-                $key.Close()
-                $reg.Close()
                 return
             }
-
-            # Create the new ACE (Allow)
-            $ace = New-Object System.Security.AccessControl.CommonAce(
-                [System.Security.AccessControl.AceFlags]::None,
-                [System.Security.AccessControl.AceQualifier]::AccessAllowed,
-                $rightMask,
-                $groupSID,
-                $false,
-                $null
-            )
-
-            # Add the ACE to the DACL
-            $sd.DiscretionaryAcl.InsertAce($sd.DiscretionaryAcl.Count, $ace)
-
-            # Write the modified SD back to the registry
-            $newSdBytes = New-Object byte[] $sd.BinaryLength
-            $sd.GetBinaryForm($newSdBytes, 0)
-            $key.SetValue("Security", [byte[]]$newSdBytes, [Microsoft.Win32.RegistryValueKind]::Binary)
-
-            $key.Close()
-            $reg.Close()
-
-            # Restart CertSvc service to apply changes
-            Write-RBACLog -Message "Restarting CertSvc service on '$caHostname'..." -Level Info -LogDirectory $LogDirectory
-            Invoke-Command -ComputerName $caHostname -ScriptBlock { Restart-Service -Name CertSvc -Force }
 
             Write-RBACLog -Message "ADCS right '$right' applied on '$caConfig' for '$GroupName'." -Level Success -LogDirectory $LogDirectory
         }
@@ -893,7 +1173,9 @@ function Export-RBACDeploymentReport {
 
         $row = $null
 
-        if ($msg -match "^Group '(?<name>[^']+)' \((?<scope>Global|DomainLocal)\) (?:created|would be created) in '(?<ou>[^']+)'") {
+        # The trailing "(SID: ...)" group is optional so reports from runs predating that addition
+        # still parse; Details simply stays empty for them.
+        if ($msg -match "^Group '(?<name>[^']+)' \((?<scope>Global|DomainLocal)\) (?:created|would be created) in '(?<ou>[^']+)'(?: \(SID: (?<sid>[^)]+)\))?") {
             $row = [PSCustomObject]@{
                 Timestamp = $ts
                 Category  = 'GroupCreated'
@@ -901,7 +1183,7 @@ function Export-RBACDeploymentReport {
                 Name      = $Matches['name']
                 Scope     = $Matches['scope']
                 Target    = $Matches['ou']
-                Details   = ''
+                Details   = $Matches['sid']
             }
         }
         elseif ($msg -match "^Group '(?<name>[^']+)' already exists in '(?<dn>[^']+)'") {
@@ -1013,11 +1295,14 @@ function Set-RBACSharePermission {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam  = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $fileServer = $Permission.ShareServer
     $shareName  = $Permission.ShareName
@@ -1026,10 +1311,10 @@ function Set-RBACSharePermission {
     if ($PSCmdlet.ShouldProcess("\\$fileServer\$shareName", "Apply SMB share permission ($shareRight) for '$GroupName'")) {
         $identity = (Get-ADDomain @serverParam).NetBIOSName + "\$GroupName"
         try {
-            Invoke-Command -ComputerName $fileServer -ScriptBlock {
+            Invoke-LOCKmeADRemote -Server $fileServer -Credential $Credential -AlwaysRemote -ArgumentList $shareName, $identity, $shareRight -ScriptBlock {
                 param($sn, $acct, $right)
                 Grant-SmbShareAccess -Name $sn -AccountName $acct -AccessRight $right -Force -ErrorAction Stop
-            } -ArgumentList $shareName, $identity, $shareRight -ErrorAction Stop
+            } | Out-Null
             Write-RBACLog -Message "SMB share permission '$shareRight' applied on '\\$fileServer\$shareName' for '$GroupName'." -Level Success -LogDirectory $LogDirectory
         }
         catch {
@@ -1052,6 +1337,7 @@ Export-ModuleMember -Function @(
     'Resolve-RBACNameToGuid',
     'Backup-RBACAdPermission',
     'Restore-RBACAdPermission',
+    'Remove-RBACDeployedGroup',
     'New-RBACGroup',
     'Add-RBACGroupMember',
     'Set-RBACNTFSPermission',

@@ -9,18 +9,31 @@
     to implement the AD tiering model (Tier 0, Tier 1, Tier 2).
 .PARAMETER ConfigPath
     Path to the JSON configuration file. Default: .\Config\Tiering-Config.json
+.PARAMETER Server
+    Explicit target domain controller. Required when this host is not domain-joined
+    and no domain controller can be located automatically.
+.PARAMETER Credential
+    Explicit domain credential. Prompted for interactively when this host is not
+    domain-joined and no credential is supplied.
+.PARAMETER RememberConnection
+    Persists the resolved -Server/-Credential (DPAPI-protected, current user only)
+    for reuse on the next run.
 .PARAMETER WhatIf
     Simulation mode: displays actions without executing them.
 .EXAMPLE
     .\Deploy-Tiering.ps1
     .\Deploy-Tiering.ps1 -ConfigPath "C:\Config\custom-tiering.json"
     .\Deploy-Tiering.ps1 -WhatIf
+    .\Deploy-Tiering.ps1 -Server dc01.forest.lol -Credential (Get-Credential)
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\Tiering-Config.json"),
-    [switch]$NoConfirm
+    [switch]$NoConfirm,
+    [string]$Server,
+    [PSCredential]$Credential,
+    [switch]$RememberConnection
 )
 
 # ============================================================================
@@ -37,6 +50,20 @@ if (-not (Test-Path $modulePath)) {
     exit 1
 }
 Import-Module $modulePath -Force
+Import-Module (Join-Path $rootDir "Modules\Common\Connection.psm1") -Force
+Import-Module (Join-Path $rootDir "Modules\Common\ConfigDomain.psm1") -Force
+
+# Resolve the AD connection: implicit (domain-joined) or explicit (-Server/-Credential),
+# prompting interactively when this host is not domain-joined and nothing was supplied.
+# A refused connection must read as a clear operator error, not as an unhandled
+# exception: Resolve-LOCKmeADConnection throws when the account is not a Domain Admin.
+try {
+    $connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
+}
+catch {
+    Write-Host "`n[ERROR] $($_.Exception.Message)`n" -ForegroundColor Red
+    exit 1
+}
 
 # ============================================================================
 # Load configuration
@@ -72,8 +99,10 @@ Write-Host "--- Environment Information ---" -ForegroundColor White
 Write-Host ""
 
 try {
-    $envInfo = Get-TieringEnvironmentInfo
-    $targetServer = $envInfo.PDCEmulator
+    $envInfo = Get-TieringEnvironmentInfo -Server $connection.Server -Credential $connection.Credential
+    # An explicit -Server always wins (the host may only be able to reach that one DC);
+    # otherwise target the PDC Emulator as before to avoid replication lag.
+    $targetServer = if ($connection.Server) { $connection.Server } else { $envInfo.PDCEmulator }
 
     Write-Host "  Current DC        : $($envInfo.CurrentDC)" -ForegroundColor Cyan
     if ($envInfo.IsPDC) {
@@ -91,6 +120,17 @@ try {
 catch {
     Write-Host "  [ERROR] Unable to retrieve AD information: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
+}
+
+# ============================================================================
+# Retarget the configuration onto the connected domain
+# ============================================================================
+# See Deploy-Hardening.ps1 for the rationale. It matters most here: Settings.BaseDN is the root
+# every OU in the tree is created under, so a stale one relocates the entire structure.
+$domainRetargeting = Sync-LOCKmeADConfigDomain -Config $config -ConfigPath $ConfigPath `
+                        -Server $targetServer -Credential $connection.Credential
+if ($domainRetargeting.Count -gt 0) {
+    Write-TieringLog -Message "$($domainRetargeting.Count) value(s) retargeted onto $($envInfo.DomainDN) for this run; '$ConfigPath' is left unchanged." -Level Warning -LogDirectory $logDir
 }
 
 # ============================================================================
@@ -180,6 +220,7 @@ $results = Deploy-TieringOUStructure -OUNodes $config.OUStructure `
                                       -ParentDN $config.Settings.BaseDN `
                                       -DefaultProtection $defaultProtection `
                                       -Server $targetServer `
+                                      -Credential $connection.Credential `
                                       -LogDirectory $logDir `
                                       -WhatIf:$WhatIfPreference
 
@@ -196,6 +237,7 @@ Write-Host ""
 $modeLabel = if ($WhatIfPreference) { " (SIMULATION)" } else { "" }
 
 Write-Host "  OUs created$modeLabel             : $($results.OUsCreated)" -ForegroundColor Cyan
+Write-Host "  OUs already present        : $($results.OUsExisting)" -ForegroundColor DarkGray
 
 if ($results.Errors -gt 0) {
     Write-Host "  Errors                     : $($results.Errors)" -ForegroundColor Red

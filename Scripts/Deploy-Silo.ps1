@@ -15,16 +15,29 @@
     Simulation mode: displays actions without executing them.
 .PARAMETER NoConfirm
     Skips the interactive confirmation prompt (used by the GUI).
+.PARAMETER Server
+    Explicit target domain controller. Required when this host is not domain-joined
+    and no domain controller can be located automatically.
+.PARAMETER Credential
+    Explicit domain credential. Prompted for interactively when this host is not
+    domain-joined and no credential is supplied.
+.PARAMETER RememberConnection
+    Persists the resolved -Server/-Credential (DPAPI-protected, current user only)
+    for reuse on the next run.
 .EXAMPLE
     .\Deploy-Silo.ps1
     .\Deploy-Silo.ps1 -ConfigPath "C:\Config\custom-silo.json"
     .\Deploy-Silo.ps1 -WhatIf
+    .\Deploy-Silo.ps1 -Server dc01.forest.lol -Credential (Get-Credential)
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\Silo-Config.json"),
-    [switch]$NoConfirm
+    [switch]$NoConfirm,
+    [string]$Server,
+    [PSCredential]$Credential,
+    [switch]$RememberConnection
 )
 
 # ============================================================================
@@ -41,6 +54,18 @@ if (-not (Test-Path $modulePath)) {
     exit 1
 }
 Import-Module $modulePath -Force
+Import-Module (Join-Path $rootDir "Modules\Common\Connection.psm1") -Force
+Import-Module (Join-Path $rootDir "Modules\Common\ConfigDomain.psm1") -Force
+
+# A refused connection must read as a clear operator error, not as an unhandled
+# exception: Resolve-LOCKmeADConnection throws when the account is not a Domain Admin.
+try {
+    $connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
+}
+catch {
+    Write-Host "`n[ERROR] $($_.Exception.Message)`n" -ForegroundColor Red
+    exit 1
+}
 
 # ============================================================================
 # Load configuration
@@ -84,8 +109,8 @@ Write-Host "--- Environment Information ---" -ForegroundColor White
 Write-Host ""
 
 try {
-    $envInfo = Get-SiloEnvironmentInfo
-    $targetServer = $envInfo.PDCEmulator
+    $envInfo = Get-SiloEnvironmentInfo -Server $connection.Server -Credential $connection.Credential
+    $targetServer = if ($connection.Server) { $connection.Server } else { $envInfo.PDCEmulator }
 
     Write-Host "  Current DC        : $($envInfo.CurrentDC)" -ForegroundColor Cyan
     if ($envInfo.IsPDC) {
@@ -103,6 +128,17 @@ try {
 catch {
     Write-Host "  [ERROR] Unable to retrieve AD information: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
+}
+
+# ============================================================================
+# Retarget the configuration onto the connected domain
+# ============================================================================
+# See Deploy-Hardening.ps1 for the rationale. Silos name their members by sAMAccountName, so this
+# is normally a no-op -- kept so every deployment script behaves identically.
+$domainRetargeting = Sync-LOCKmeADConfigDomain -Config $config -ConfigPath $ConfigPath `
+                        -Server $targetServer -Credential $connection.Credential
+if ($domainRetargeting.Count -gt 0) {
+    Write-SiloLog -Message "$($domainRetargeting.Count) value(s) retargeted onto $($envInfo.DomainDN) for this run; '$ConfigPath' is left unchanged." -Level Warning -LogDirectory $logDir
 }
 
 # ============================================================================
@@ -192,6 +228,7 @@ foreach ($silo in $config.Silos) {
                             -TGTLifetimeMinutes $silo.TGTLifetimeMinutes `
                             -Enforce ([bool]$silo.Enforce) `
                             -Server $targetServer `
+                            -Credential $connection.Credential `
                             -LogDirectory $logDir `
                             -WhatIf:$WhatIfPreference
         $stats.SilosDeployed++
@@ -210,6 +247,7 @@ foreach ($silo in $config.Silos) {
                 Add-SiloMember -SiloName $silo.Name `
                                 -Accounts $validComputers `
                                 -Server $targetServer `
+                                -Credential $connection.Credential `
                                 -LogDirectory $logDir `
                                 -WhatIf:$WhatIfPreference
                 $stats.AccountsAssigned += $validComputers.Count
@@ -229,6 +267,7 @@ foreach ($silo in $config.Silos) {
                 Add-SiloMember -SiloName $silo.Name `
                                 -Accounts $validAccounts `
                                 -Server $targetServer `
+                                -Credential $connection.Credential `
                                 -LogDirectory $logDir `
                                 -WhatIf:$WhatIfPreference
                 $stats.AccountsAssigned += $validAccounts.Count
@@ -255,7 +294,7 @@ $modeLabel = if ($WhatIfPreference) { " (SIMULATION)" } else { "" }
 
 Write-Host "  Silos deployed$modeLabel      : $($stats.SilosDeployed)" -ForegroundColor Cyan
 Write-Host "  Silos skipped (disabled) : $($stats.SilosSkipped)" -ForegroundColor Yellow
-Write-Host "  Accounts assigned        : $($stats.AccountsAssigned)" -ForegroundColor Cyan
+Write-Host "  Accounts assigned$modeLabel        : $($stats.AccountsAssigned)" -ForegroundColor Cyan
 
 if ($stats.Errors -gt 0) {
     Write-Host "  Errors                   : $($stats.Errors)" -ForegroundColor Red

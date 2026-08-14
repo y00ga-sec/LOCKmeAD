@@ -1,8 +1,10 @@
-#Requires -Modules ActiveDirectory
-
 # ============================================================================
 # Silo Module - Functions for deploying Authentication Policy Silos
 # ============================================================================
+# No #Requires -Modules ActiveDirectory here -- every entry point (LOCKmeAD.ps1,
+# Launch-GUI.ps1, each Scripts\Deploy-*.ps1) already checks that the module is
+# available before importing this one, so a per-module #Requires would only be a
+# redundant second layer.
 
 # Module variable for the current log file path
 $script:LogFilePath = $null
@@ -40,16 +42,19 @@ function Write-SiloLog {
         "Error"   { Write-Host $logEntry -ForegroundColor Red }
     }
 
-    # Write to log file
+    # Write to log file.
+    # -WhatIf:$false on both calls: they are ShouldProcess-aware and inherit $WhatIfPreference from
+    # the calling scope, so a line emitted by another function of this module running under -WhatIf
+    # was silently dropped -- see Write-GPOLog in Modules\GPO\GPO.psm1 for the full rationale.
     if ($LogDirectory) {
         if (-not (Test-Path $LogDirectory)) {
-            New-Item -Path $LogDirectory -ItemType Directory -Force | Out-Null
+            New-Item -Path $LogDirectory -ItemType Directory -Force -WhatIf:$false | Out-Null
         }
         if (-not $script:LogFilePath) {
             $logFileName = "Silo_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
             $script:LogFilePath = Join-Path $LogDirectory $logFileName
         }
-        $logEntry | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+        $logEntry | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8 -WhatIf:$false
     }
 }
 
@@ -124,15 +129,26 @@ function Get-SiloEnvironmentInfo {
     <#
     .SYNOPSIS
         Retrieves Active Directory environment information.
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     .OUTPUTS
         PSCustomObject with environment information.
     #>
     [CmdletBinding()]
-    param()
+    param(
+        [string]$Server,
+        [PSCredential]$Credential
+    )
+
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     try {
-        $domain = Get-ADDomain
-        $forest = Get-ADForest
+        $domain = Get-ADDomain @serverParam
+        $forest = Get-ADForest @serverParam
         $currentDC = $env:COMPUTERNAME
         $pdcEmulator = $domain.PDCEmulator
 
@@ -191,11 +207,14 @@ function New-SiloAuthPolicy {
         [bool]$Enforce = $false,
 
         [string]$Server,
+
+        [PSCredential]$Credential,
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $policyName = "$Name-Policy"
     $siloName   = "$Name-Silo"
@@ -331,11 +350,14 @@ function Add-SiloMember {
         [string[]]$Accounts,
 
         [string]$Server,
+
+        [PSCredential]$Credential,
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $fullSiloName = "$SiloName-Silo"
 

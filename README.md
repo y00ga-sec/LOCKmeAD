@@ -54,7 +54,49 @@ In order to avoid breaking your environnement when deploying, LOCKmeAD includes 
 .\LOCKmeAD.ps1 -Module All -WhatIf
 ```
 
-**Requirements:** PowerShell 7.5, ActiveDirectory module, GroupPolicy module, domain-joined machine, administrator privileges.
+---
+
+## Requirements
+
+PowerShell 7.5 and local administrator privileges. Which PowerShell modules you need depends on
+what you deploy:
+
+| LOCKmeAD module | Required PowerShell modules |
+|---|---|
+| Tiering | `ActiveDirectory` |
+| RBAC | `ActiveDirectory` |
+| PSO | `ActiveDirectory` |
+| Silo | `ActiveDirectory` |
+| GPO | `ActiveDirectory` + `GroupPolicy` |
+| JIT (deployment) | `ActiveDirectory` + `GroupPolicy` |
+| Hardening | `ActiveDirectory` + `LAPS`¹ + `DnsServer`² |
+| GUI / menu | `ActiveDirectory` |
+
+¹ only for the `ExtendLAPSSchema` and `ConfigureLAPSADPermissions` tasks
+² only for the `AddDNSSecurityRecords` task
+
+`ActiveDirectory` is the only hard requirement — LOCKmeAD refuses to start without it. The others
+are checked when the module that needs them is actually deployed.
+
+```powershell
+# Windows Server
+Install-WindowsFeature RSAT-AD-PowerShell, GPMC, RSAT-DNS-Server
+
+# Windows 10 / 11
+Add-WindowsCapability -Online -Name Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0
+Add-WindowsCapability -Online -Name Rsat.GroupPolicy.Management.Tools~~~~0.0.1.0
+Add-WindowsCapability -Online -Name Rsat.Dns.Tools~~~~0.0.1.0
+```
+
+Nothing has to be imported by hand — LOCKmeAD loads what it needs. Two modules are never installed
+manually: `LAPS` ships in-box with Windows Server 2019+ and Windows 10+ (April 11 2023 update
+onward), and `SmbShare` is only needed on the file server, not on the host running LOCKmeAD.
+
+**Running from a non-domain-joined host** — LOCKmeAD does not require a domain-joined machine. With
+`-Server` / `-Credential`, `GroupPolicy` and `LAPS` are **not** needed locally: those cmdlets accept
+no `-Credential`, so LOCKmeAD runs them inside a WinRM session on the domain controller, where they
+must be present instead. `ActiveDirectory` is then enough on your own host, plus `DnsServer` if you
+use `AddDNSSecurityRecords`.
 
 ---
 
@@ -65,6 +107,35 @@ In order to avoid breaking your environnement when deploying, LOCKmeAD includes 
 3. **The PowerShell modules create everything in AD** based on your JSON — no manual steps, no GPO imports, no pre-built templates to maintain.
 
 Safe deployment order is enforced automatically: Hardening > Tiering > RBAC > PSO > Silo > GPO > JIT.
+
+---
+
+## Simulation mode (`-WhatIf`)
+
+Every module supports `-WhatIf`, and the GUI exposes it as the **WhatIf mode** toggle. Nothing is written to Active Directory: no GPO, no group, no OU, no ACL, no policy, no schema change. The run is logged to `Logs/<run>/` exactly like a real one, with every action prefixed `[WhatIf]`, and the GUI reports it as `SIM/SUCCESS` in blue rather than `SUCCESS` in green.
+
+Two things a simulation still changes, both outside the directory:
+
+- **The GUI writes your configs.** *Deploy selected* always saves `Config/*.json` first, in simulation as in a real run. This is required for fidelity: the deployment scripts read the configuration from disk, so skipping the save would simulate the previous state rather than what is on screen. Use the CLI with `-ConfigPath` pointing at a copy if you need your JSON files left untouched.
+- **Local process state.** The ownership tasks enable `SeRestorePrivilege` on the running process, and `AddDNSSecurityRecords` opens its CIM session, before reaching the point where they would write. Deliberately so — a simulation that skipped them would stop being faithful to a real run, and a connectivity problem that would break the deployment must break the simulation too.
+
+### Reading a multi-module simulation
+
+Simulating several modules at once **will report errors that a real deployment would not**. Later modules reference objects the earlier ones create, and in simulation nothing gets created, so those references cannot resolve:
+
+| Reported by | Trigger | Affects |
+|---|---|---|
+| `Set-GPOUserRightsAssignment` | groups named in `UserRightsAssignments` | `SEC-Tiering-*-DenyLogon` |
+| `Set-GPORestrictedGroups` | members named in `RestrictedGroups` | `SEC-Tiering-*-LocalAdmins` |
+| `Add-PSOSubject` | the PSO itself, not created yet | any policy with a non-empty `AppliesTo` |
+
+Group names are resolved to SIDs *before* the write is attempted, on purpose: a missing group has to surface as a clean configuration error rather than as a half-written `GptTmpl.inf`.
+
+**How to read it** — a `Group '<name>' not found` raised by the GPO or PSO module is expected noise when `<name>` is declared in `RBAC-Config.json` and RBAC is part of the same run. Any other name (a group you typed yourself, `Domain Admins`, `Enterprise Admins`) is a real configuration error worth fixing.
+
+**How to avoid it** — deploy RBAC for real first; it is idempotent and only creates empty groups. Then simulate GPO. The directory now holds the state it would have when GPO actually runs, so the simulation is exact.
+
+Tiering → RBAC is not affected: RBAC checks its target OU inside the write guard, so an OU that does not exist yet raises nothing during a simulation.
 
 ---
 

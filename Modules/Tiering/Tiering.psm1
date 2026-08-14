@@ -1,8 +1,10 @@
-#Requires -Modules ActiveDirectory
-
 # ============================================================================
 # Tiering Module - Functions for deploying the AD tiering OU structure
 # ============================================================================
+# No #Requires -Modules ActiveDirectory here -- every entry point (LOCKmeAD.ps1,
+# Launch-GUI.ps1, each Scripts\Deploy-*.ps1) already checks that the module is
+# available before importing this one, so a per-module #Requires would only be a
+# redundant second layer.
 
 # Module variable for the current log file path
 $script:LogFilePath = $null
@@ -40,16 +42,19 @@ function Write-TieringLog {
         "Error"   { Write-Host $logEntry -ForegroundColor Red }
     }
 
-    # Write to log file
+    # Write to log file.
+    # -WhatIf:$false on both calls: they are ShouldProcess-aware and inherit $WhatIfPreference from
+    # the calling scope, so a line emitted by another function of this module running under -WhatIf
+    # was silently dropped -- see Write-GPOLog in Modules\GPO\GPO.psm1 for the full rationale.
     if ($LogDirectory) {
         if (-not (Test-Path $LogDirectory)) {
-            New-Item -Path $LogDirectory -ItemType Directory -Force | Out-Null
+            New-Item -Path $LogDirectory -ItemType Directory -Force -WhatIf:$false | Out-Null
         }
         if (-not $script:LogFilePath) {
             $logFileName = "Tiering_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
             $script:LogFilePath = Join-Path $LogDirectory $logFileName
         }
-        $logEntry | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+        $logEntry | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8 -WhatIf:$false
     }
 }
 
@@ -135,15 +140,27 @@ function Get-TieringEnvironmentInfo {
     <#
     .SYNOPSIS
         Retrieves Active Directory environment information.
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     .OUTPUTS
         PSCustomObject with environment information.
     #>
     [CmdletBinding()]
-    param()
+    param(
+        [string]$Server,
+
+        [PSCredential]$Credential
+    )
+
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     try {
-        $domain = Get-ADDomain
-        $forest = Get-ADForest
+        $domain = Get-ADDomain @serverParam
+        $forest = Get-ADForest @serverParam
         $currentDC = $env:COMPUTERNAME
         $pdcEmulator = $domain.PDCEmulator
 
@@ -196,11 +213,14 @@ function New-TieringOU {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     $targetDN = "OU=$Name,$ParentDN"
 
@@ -269,13 +289,20 @@ function Deploy-TieringOUStructure {
 
         [string]$Server,
 
+        [PSCredential]$Credential,
+
         [string]$LogDirectory,
 
         [int]$Depth = 0
     )
 
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+
     $results = @{
         OUsCreated  = 0
+        OUsExisting = 0
         Errors      = 0
     }
 
@@ -296,14 +323,34 @@ function Deploy-TieringOUStructure {
         try {
             Write-TieringLog -Message "${indent}Processing OU '$($node.Name)' in '$effectiveParent'..." -Level Info -LogDirectory $LogDirectory
 
+            # Resolve created-vs-already-present BEFORE the call: New-TieringOU returns the OU
+            # object in both cases, so the caller cannot otherwise tell them apart. Counting
+            # every processed node as "created" made a no-op re-run report a full deployment,
+            # and made a -WhatIf run against the wrong domain look like it would succeed.
+            # -ErrorAction SilentlyContinue is NOT enough here: Get-ADOrganizationalUnit
+            # -Identity raises ADIdentityNotFoundException as a TERMINATING error, which
+            # SilentlyContinue does not suppress. Left unguarded it escapes to the per-node
+            # catch below, which logs "Failed to create OU" and skips the node and all its
+            # children -- i.e. no OU is ever created on a fresh domain. Same typed-catch
+            # idiom as New-TieringOU just below.
+            $alreadyPresent = $false
+            try {
+                $alreadyPresent = $null -ne (Get-ADOrganizationalUnit -Identity "OU=$($node.Name),$effectiveParent" @serverParam -ErrorAction Stop)
+            }
+            catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {
+                $alreadyPresent = $false
+            }
+
             New-TieringOU -Name $node.Name `
                           -Description $node.Description `
                           -ParentDN $effectiveParent `
                           -ProtectedFromAccidentalDeletion $protection `
                           -Server $Server `
+                          -Credential $Credential `
                           -LogDirectory $LogDirectory `
                           -WhatIf:$WhatIfPreference
-            $results.OUsCreated++
+
+            if ($alreadyPresent) { $results.OUsExisting++ } else { $results.OUsCreated++ }
         }
         catch {
             Write-TieringLog -Message "${indent}Failed to create OU '$($node.Name)' in '$effectiveParent': $_" -Level Error -LogDirectory $LogDirectory
@@ -318,11 +365,13 @@ function Deploy-TieringOUStructure {
                                                        -ParentDN $childParentDN `
                                                        -DefaultProtection $DefaultProtection `
                                                        -Server $Server `
+                                                       -Credential $Credential `
                                                        -LogDirectory $LogDirectory `
                                                        -Depth ($Depth + 1) `
                                                        -WhatIf:$WhatIfPreference
-            $results.OUsCreated += $childResults.OUsCreated
-            $results.Errors += $childResults.Errors
+            $results.OUsCreated  += $childResults.OUsCreated
+            $results.OUsExisting += $childResults.OUsExisting
+            $results.Errors      += $childResults.Errors
         }
     }
 

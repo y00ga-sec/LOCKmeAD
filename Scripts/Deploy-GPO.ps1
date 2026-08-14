@@ -1,4 +1,4 @@
-#Requires -Modules ActiveDirectory, GroupPolicy
+#Requires -Modules ActiveDirectory
 #Requires -RunAsAdministrator
 
 <#
@@ -13,16 +13,29 @@
     Path to the JSON configuration file. Default: .\Config\GPO-Config.json
 .PARAMETER WhatIf
     Simulation mode: displays actions without executing them.
+.PARAMETER Server
+    Explicit target domain controller. Required when this host is not domain-joined
+    and no domain controller can be located automatically.
+.PARAMETER Credential
+    Explicit domain credential. Prompted for interactively when this host is not
+    domain-joined and no credential is supplied.
+.PARAMETER RememberConnection
+    Persists the resolved -Server/-Credential (DPAPI-protected, current user only)
+    for reuse on the next run.
 .EXAMPLE
     .\Deploy-GPO.ps1
     .\Deploy-GPO.ps1 -ConfigPath "C:\Config\custom-gpo.json"
     .\Deploy-GPO.ps1 -WhatIf
+    .\Deploy-GPO.ps1 -Server dc01.forest.lol -Credential (Get-Credential)
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$ConfigPath = (Join-Path $PSScriptRoot "..\Config\GPO-Config.json"),
-    [switch]$NoConfirm
+    [switch]$NoConfirm,
+    [string]$Server,
+    [PSCredential]$Credential,
+    [switch]$RememberConnection
 )
 
 # ============================================================================
@@ -39,6 +52,41 @@ if (-not (Test-Path $modulePath)) {
     exit 1
 }
 Import-Module $modulePath -Force
+Import-Module (Join-Path $rootDir "Modules\Common\Connection.psm1") -Force
+Import-Module (Join-Path $rootDir "Modules\Common\ConfigDomain.psm1") -Force
+
+# A refused connection must read as a clear operator error, not as an unhandled
+# exception: Resolve-LOCKmeADConnection throws when the account is not a Domain Admin.
+try {
+    $connection = Resolve-LOCKmeADConnection -Server $Server -Credential $Credential -Remember:$RememberConnection
+}
+catch {
+    Write-Host "`n[ERROR] $($_.Exception.Message)`n" -ForegroundColor Red
+    exit 1
+}
+
+# The GroupPolicy module is required in THIS session only in implicit mode. With an explicit
+# credential every GroupPolicy cmdlet is executed on the target DC through a WinRM session
+# (they accept no -Credential), so it only has to exist there. Hence a runtime check here
+# rather than a static '#Requires -Modules GroupPolicy', which refused to start off-domain.
+#
+# The availability test goes through Test-LOCKmeADGroupPolicyModule rather than
+# 'Get-Module -ListAvailable', which reports nothing under PowerShell 7 even when the module is
+# installed and working -- see that function for the full reason.
+if (-not $connection.Credential -and -not (Test-LOCKmeADGroupPolicyModule)) {
+    Write-Host "`n[ERROR] The 'GroupPolicy' module is required to deploy GPOs in implicit mode." -ForegroundColor Red
+    Write-Host "Install RSAT-GPMC on this host, or pass -Server/-Credential to run them on the DC.`n" -ForegroundColor Yellow
+    exit 1
+}
+# Loaded up front instead of on first use: under -WhatIf, letting command discovery auto-load it
+# fails outright -- see Import-LOCKmeADGroupPolicyModule for why.
+if (-not $connection.Credential) {
+    try { Import-LOCKmeADGroupPolicyModule }
+    catch {
+        Write-Host "`n[ERROR] The 'GroupPolicy' module is installed but could not be loaded: $($_.Exception.Message)`n" -ForegroundColor Red
+        exit 1
+    }
+}
 
 # ============================================================================
 # Load configuration
@@ -74,8 +122,8 @@ Write-Host "--- Environment Information ---" -ForegroundColor White
 Write-Host ""
 
 try {
-    $envInfo = Get-GPOEnvironmentInfo
-    $targetServer = $envInfo.PDCEmulator
+    $envInfo = Get-GPOEnvironmentInfo -Server $connection.Server -Credential $connection.Credential
+    $targetServer = if ($connection.Server) { $connection.Server } else { $envInfo.PDCEmulator }
 
     Write-Host "  Current DC        : $($envInfo.CurrentDC)" -ForegroundColor Cyan
     if ($envInfo.IsPDC) {
@@ -96,6 +144,19 @@ catch {
 }
 
 # ============================================================================
+# Retarget the configuration onto the connected domain
+# ============================================================================
+# See Deploy-Hardening.ps1 for the rationale. The ordering is not optional here: the summary below
+# resolves FilteringGroupsOU against AD, and a DN still naming the previous domain would be found
+# missing -- which does not merely warn, it disables filtering group deployment for the whole run
+# while Authenticated Users is still removed, leaving every GPO applying to nobody.
+$domainRetargeting = Sync-LOCKmeADConfigDomain -Config $config -ConfigPath $ConfigPath `
+                        -Server $targetServer -Credential $connection.Credential
+if ($domainRetargeting.Count -gt 0) {
+    Write-GPOLog -Message "$($domainRetargeting.Count) value(s) retargeted onto $($envInfo.DomainDN) for this run; '$ConfigPath' is left unchanged." -Level Warning -LogDirectory $logDir
+}
+
+# ============================================================================
 # Configuration summary
 # ============================================================================
 
@@ -111,9 +172,34 @@ if ($filteringEnabled) {
         Write-Host "  [WARNING] FilteringGroupsOU '$filteringOU' does not reference a Tier 0 location. Consider placing filtering groups in a Tier 0 OU for proper security boundaries." -ForegroundColor Yellow
         Write-GPOLog -Message "FilteringGroupsOU '$filteringOU' does not reference a Tier 0 location. Filtering groups will still be deployed." -Level Warning -LogDirectory $logDir
     }
-    # Verify the OU exists in AD (target PDC to avoid replication lag when Tiering just created it)
+    # Verify the target exists in AD (target PDC to avoid replication lag when Tiering just created it).
+    #
+    # Resolved with Get-ADObject, NOT Get-ADOrganizationalUnit: despite the setting's name the
+    # target does not have to be an organizationalUnit. CN=Users -- the domain's default group
+    # container, and the value this config ships with -- has objectClass 'container', which
+    # Get-ADOrganizationalUnit never matches, so the check raised ADIdentityNotFoundException on a
+    # perfectly valid, existing target.
+    #
+    # The consequence was not a harmless warning. Filtering groups were skipped, while the else
+    # branch further down still called Remove-GPOAuthenticatedUsers -- so every GPO deployed with
+    # this setting ended up granted to nobody at all: Authenticated Users stripped, and no Apply
+    # group created to take its place.
+    #
+    # Resolving is not sufficient on its own, so the class is checked too: a leaf object would
+    # resolve here and only fail later inside New-ADGroup -Path, far from the setting that caused
+    # it. ObjectClass comes back on Get-ADObject by default, no -Properties needed.
     try {
-        Get-ADOrganizationalUnit -Identity $filteringOU -Server $targetServer -ErrorAction Stop | Out-Null
+        $ouCheckParam = @{ Server = $targetServer }
+        if ($connection.Credential) { $ouCheckParam.Credential = $connection.Credential }
+        $filteringTarget = Get-ADObject -Identity $filteringOU @ouCheckParam -ErrorAction Stop
+
+        $groupHolderClasses = @('organizationalUnit', 'container', 'domainDNS')
+        if ($filteringTarget.ObjectClass -notin $groupHolderClasses) {
+            Write-Host ""
+            Write-Host "  [ERROR] FilteringGroupsOU '$filteringOU' is a '$($filteringTarget.ObjectClass)' object, which cannot contain groups. Filtering groups will NOT be deployed." -ForegroundColor Red
+            Write-GPOLog -Message "FilteringGroupsOU '$filteringOU' resolved to objectClass '$($filteringTarget.ObjectClass)', which cannot hold group objects (expected one of: $($groupHolderClasses -join ', ')). Skipping filtering group deployment." -Level Error -LogDirectory $logDir
+            $filteringEnabled = $false
+        }
     }
     catch {
         Write-Host ""
@@ -202,11 +288,36 @@ if (-not $WhatIfPreference -and -not $NoConfirm) {
 Write-GPOLog -Message "Starting GPO deployment..." -Level Info -LogDirectory $logDir
 Write-Host ""
 
+# Connection splat reused by the filtering group existence pre-checks below.
+$connParam = @{ Server = $targetServer }
+if ($connection.Credential) { $connParam.Credential = $connection.Credential }
+
+function Test-GPOFilteringGroupPresent([string]$Name) {
+    <#
+    .SYNOPSIS
+        Returns whether a filtering group already exists, so the caller can tell "created"
+        from "already there" before calling New-GPOFilteringGroup.
+    .DESCRIPTION
+        New-GPOFilteringGroup returns the group object whether it created it or found an
+        existing one, so incrementing the counter unconditionally made every re-run claim it
+        had created all of them -- 44 groups on a 22-GPO config where nothing was created.
+        Same defect, and same fix, as Deploy-RBAC.ps1 and Deploy-TieringOUStructure.
+
+        -ErrorAction SilentlyContinue is NOT enough: Get-ADGroup -Identity raises
+        ADIdentityNotFoundException as a TERMINATING error that SilentlyContinue does not
+        suppress, hence the typed catch.
+    #>
+    try   { return $null -ne (Get-ADGroup -Identity $Name @connParam -ErrorAction Stop) }
+    catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] { return $false }
+}
+
 $stats = @{
     GPOsCreated    = 0
     GPOsSkipped    = 0
     LinksCreated   = 0
+    LinksExisting  = 0
     GroupsCreated  = 0
+    GroupsExisting = 0
     Errors         = 0
 }
 
@@ -227,6 +338,7 @@ foreach ($gpo in $config.GPOs) {
                                -RegistrySettings $regSettings `
                                -GpoStatus $gpoStatus `
                                -Server $targetServer `
+                                        -Credential $connection.Credential `
                                -LogDirectory $logDir `
                                -WhatIf:$WhatIfPreference
         $stats.GPOsCreated++
@@ -243,6 +355,7 @@ foreach ($gpo in $config.GPOs) {
             Set-GPORegistryPreferences -GPOName $gpo.Name `
                                          -RegistryPreferences $gpo.RegistryPreferences `
                                          -Server $targetServer `
+                                        -Credential $connection.Credential `
                                          -LogDirectory $logDir `
                                          -WhatIf:$WhatIfPreference
         }
@@ -258,6 +371,7 @@ foreach ($gpo in $config.GPOs) {
             Set-GPOUserRightsAssignment -GPOName $gpo.Name `
                                          -Assignments $gpo.UserRightsAssignments `
                                          -Server $targetServer `
+                                        -Credential $connection.Credential `
                                          -LogDirectory $logDir `
                                          -WhatIf:$WhatIfPreference
         }
@@ -273,6 +387,7 @@ foreach ($gpo in $config.GPOs) {
             Set-GPORestrictedGroups -GPOName $gpo.Name `
                                      -RestrictedGroups $gpo.RestrictedGroups `
                                      -Server $targetServer `
+                                        -Credential $connection.Credential `
                                      -LogDirectory $logDir `
                                      -WhatIf:$WhatIfPreference
         }
@@ -288,6 +403,7 @@ foreach ($gpo in $config.GPOs) {
             Set-GPOSecurityOptions -GPOName $gpo.Name `
                                      -SecurityOptions $gpo.SecurityOptions `
                                      -Server $targetServer `
+                                        -Credential $connection.Credential `
                                      -LogDirectory $logDir `
                                      -WhatIf:$WhatIfPreference
         }
@@ -303,6 +419,7 @@ foreach ($gpo in $config.GPOs) {
             Set-GPOSystemServices -GPOName $gpo.Name `
                                     -SystemServices $gpo.SystemServices `
                                     -Server $targetServer `
+                                        -Credential $connection.Credential `
                                     -LogDirectory $logDir `
                                     -WhatIf:$WhatIfPreference
         }
@@ -318,6 +435,7 @@ foreach ($gpo in $config.GPOs) {
             Set-GPOScript -GPOName $gpo.Name `
                            -Scripts $gpo.Scripts `
                            -Server $targetServer `
+                                        -Credential $connection.Credential `
                            -LogDirectory $logDir `
                            -WhatIf:$WhatIfPreference
         }
@@ -333,24 +451,32 @@ foreach ($gpo in $config.GPOs) {
         $denyGroupName  = "GPO_Deny_$($gpo.Name)"
 
         try {
+            $applyPresent = Test-GPOFilteringGroupPresent $applyGroupName
+            $denyPresent  = Test-GPOFilteringGroupPresent $denyGroupName
+
             New-GPOFilteringGroup -Name $applyGroupName `
                                    -Description "Apply group for GPO '$($gpo.Name)'" `
                                    -OU $filteringOU `
                                    -Server $targetServer `
+                                        -Credential $connection.Credential `
                                    -LogDirectory $logDir `
                                    -WhatIf:$WhatIfPreference
             New-GPOFilteringGroup -Name $denyGroupName `
                                    -Description "Deny group for GPO '$($gpo.Name)'" `
                                    -OU $filteringOU `
                                    -Server $targetServer `
+                                        -Credential $connection.Credential `
                                    -LogDirectory $logDir `
                                    -WhatIf:$WhatIfPreference
-            $stats.GroupsCreated += 2
+            foreach ($wasPresent in @($applyPresent, $denyPresent)) {
+                if ($wasPresent) { $stats.GroupsExisting++ } else { $stats.GroupsCreated++ }
+            }
 
             Set-GPOFilteringPermission -GPOName $gpo.Name `
                                         -ApplyGroupName $applyGroupName `
                                         -DenyGroupName $denyGroupName `
                                         -Server $targetServer `
+                                        -Credential $connection.Credential `
                                         -LogDirectory $logDir `
                                         -WhatIf:$WhatIfPreference
         }
@@ -365,6 +491,7 @@ foreach ($gpo in $config.GPOs) {
         try {
             Remove-GPOAuthenticatedUsers -GPOName $gpo.Name `
                                           -Server $targetServer `
+                                        -Credential $connection.Credential `
                                           -LogDirectory $logDir `
                                           -WhatIf:$WhatIfPreference
         }
@@ -379,12 +506,16 @@ foreach ($gpo in $config.GPOs) {
         foreach ($target in $gpo.LinkTargets) {
             if ([string]::IsNullOrWhiteSpace($target)) { continue }
             try {
-                Set-GPOLink -GPOName $gpo.Name `
+                # Set-GPOLink reports whether it actually created the link ($false = the GPO
+                # was already linked there), so a no-op re-run no longer reports links it
+                # did not create.
+                $linkCreated = Set-GPOLink -GPOName $gpo.Name `
                              -TargetOU $target `
                              -Server $targetServer `
+                                        -Credential $connection.Credential `
                              -LogDirectory $logDir `
                              -WhatIf:$WhatIfPreference
-                $stats.LinksCreated++
+                if ($linkCreated) { $stats.LinksCreated++ } else { $stats.LinksExisting++ }
             }
             catch {
                 Write-GPOLog -Message "Link '$($gpo.Name)' -> '$target' failed: $_" -Level Error -LogDirectory $logDir
@@ -408,8 +539,10 @@ $modeLabel = if ($WhatIfPreference) { " (SIMULATION)" } else { "" }
 
 Write-Host "  GPOs deployed$modeLabel       : $($stats.GPOsCreated)" -ForegroundColor Cyan
 Write-Host "  GPOs skipped (disabled) : $($stats.GPOsSkipped)" -ForegroundColor Yellow
-Write-Host "  Filtering groups        : $($stats.GroupsCreated)" -ForegroundColor Cyan
-Write-Host "  Links created           : $($stats.LinksCreated)" -ForegroundColor Cyan
+Write-Host "  Filtering groups created${modeLabel} : $($stats.GroupsCreated)" -ForegroundColor Cyan
+Write-Host "  Filtering groups present: $($stats.GroupsExisting)" -ForegroundColor DarkGray
+Write-Host "  Links created$modeLabel           : $($stats.LinksCreated)" -ForegroundColor Cyan
+Write-Host "  Links already present   : $($stats.LinksExisting)" -ForegroundColor DarkGray
 
 if ($stats.Errors -gt 0) {
     Write-Host "  Errors                  : $($stats.Errors)" -ForegroundColor Red

@@ -1,8 +1,15 @@
-#Requires -Modules ActiveDirectory, GroupPolicy
-
 # ============================================================================
 # JIT Module - Functions for deploying JIT Access Manager via GPO
 # ============================================================================
+# No #Requires -Modules here (ActiveDirectory/GroupPolicy) -- every entry point
+# (LOCKmeAD.ps1, Launch-GUI.ps1, each Scripts\Deploy-*.ps1) already checks that
+# both modules are available before importing this one, so a per-module #Requires
+# would only be a redundant second layer.
+
+Import-Module (Join-Path $PSScriptRoot "..\Common\Connection.psm1") -Force
+# Remove-GPOAuthenticatedUsers is reused for this module's own GPO -- see step 3 in
+# New-JITDeploymentGPO for why Set-GPPermission cannot do that job.
+Import-Module (Join-Path $PSScriptRoot "..\GPO\GPO.psm1") -Force
 
 # Module variable for the current log file path
 $script:LogFilePath = $null
@@ -40,16 +47,19 @@ function Write-JITLog {
         "Error"   { Write-Host $logEntry -ForegroundColor Red }
     }
 
-    # Write to log file
+    # Write to log file.
+    # -WhatIf:$false on both calls: they are ShouldProcess-aware and inherit $WhatIfPreference from
+    # the calling scope, so a line emitted by another function of this module running under -WhatIf
+    # was silently dropped -- see Write-GPOLog in Modules\GPO\GPO.psm1 for the full rationale.
     if ($LogDirectory) {
         if (-not (Test-Path $LogDirectory)) {
-            New-Item -Path $LogDirectory -ItemType Directory -Force | Out-Null
+            New-Item -Path $LogDirectory -ItemType Directory -Force -WhatIf:$false | Out-Null
         }
         if (-not $script:LogFilePath) {
             $logFileName = "JIT_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
             $script:LogFilePath = Join-Path $LogDirectory $logFileName
         }
-        $logEntry | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+        $logEntry | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8 -WhatIf:$false
     }
 }
 
@@ -117,21 +127,32 @@ function Get-JITEnvironmentInfo {
     <#
     .SYNOPSIS
         Retrieves Active Directory environment information including PAM feature status.
+    .PARAMETER Server
+        Target DC for all AD operations. Required when not domain-joined.
+    .PARAMETER Credential
+        Explicit credential to authenticate with. Required when not domain-joined.
     .OUTPUTS
         PSCustomObject with environment information.
     #>
     [CmdletBinding()]
-    param()
+    param(
+        [string]$Server,
+        [PSCredential]$Credential
+    )
+
+    $serverParam = @{}
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
 
     try {
-        $domain = Get-ADDomain
-        $forest = Get-ADForest
+        $domain = Get-ADDomain @serverParam
+        $forest = Get-ADForest @serverParam
         $currentDC = $env:COMPUTERNAME
         $pdcEmulator = $domain.PDCEmulator
 
         $isPDC = $pdcEmulator -like "$currentDC.*"
 
-        $pamFeature = Get-ADOptionalFeature -Filter { Name -eq 'Privileged Access Management Feature' } -ErrorAction SilentlyContinue
+        $pamFeature = Get-ADOptionalFeature -Filter { Name -eq 'Privileged Access Management Feature' } @serverParam -ErrorAction SilentlyContinue
         $pamEnabled = ($pamFeature -and $pamFeature.EnabledScopes.Count -gt 0)
 
         return [PSCustomObject]@{
@@ -168,6 +189,11 @@ function Publish-JITTool {
         UNC path to the distribution share (e.g., \\DOMAIN\NETLOGON\JIT).
     .PARAMETER LogDirectory
         Log directory.
+    .PARAMETER Credential
+        Explicit credential to authenticate with when publishing to the share.
+        Required when not domain-joined (plain filesystem cmdlets can't carry
+        alternate credentials on a UNC path directly, so this maps the share with
+        the credential first).
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -177,8 +203,22 @@ function Publish-JITTool {
         [Parameter(Mandatory)]
         [string]$DistributionSharePath,
 
-        [string]$LogDirectory
+        [string]$LogDirectory,
+        [PSCredential]$Credential
     )
+
+    if ($Credential -and $DistributionSharePath -match '^(\\\\[^\\]+\\[^\\]+)') {
+        # Mount a PSDrive purely for its side effect: the FileSystem provider's
+        # -Credential handling establishes a real authenticated SMB session for this
+        # UNC path, not just a PowerShell-internal abstraction -- so the plain UNC
+        # path (not the PSDrive name) can be used directly afterward, which also
+        # keeps it safe for any raw .NET file I/O that doesn't understand PSDrives.
+        $shareRoot = $Matches[1]
+        $driveName = "LOCKmeADJITShare"
+        if (-not (Get-PSDrive -Name $driveName -ErrorAction SilentlyContinue)) {
+            New-PSDrive -Name $driveName -PSProvider FileSystem -Root $shareRoot -Credential $Credential -Scope Global | Out-Null
+        }
+    }
 
     if (-not (Test-Path $SourcePath)) {
         Write-JITLog -Message "Source file not found: '$SourcePath'" -Level Error -LogDirectory $LogDirectory
@@ -262,23 +302,41 @@ function New-JITDeploymentGPO {
         [string]$DomainDN,
 
         [string]$Server,
+
+        [PSCredential]$Credential,
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+
+    # Get-GPO/New-GPO/Set-GPPermission have no -Credential parameter at all (unlike the
+    # ActiveDirectory module) -- route them through a remote WinRM session against
+    # -Server when an explicit credential is in play.
+    $gpoServer = if ($Credential) { $null } else { $Server }
 
     $filteringGroupName = "DL_JIT_Tool_Machines"
 
     # --- Step 1: Create or reuse GPO ---
-    $existingGPO = Get-GPO -Name $GPOName @serverParam -ErrorAction SilentlyContinue
+    $existingGPO = Invoke-LOCKmeADRemote -Server $Server -Credential $Credential -ArgumentList $GPOName, $gpoServer -ScriptBlock {
+        param($GPOName, $Server)
+        $p = @{}
+        if ($Server) { $p.Server = $Server }
+        Get-GPO -Name $GPOName @p -ErrorAction SilentlyContinue
+    }
     if ($existingGPO) {
         Write-JITLog -Message "GPO '$GPOName' already exists. Continuing with existing GPO." -Level Warning -LogDirectory $LogDirectory
     }
     else {
         if ($PSCmdlet.ShouldProcess($GPOName, "Create GPO")) {
             try {
-                $existingGPO = New-GPO -Name $GPOName -Comment $GPODescription @serverParam
+                $existingGPO = Invoke-LOCKmeADRemote -Server $Server -Credential $Credential -ArgumentList $GPOName, $GPODescription, $gpoServer -ScriptBlock {
+                    param($GPOName, $GPODescription, $Server)
+                    $p = @{}
+                    if ($Server) { $p.Server = $Server }
+                    New-GPO -Name $GPOName -Comment $GPODescription @p
+                }
                 Write-JITLog -Message "GPO '$GPOName' created." -Level Success -LogDirectory $LogDirectory
             }
             catch {
@@ -328,9 +386,24 @@ function New-JITDeploymentGPO {
     }
 
     # --- Step 3: Remove Authenticated Users from GPO security filtering ---
+    #
+    # This deliberately does NOT use Set-GPPermission. Removing Authenticated Users makes that
+    # cmdlet raise its own KB3163622 warning through ShouldContinue, which -Confirm:$false does
+    # not suppress (that only governs ShouldProcess) and which no -Force can bypass, because
+    # Set-GPPermission has no -Force parameter. The consequences are not cosmetic: with a console
+    # attached the deployment stops waiting for a keypress the GUI cannot surface, and with none
+    # it fails outright with "PowerShell is in NonInteractive mode" -- so a scheduled task or a
+    # GUI launched from a shortcut could never deploy this module.
+    #
+    # Remove-GPOAuthenticatedUsers does the same job by editing the GPO's AD ACL and syncing
+    # SYSVOL directly. That is already how the 22 GPOs of the GPO module get filtered, which is
+    # why none of them ever prompts.
     if ($PSCmdlet.ShouldProcess($GPOName, "Remove Authenticated Users from GPO security filtering")) {
         try {
-            Set-GPPermission -Name $GPOName -PermissionLevel None -TargetType Group -TargetName "Authenticated Users" -Replace @serverParam
+            Remove-GPOAuthenticatedUsers -GPOName $GPOName `
+                                         -Server $Server `
+                                         -Credential $Credential `
+                                         -LogDirectory $LogDirectory
             Write-JITLog -Message "Removed 'Authenticated Users' from GPO '$GPOName' security filtering." -Level Info -LogDirectory $LogDirectory
         }
         catch {
@@ -344,7 +417,12 @@ function New-JITDeploymentGPO {
     # --- Step 4: Add filtering group with GpoApply ---
     if ($PSCmdlet.ShouldProcess($GPOName, "Grant GpoApply to '$filteringGroupName'")) {
         try {
-            Set-GPPermission -Name $GPOName -PermissionLevel GpoApply -TargetType Group -TargetName $filteringGroupName @serverParam
+            Invoke-LOCKmeADRemote -Server $Server -Credential $Credential -ArgumentList $GPOName, $filteringGroupName, $gpoServer -ScriptBlock {
+                param($GPOName, $filteringGroupName, $Server)
+                $p = @{}
+                if ($Server) { $p.Server = $Server }
+                Set-GPPermission -Name $GPOName -PermissionLevel GpoApply -TargetType Group -TargetName $filteringGroupName @p
+            } | Out-Null
             Write-JITLog -Message "Granted GpoApply on GPO '$GPOName' to '$filteringGroupName'." -Level Success -LogDirectory $LogDirectory
         }
         catch {
@@ -359,10 +437,31 @@ function New-JITDeploymentGPO {
     # --- Step 5: Configure startup script on GPO SYSVOL ---
     if ($PSCmdlet.ShouldProcess($GPOName, "Configure PowerShell startup script in SYSVOL")) {
         try {
-            $gpo = Get-GPO -Name $GPOName @serverParam
+            # Reuse the GPO object from Step 1 where possible; otherwise resolve its GUID via
+            # its AD container object rather than Get-GPO (which has no -Credential parameter
+            # at all -- unlike the ActiveDirectory module -- so it cannot be used here when an
+            # explicit credential is in play).
+            $gpo = $existingGPO
+            if (-not $gpo) {
+                # A fresh LDAP query issued immediately after New-GPO (written via its GPMC
+                # API inside a separate remote/WinRM session) has occasionally not observed
+                # the new object yet -- a short retry absorbs that.
+                $attempts = 5
+                for ($i = 1; $i -le $attempts -and -not $gpo; $i++) {
+                    $container = Get-ADObject -SearchBase "CN=Policies,CN=System,$DomainDN" -SearchScope OneLevel `
+                                    -Filter { objectClass -eq 'groupPolicyContainer' -and displayName -eq $GPOName } `
+                                    -Properties displayName @serverParam -ErrorAction SilentlyContinue
+                    if ($container) { $gpo = [PSCustomObject]@{ Id = [guid]$container.Name } }
+                    elseif ($i -lt $attempts) { Start-Sleep -Milliseconds 500 }
+                }
+                if (-not $gpo) {
+                    throw "GPO '$GPOName' could not be found (no groupPolicyContainer object with that displayName under CN=Policies,CN=System,$DomainDN, after $attempts attempt(s))."
+                }
+            }
             $gpoId = "{" + $gpo.Id.ToString() + "}"
             $domain = (Get-ADDomain @serverParam).DNSRoot
-            $sysvolBase = "\\$domain\SYSVOL\$domain\Policies\$gpoId"
+            $sysvolRoot = Get-LOCKmeADSysvolDrive -DomainDNSRoot $domain -Credential $Credential
+            $sysvolBase = "$sysvolRoot\$domain\Policies\$gpoId"
             $scriptsPath = "$sysvolBase\Machine\Scripts\Startup"
 
             # Create scripts directory
@@ -391,20 +490,19 @@ function New-JITDeploymentGPO {
             $iniContent | Set-Content -Path "$machineScriptsPath\psscripts.ini" -Encoding Unicode
             Write-JITLog -Message "Created psscripts.ini in '$machineScriptsPath'" -Level Info -LogDirectory $LogDirectory
 
-            # --- Step 6: Update GPT.INI version ---
-            $gptIniPath = "$sysvolBase\GPT.INI"
-            $content = Get-Content $gptIniPath -Raw
-            if ($content -match 'Version=(\d+)') {
-                $oldVer = [int]$Matches[1]
-                $newVer = $oldVer + 1
-                $content = $content -replace "Version=$oldVer", "Version=$newVer"
-                $content | Set-Content $gptIniPath -Encoding ASCII
-                Write-JITLog -Message "Updated GPT.INI version from $oldVer to $newVer." -Level Info -LogDirectory $LogDirectory
-            }
-
-            # --- Step 7: Update gPCMachineExtensionNames (Scripts CSE) ---
+            # --- Step 6: Register the Scripts CSE, then bump the version in AD and SYSVOL together ---
+            #
+            # The two counters have to move as a pair. This previously incremented GPT.INI only
+            # (Version=n+1, by regex) and never wrote the groupPolicyContainer's versionNumber,
+            # so AD stayed at 0 forever while SYSVOL climbed one per deployment. The Group Policy
+            # client keys its "has this GPO changed?" decision on the AD versionNumber: left at 0
+            # the GPO reads as empty, the startup script is not reliably processed, and a later
+            # update to the published tool is never picked up at all.
+            #
+            # Same idiom as Set-GPOScript in the GPO module: machine version in the lower 16 bits,
+            # user version in the upper 16, and GPT.INI carrying the identical combined value.
             $cse = "[{42B5FAAE-6536-11D2-AE5A-0000F87571E3}{40B6664F-4972-11D1-A7CA-0000F87571E3}]"
-            $gpoObj = Get-ADObject -Filter { Name -eq $gpoId } -SearchBase "CN=Policies,CN=System,$DomainDN" -Properties gPCMachineExtensionNames @serverParam
+            $gpoObj = Get-ADObject -Filter { Name -eq $gpoId } -SearchBase "CN=Policies,CN=System,$DomainDN" -Properties gPCMachineExtensionNames, versionNumber @serverParam
             $existing = $gpoObj.gPCMachineExtensionNames
             if (-not $existing -or $existing -notlike "*42B5FAAE*") {
                 $newExt = if ($existing) { "$existing$cse" } else { $cse }
@@ -414,6 +512,19 @@ function New-JITDeploymentGPO {
             else {
                 Write-JITLog -Message "Scripts CSE already present on GPO '$GPOName'." -Level Warning -LogDirectory $LogDirectory
             }
+
+            $currentVersion = if ($gpoObj.versionNumber) { [int]$gpoObj.versionNumber } else { 0 }
+            $userVersion    = ($currentVersion -shr 16) -band 0xFFFF
+            $machineVersion = ($currentVersion -band 0xFFFF) + 1
+            $newVersion     = ($userVersion -shl 16) -bor $machineVersion
+            Set-ADObject -Identity $gpoObj -Replace @{ versionNumber = $newVersion } @serverParam
+
+            $gptIniPath = "$sysvolBase\GPT.INI"
+            if (Test-Path $gptIniPath) {
+                $gptContent = (Get-Content $gptIniPath -Raw) -replace 'Version=\d+', "Version=$newVersion"
+                Set-Content -Path $gptIniPath -Value $gptContent -Encoding ASCII
+            }
+            Write-JITLog -Message "GPO '$GPOName' version bumped to $newVersion (AD object and GPT.INI in sync)." -Level Info -LogDirectory $LogDirectory
 
             Write-JITLog -Message "GPO '$GPOName' startup script configured successfully." -Level Success -LogDirectory $LogDirectory
         }
@@ -456,11 +567,19 @@ function Set-JITGPOLink {
         [string[]]$LinkTargets,
 
         [string]$Server,
+
+        [PSCredential]$Credential,
         [string]$LogDirectory
     )
 
     $serverParam = @{}
-    if ($Server) { $serverParam.Server = $Server }
+    if ($Server)     { $serverParam.Server     = $Server }
+    if ($Credential) { $serverParam.Credential = $Credential }
+
+    # Get-GPInheritance/New-GPLink have no -Credential parameter at all (unlike the
+    # ActiveDirectory module) -- route them through a remote WinRM session against
+    # -Server when an explicit credential is in play.
+    $gpoServer = if ($Credential) { $null } else { $Server }
 
     foreach ($ou in $LinkTargets) {
         if ([string]::IsNullOrWhiteSpace($ou)) { continue }
@@ -468,8 +587,16 @@ function Set-JITGPOLink {
         # Check if already linked
         $alreadyLinked = $false
         try {
-            $inheritance = Get-GPInheritance -Target $ou @serverParam
-            $linkedNames = @($inheritance.GpoLinks | ForEach-Object { $_.DisplayName })
+            # DisplayName must be projected to a plain string INSIDE the remote scriptblock:
+            # remoting serializes each GpoLink down to its ToString() value, so reading
+            # .DisplayName after the collection has crossed the session boundary yields empty
+            # strings and the "already linked" check silently never matches.
+            $linkedNames = @(Invoke-LOCKmeADRemote -Server $Server -Credential $Credential -ArgumentList $ou, $gpoServer -ScriptBlock {
+                param($ou, $Server)
+                $p = @{}
+                if ($Server) { $p.Server = $Server }
+                (Get-GPInheritance -Target $ou @p).GpoLinks | ForEach-Object { $_.DisplayName }
+            })
             if ($linkedNames -contains $GPOName) {
                 $alreadyLinked = $true
             }
@@ -485,7 +612,12 @@ function Set-JITGPOLink {
 
         if ($PSCmdlet.ShouldProcess($ou, "Link GPO '$GPOName'")) {
             try {
-                New-GPLink -Name $GPOName -Target $ou -LinkEnabled Yes @serverParam
+                Invoke-LOCKmeADRemote -Server $Server -Credential $Credential -ArgumentList $GPOName, $ou, $gpoServer -ScriptBlock {
+                    param($GPOName, $ou, $Server)
+                    $p = @{}
+                    if ($Server) { $p.Server = $Server }
+                    New-GPLink -Name $GPOName -Target $ou -LinkEnabled Yes @p
+                } | Out-Null
                 Write-JITLog -Message "GPO '$GPOName' linked to '$ou'." -Level Success -LogDirectory $LogDirectory
             }
             catch {
