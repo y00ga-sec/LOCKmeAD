@@ -20,7 +20,7 @@ In order to avoid breaking your environnement when deploying, LOCKmeAD includes 
 
 - GPOs with APPLY/DENY security filtering groups - after linking LOCKmeAD GPOs to its target OU, add machines/users to the APPLY group and exceptions to the DENY one for smooth and step-by-step pilot phases
 - Silos deployed in **audit mode** (non-enforced) — monitor Kerberos logs before switching to enforce
-- PSOs based on LOCKmeAD groups - so that your current admin team does not have a surprise at next password renewal
+- PSOs that applies on groups you chose - so that your current admin team does not have a surprise at next password renewal
   
 ---
 
