@@ -505,6 +505,12 @@ function Get-MainWindowXaml {
                             <Button Name="BtnDeleteOU"  Content="Delete"         Style="{StaticResource ToolbarBtn}" Margin="0,0,6,0"/>
                             <Button Name="BtnAddChildOU" Content="+ Add Child"   Style="{StaticResource ToolbarBtn}"/>
                         </StackPanel>
+                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,10">
+                            <Border Width="10" Height="10" CornerRadius="2" Background="#0078D4" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBlock Text="Created by LOCKmeAD" FontSize="11" Foreground="#666" VerticalAlignment="Center" Margin="0,0,18,0"/>
+                            <Border Width="10" Height="10" CornerRadius="2" Background="#D35400" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBlock Text="Existing OU (not managed — you can still add children under it)" FontSize="11" Foreground="#666" VerticalAlignment="Center"/>
+                        </StackPanel>
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
@@ -521,6 +527,9 @@ function Get-MainWindowXaml {
                             <Border Grid.Column="1" Style="{StaticResource Card}" Padding="16">
                                 <StackPanel Name="TieringPropsPanel">
                                     <TextBlock Text="OU Properties" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,14"/>
+                                    <TextBlock Name="TieringPropExistsNote"
+                                               Text="Already exists in Active Directory — shown for reference only, not part of this configuration."
+                                               FontSize="11" Foreground="#B7950B" TextWrapping="Wrap" Margin="0,0,0,10" Visibility="Collapsed"/>
                                     <TextBlock Text="Name" FontSize="12" Foreground="#888" Margin="0,0,0,4"/>
                                     <TextBox Name="TieringPropName" FontSize="13" Padding="8,6"
                                              BorderBrush="#DDD" BorderThickness="1"/>

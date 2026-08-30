@@ -151,6 +151,7 @@ $script:SiloComputerControls = @{}
 $script:SiloServiceAccountControls = @{}
 $script:UnsavedChanges = @{ Hardening = $false; GPO = $false; Tiering = $false; RBAC = $false; PSO = $false; Silo = $false; JIT = $false }
 $script:isUpdatingSelection = $false
+$script:suppressTieringSelectionRefresh = $false
 $script:RemovedDLGroups = @()
 
 # Initialize and show

@@ -399,15 +399,30 @@ function ConvertFrom-TreeView($items) {
     $result = @()
     foreach ($item in $items) {
         $tag = $item.Tag
+        if ($tag.Planned -eq $false) {
+            # An OU AD already has, shown for reference and never itself written back to
+            # OUStructure -- but a planned OU created underneath it (via "+ Add Child" while it was
+            # selected) is real, managed config and must still be saved. It carries its own
+            # DistinguishedNameBase (set at creation, or loaded from Config), so it resolves to the
+            # right place regardless of where in OUStructure it ends up; it is simply included here
+            # as a sibling of whatever planned entries this level already has, instead of nesting
+            # under a parent this configuration does not manage.
+            $result += @(ConvertFrom-TreeView $item.Items)
+            continue
+        }
         $ou = [ordered]@{
             Name        = $tag.Name
             Description = $tag.Description
+        }
+        if ($tag.DistinguishedNameBase) {
+            $ou.DistinguishedNameBase = $tag.DistinguishedNameBase
         }
         if ($null -ne $tag.Protected -and $tag.Protected -eq $false) {
             $ou.ProtectedFromAccidentalDeletion = $false
         }
         if ($item.Items.Count -gt 0) {
-            $ou.Children = @(ConvertFrom-TreeView $item.Items)
+            $children = @(ConvertFrom-TreeView $item.Items)
+            if ($children.Count -gt 0) { $ou.Children = $children }
         }
         $result += [PSCustomObject]$ou
     }
@@ -1608,41 +1623,320 @@ function Invoke-GPOTabRefresh {
     }
 }
 
-function New-TieringTreeItem {
-    param($OU, [string]$ParentDN)
+function Get-TieringExistingADTree {
+    <#
+    .SYNOPSIS
+        Reads every OU already present under $BaseDN, so the Tiering tab can show the planned tree
+        merged with the OUs AD already has today.
+    .DESCRIPTION
+        Read-only and best-effort: a domain that cannot be reached, or a BaseDN that does not exist
+        yet (a fresh config pointed at an OU Tiering has not created), must not stop the tab from
+        showing the planned tree -- any failure here is reported on the console and an empty lookup
+        is returned instead of propagating.
 
-    $item = New-Object System.Windows.Controls.TreeViewItem
-    $item.Header = $OU.Name
-    $item.IsExpanded = $true
-    $item.FontSize = 13
-    $item.Padding = [System.Windows.Thickness]::new(2)
+        Scoped to organizationalUnit objects only. Built-in containers (Users, Computers, System,
+        ...) are deliberately left out: they can never host an OU LOCKmeAD itself would place there
+        by tree nesting, so listing them only added noise without adding anything actionable.
+    .OUTPUTS
+        Hashtable: parent DN (lowercase) -> List[PSCustomObject] of {Name, Description, DN}.
+    #>
+    param([Parameter(Mandatory)][string]$BaseDN)
 
-    $dn = "OU=$($OU.Name),$ParentDN"
-    $item.Tag = @{
-        Name        = $OU.Name
-        Description = if ($OU.Description) { $OU.Description } else { "" }
-        Protected   = if ($null -ne $OU.ProtectedFromAccidentalDeletion) { [bool]$OU.ProtectedFromAccidentalDeletion } else { $true }
-        DN          = $dn
+    $lookup = @{}
+    if ([string]::IsNullOrWhiteSpace($BaseDN)) { return $lookup }
+
+    try {
+        $connParam = New-LOCKmeADConnectionParam -Connection $script:Connection
+        $objects = Get-ADObject -SearchBase $BaseDN -SearchScope Subtree `
+            -LDAPFilter "(objectClass=organizationalUnit)" `
+            -Properties Description @connParam -ErrorAction Stop
+
+        foreach ($obj in $objects) {
+            $dn = $obj.DistinguishedName
+            if ($dn -eq $BaseDN) { continue }
+            $commaIdx = $dn.IndexOf(',')
+            if ($commaIdx -lt 0) { continue }
+            $parentDN = $dn.Substring($commaIdx + 1)
+            $entry = [PSCustomObject]@{
+                Name        = $obj.Name
+                Description = [string]$obj.Description
+                DN          = $dn
+            }
+            $key = $parentDN.ToLower()
+            if (-not $lookup.ContainsKey($key)) { $lookup[$key] = [System.Collections.Generic.List[object]]::new() }
+            $lookup[$key].Add($entry)
+        }
+    }
+    catch {
+        Write-ConsoleUI "Could not read existing OUs under '$BaseDN' from AD: $($_.Exception.Message)" "Warning"
     }
 
-    if ($OU.Children) {
-        foreach ($child in $OU.Children) {
-            $childItem = New-TieringTreeItem -OU $child -ParentDN $dn
-            $item.Items.Add($childItem) | Out-Null
+    return $lookup
+}
+
+function Get-TieringCategoryColor($tag) {
+    <#
+    .SYNOPSIS
+        Hex colour for a Tiering tree node's category.
+    .DESCRIPTION
+        Shared by the tree header and the properties panel note so the legend in Views.ps1 stays
+        true everywhere it is used:
+          - blue (#0078D4, the app's own accent) : planned in Config\Tiering-Config.json --
+            LOCKmeAD creates/manages it, whether or not AD already has it.
+          - amber (#D35400) : an OU already in AD that this configuration does not manage.
+    #>
+    if ($tag.Planned -eq $false) { return "#D35400" }
+    return "#0078D4"
+}
+
+function Set-TieringTreeItemHeader($item) {
+    <#
+    .SYNOPSIS
+        Renders a TreeViewItem's header from its Tag: a folder icon plus name, coloured by
+        category.
+    .DESCRIPTION
+        Shared by the initial build and the rename handler so a renamed node keeps the same look.
+        Colour comes from Get-TieringCategoryColor; a small green check is layered on top of a
+        planned node AD already has, since that is orthogonal to the category -- still LOCKmeAD's,
+        just a no-op on the next deploy.
+    #>
+    $tag = $item.Tag
+    $color = Get-TieringCategoryColor $tag
+    $panel = New-Object System.Windows.Controls.StackPanel
+    $panel.Orientation = "Horizontal"
+
+    $icon = New-Object System.Windows.Controls.TextBlock
+    $icon.Text = [char]0xED25
+    $icon.FontFamily = New-Object System.Windows.Media.FontFamily("Segoe MDL2 Assets")
+    $icon.FontSize = 13
+    $icon.Foreground = Get-WPFBrush $color
+    $icon.VerticalAlignment = "Center"
+    $icon.Margin = [System.Windows.Thickness]::new(0, 0, 6, 0)
+    [void]$panel.Children.Add($icon)
+
+    $nameText = New-Object System.Windows.Controls.TextBlock
+    $nameText.Text = $tag.Name
+    $nameText.VerticalAlignment = "Center"
+    $nameText.Foreground = Get-WPFBrush $color
+    if ($tag.Planned -eq $false) { $nameText.FontStyle = "Italic" }
+    [void]$panel.Children.Add($nameText)
+
+    if ($tag.Planned -eq $false) {
+        $badge = New-Object System.Windows.Controls.TextBlock
+        $badge.Text = "  (existing OU)"
+        $badge.FontSize = 10
+        $badge.Foreground = Get-WPFBrush $color
+        $badge.VerticalAlignment = "Center"
+        [void]$panel.Children.Add($badge)
+    }
+    elseif ($tag.ExistsInAD) {
+        $badge = New-Object System.Windows.Controls.TextBlock
+        $badge.Text = "  $([char]0x2713) in AD"
+        $badge.FontSize = 10
+        $badge.FontWeight = "SemiBold"
+        $badge.Foreground = Get-WPFBrush "#1E8449"
+        $badge.VerticalAlignment = "Center"
+        [void]$panel.Children.Add($badge)
+    }
+
+    $item.Header = $panel
+}
+
+function Get-TieringPlannedAnchors {
+    <#
+    .SYNOPSIS
+        Walks the entire planned OUStructure once and indexes every node's REAL container DN,
+        honouring DistinguishedNameBase at any depth.
+    .DESCRIPTION
+        New-TieringTreeNodes builds the existing-only branch for one container at a time and must
+        know whether an AD OU found there is already accounted for by config -- but a node
+        anchored via DistinguishedNameBase can sit anywhere in the JSON tree, nested for display
+        purposes under a completely different parent than the one it actually deploys under (see
+        the "+ Add Child" handler). A per-call local scan of that level's own PlannedNodes cannot
+        see such a node; only a single whole-tree pass, keyed by each node's true effective parent,
+        can -- which is what this builds, once, before the recursive tree build starts.
+    .PARAMETER Nodes
+        OUStructure entries to index (recurse with each node's own Children).
+    .PARAMETER ParentDN
+        Distinguished name these nodes nest under when they carry no DistinguishedNameBase of
+        their own.
+    .PARAMETER Index
+        Hashtable being filled in place: real parent DN (lowercase) -> HashSet[string] of planned
+        OU names anchored there.
+    #>
+    param(
+        [PSCustomObject[]]$Nodes,
+        [Parameter(Mandatory)][string]$ParentDN,
+        [Parameter(Mandatory)][hashtable]$Index
+    )
+
+    foreach ($ou in @($Nodes)) {
+        if (-not $ou) { continue }
+        $effectiveParentDN = if ($ou.DistinguishedNameBase) { $ou.DistinguishedNameBase } else { $ParentDN }
+        $key = $effectiveParentDN.ToLower()
+        if (-not $Index.ContainsKey($key)) {
+            $Index[$key] = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+        }
+        [void]$Index[$key].Add($ou.Name)
+        Get-TieringPlannedAnchors -Nodes $ou.Children -ParentDN "OU=$($ou.Name),$effectiveParentDN" -Index $Index
+    }
+}
+
+function New-TieringTreeNodes {
+    <#
+    .SYNOPSIS
+        Builds the TreeViewItems for one level of the Tiering tree, merging the OUs planned in the
+        loaded configuration with OUs already present in AD directly under $ParentDN.
+    .DESCRIPTION
+        Every item's Tag carries Planned (would Save-AllConfigs write it back to OUStructure) and
+        ExistsInAD (found in AD when the tab was populated). A node that is both keeps normal edit
+        behaviour and is marked "in AD" for information only; a node that only exists in AD is
+        shown read-only and excluded from ConvertFrom-TreeView, so a real AD object can never leak
+        into Config\Tiering-Config.json just because it was displayed -- new OUs can still be
+        planted underneath it, though (see the "+ Add Child" handler), each anchored to its real DN
+        via DistinguishedNameBase.
+
+        A planned node's own DistinguishedNameBase (set by that same "+ Add Child" flow, or loaded
+        straight from Config) overrides $ParentDN for ITS OWN placement and existence lookup, so a
+        node visually nested one place in the tree can still resolve -- and be checked against AD --
+        at the different real location it is actually anchored to.
+    .PARAMETER PlannedNodes
+        OUStructure entries (from Config) whose parent is $ParentDN. Empty/$null for a level with
+        no planned children -- still walked for existing-only content.
+    .PARAMETER ParentDN
+        Distinguished name of the container this level's items sit directly under.
+    .PARAMETER ExistingByParent
+        Lookup built by Get-TieringExistingADTree: parent DN (lowercase) -> AD child objects.
+    .PARAMETER PlannedAnchors
+        Lookup built by Get-TieringPlannedAnchors: real parent DN (lowercase) -> planned OU names
+        anchored there, from anywhere in OUStructure. Used to keep an AD OU that config already
+        manages (however it is nested in the JSON) from also showing up a second time as an
+        existing-only node right under it.
+    #>
+    param(
+        [PSCustomObject[]]$PlannedNodes,
+        [Parameter(Mandatory)][string]$ParentDN,
+        [Parameter(Mandatory)][hashtable]$ExistingByParent,
+        [Parameter(Mandatory)][hashtable]$PlannedAnchors
+    )
+
+    $PlannedNodes = @($PlannedNodes)
+    $items = [System.Collections.Generic.List[object]]::new()
+    $existingHere = $ExistingByParent[$ParentDN.ToLower()]
+
+    foreach ($ou in $PlannedNodes) {
+        if (-not $ou) { continue }
+        $effectiveParentDN = if ($ou.DistinguishedNameBase) { $ou.DistinguishedNameBase } else { $ParentDN }
+        $dn = "OU=$($ou.Name),$effectiveParentDN"
+        $lookupHere = if ($effectiveParentDN.ToLower() -eq $ParentDN.ToLower()) { $existingHere } else { $ExistingByParent[$effectiveParentDN.ToLower()] }
+        $matchExisting = $lookupHere | Where-Object { $_.Name -eq $ou.Name } | Select-Object -First 1
+
+        $item = New-Object System.Windows.Controls.TreeViewItem
+        $item.IsExpanded = $true
+        $item.FontSize = 13
+        $item.Padding = [System.Windows.Thickness]::new(2)
+        $item.Tag = @{
+            Name                  = $ou.Name
+            Description           = if ($ou.Description) { $ou.Description } else { "" }
+            Protected             = if ($null -ne $ou.ProtectedFromAccidentalDeletion) { [bool]$ou.ProtectedFromAccidentalDeletion } else { $true }
+            DN                    = $dn
+            DistinguishedNameBase = $ou.DistinguishedNameBase
+            Planned               = $true
+            ExistsInAD            = [bool]$matchExisting
+        }
+        Set-TieringTreeItemHeader $item
+
+        $childItems = New-TieringTreeNodes -PlannedNodes $ou.Children -ParentDN $dn -ExistingByParent $ExistingByParent -PlannedAnchors $PlannedAnchors
+        foreach ($ci in $childItems) { [void]$item.Items.Add($ci) }
+
+        [void]$items.Add($item)
+    }
+
+    if ($existingHere) {
+        $anchoredNamesHere = $PlannedAnchors[$ParentDN.ToLower()]
+        foreach ($ex in ($existingHere | Sort-Object Name)) {
+            if ($anchoredNamesHere -and $anchoredNamesHere.Contains($ex.Name)) { continue }
+
+            $item = New-Object System.Windows.Controls.TreeViewItem
+            $item.IsExpanded = $false
+            $item.FontSize = 13
+            $item.Padding = [System.Windows.Thickness]::new(2)
+            $item.Tag = @{
+                Name        = $ex.Name
+                Description = $ex.Description
+                Protected   = $true
+                DN          = $ex.DN
+                Planned     = $false
+                ExistsInAD  = $true
+            }
+            Set-TieringTreeItemHeader $item
+
+            $childItems = New-TieringTreeNodes -PlannedNodes @() -ParentDN $ex.DN -ExistingByParent $ExistingByParent -PlannedAnchors $PlannedAnchors
+            foreach ($ci in $childItems) { [void]$item.Items.Add($ci) }
+
+            [void]$items.Add($item)
         }
     }
 
-    return $item
+    # AD Users and Computers lists child objects alphabetically, case-insensitively, regardless of
+    # creation order or of what created them -- planned and existing-only items are sorted together
+    # here so the tree previews the same order a real deploy will end up with in ADUC. Interactive
+    # renames/adds keep this true afterward too, via Sort-TieringTreeSiblings.
+    return @($items | Sort-Object { $_.Tag.Name })
+}
+
+function Sort-TieringTreeSiblings {
+    <#
+    .SYNOPSIS
+        Re-sorts one level of the live Tiering tree alphabetically by name, in place.
+    .DESCRIPTION
+        New-TieringTreeNodes only sorts at build time; this keeps the same ordering true live, as
+        an operator renames or adds OUs, so the editor never shows a sequence ADUC would not.
+        Guarded against re-writing the collection when the order has not actually changed --
+        renaming fires on every keystroke, and Clear()+Add() would otherwise reset scroll position
+        and flicker the tree on every single character typed, not just the ones that actually move
+        an item.
+    .PARAMETER ItemsCollection
+        A TreeView's or TreeViewItem's .Items collection (one sibling level).
+    #>
+    param($ItemsCollection)
+
+    $current = @($ItemsCollection)
+    if ($current.Count -le 1) { return }
+
+    $sorted = @($current | Sort-Object { $_.Tag.Name })
+    for ($i = 0; $i -lt $sorted.Count; $i++) {
+        if (-not [object]::ReferenceEquals($sorted[$i], $current[$i])) {
+            $ItemsCollection.Clear()
+            foreach ($item in $sorted) { [void]$ItemsCollection.Add($item) }
+            return
+        }
+    }
 }
 
 function Update-TreeItemDN($item) {
-    $parent = $item.Parent
-    if ($parent -is [System.Windows.Controls.TreeView]) {
-        $parentDN = $UI.TieringBaseDN.Text
-    } else {
-        $parentDN = $parent.Tag.DN
+    # AD-only nodes reflect where the object actually sits today, resolved once when the tab was
+    # populated -- not the tree's nesting, which only means something for planned OUs. Recomputing
+    # one from the edited Base DN would show a location the object isn't really at, and since no
+    # config node can ever nest INSIDE an AD-only one without carrying its own
+    # DistinguishedNameBase (see New-TieringTreeNodes), there is nothing further down this branch
+    # that would need updating from a Base DN change either.
+    if ($item.Tag.Planned -eq $false) { return }
+
+    if ($item.Tag.DistinguishedNameBase) {
+        # Anchored to a fixed real parent -- an OU AD already has, planted via "+ Add Child" -- so
+        # its placement does not depend on where it happens to sit in the tree, or on Base DN.
+        $item.Tag.DN = "OU=$($item.Tag.Name),$($item.Tag.DistinguishedNameBase)"
     }
-    $item.Tag.DN = "OU=$($item.Tag.Name),$parentDN"
+    else {
+        $parent = $item.Parent
+        if ($parent -is [System.Windows.Controls.TreeView]) {
+            $parentDN = $UI.TieringBaseDN.Text
+        } else {
+            $parentDN = $parent.Tag.DN
+        }
+        $item.Tag.DN = "OU=$($item.Tag.Name),$parentDN"
+    }
 
     # Recursively update children
     foreach ($child in $item.Items) {
@@ -1655,10 +1949,11 @@ function Populate-TieringTab {
     $baseDN = $script:Configs.Tiering.Settings.BaseDN
     $UI.TieringBaseDN.Text = $baseDN
 
-    foreach ($ou in $script:Configs.Tiering.OUStructure) {
-        $item = New-TieringTreeItem -OU $ou -ParentDN $baseDN
-        $UI.TieringTree.Items.Add($item) | Out-Null
-    }
+    $existingByParent = Get-TieringExistingADTree -BaseDN $baseDN
+    $plannedAnchors = @{}
+    Get-TieringPlannedAnchors -Nodes $script:Configs.Tiering.OUStructure -ParentDN $baseDN -Index $plannedAnchors
+    $rootItems = New-TieringTreeNodes -PlannedNodes $script:Configs.Tiering.OUStructure -ParentDN $baseDN -ExistingByParent $existingByParent -PlannedAnchors $plannedAnchors
+    foreach ($item in $rootItems) { $UI.TieringTree.Items.Add($item) | Out-Null }
 }
 
 function Populate-RBACTab {
@@ -5035,16 +5330,31 @@ function Register-GUIEvents {
 
     # Tiering tree selection
     $UI.TieringTree.Add_SelectedItemChanged({
+        # Sort-TieringTreeSiblings clears and rebuilds the Items collection to reorder it, which
+        # WPF treats as "everything changed" and silently drops the TreeView's own selection; the
+        # rename handler then reasserts IsSelected on the very item the operator is still typing
+        # in, which re-fires THIS event. Without this guard that re-entrant firing would repopulate
+        # TieringPropName.Text from Tag.Name mid-keystroke and snap the caret back to the start.
+        if ($script:suppressTieringSelectionRefresh) { return }
+
         $selected = $UI.TieringTree.SelectedItem
         $script:isUpdatingSelection = $true
         if ($selected -and $selected.Tag) {
+            $isPlanned = $selected.Tag.Planned -ne $false
             $UI.TieringPropName.Text = $selected.Tag.Name
             $UI.TieringPropDesc.Text = $selected.Tag.Description
             $UI.TieringPropProtected.IsChecked = $selected.Tag.Protected
             $UI.TieringPropDN.Text = $selected.Tag.DN
-            $UI.TieringPropName.IsEnabled = $true
-            $UI.TieringPropDesc.IsEnabled = $true
-            $UI.TieringPropProtected.IsEnabled = $true
+            $UI.TieringPropName.IsEnabled = $isPlanned
+            $UI.TieringPropDesc.IsEnabled = $isPlanned
+            $UI.TieringPropProtected.IsEnabled = $isPlanned
+            if ($isPlanned) {
+                $UI.TieringPropExistsNote.Visibility = "Collapsed"
+            } else {
+                $UI.TieringPropExistsNote.Text = "Already exists in Active Directory — shown for reference only, not part of this configuration. You can still add child OUs underneath it."
+                $UI.TieringPropExistsNote.Foreground = Get-WPFBrush (Get-TieringCategoryColor $selected.Tag)
+                $UI.TieringPropExistsNote.Visibility = "Visible"
+            }
         } else {
             $UI.TieringPropName.Text = ""
             $UI.TieringPropDesc.Text = ""
@@ -5053,6 +5363,7 @@ function Register-GUIEvents {
             $UI.TieringPropName.IsEnabled = $false
             $UI.TieringPropDesc.IsEnabled = $false
             $UI.TieringPropProtected.IsEnabled = $false
+            $UI.TieringPropExistsNote.Visibility = "Collapsed"
         }
         $script:isUpdatingSelection = $false
     })
@@ -5061,11 +5372,26 @@ function Register-GUIEvents {
     $UI.TieringPropName.Add_TextChanged({
         if ($script:isUpdatingSelection) { return }
         $selected = $UI.TieringTree.SelectedItem
-        if ($selected -and $UI.TieringPropName.Text.Length -gt 0) {
+        if ($selected -and $selected.Tag.Planned -ne $false -and $UI.TieringPropName.Text.Length -gt 0) {
+            $caretIndex = $UI.TieringPropName.CaretIndex
             $selected.Tag.Name = $UI.TieringPropName.Text
-            $selected.Header = $UI.TieringPropName.Text
+            Set-TieringTreeItemHeader $selected
             Update-TreeItemDN $selected
             $UI.TieringPropDN.Text = $selected.Tag.DN
+
+            # Live re-sort, exactly as ADUC would show it, as the new name is typed. .Parent.Items
+            # works the same whether the parent is the root TreeView or a TreeViewItem. Suppressed
+            # around the reorder + reselect (see the SelectedItemChanged handler for why), and the
+            # caret is put back explicitly afterward as a second safety net regardless of cause.
+            $script:suppressTieringSelectionRefresh = $true
+            try {
+                Sort-TieringTreeSiblings $selected.Parent.Items
+                $selected.IsSelected = $true
+            }
+            finally {
+                $script:suppressTieringSelectionRefresh = $false
+            }
+            $UI.TieringPropName.CaretIndex = $caretIndex
         }
     })
     $UI.TieringPropDesc.Add_TextChanged({
@@ -5099,12 +5425,13 @@ function Register-GUIEvents {
     # Tiering add/delete OU
     $UI.BtnAddRootOU.Add_Click({
         $newItem = New-Object System.Windows.Controls.TreeViewItem
-        $newItem.Header = "NewOU"
         $newItem.IsExpanded = $true
         $newItem.FontSize = 13
         $baseDN = $UI.TieringBaseDN.Text
-        $newItem.Tag = @{ Name = "NewOU"; Description = ""; Protected = $true; DN = "OU=NewOU,$baseDN" }
+        $newItem.Tag = @{ Name = "NewOU"; Description = ""; Protected = $true; DN = "OU=NewOU,$baseDN"; Planned = $true; ExistsInAD = $false }
+        Set-TieringTreeItemHeader $newItem
         $UI.TieringTree.Items.Add($newItem) | Out-Null
+        Sort-TieringTreeSiblings $UI.TieringTree.Items
         $newItem.IsSelected = $true
     })
     $UI.BtnAddChildOU.Add_Click({
@@ -5114,17 +5441,29 @@ function Register-GUIEvents {
             return
         }
         $newItem = New-Object System.Windows.Controls.TreeViewItem
-        $newItem.Header = "NewChildOU"
         $newItem.IsExpanded = $true
         $newItem.FontSize = 13
-        $newItem.Tag = @{ Name = "NewChildOU"; Description = ""; Protected = $true; DN = "OU=NewChildOU,$($parent.Tag.DN)" }
+        $newTag = @{ Name = "NewChildOU"; Description = ""; Protected = $true; DN = "OU=NewChildOU,$($parent.Tag.DN)"; Planned = $true; ExistsInAD = $false }
+        if ($parent.Tag.Planned -eq $false) {
+            # The parent itself is an OU AD already has and this configuration does not manage --
+            # anchor the new child to its real DN, since there is no OUStructure entry to nest it
+            # under (see ConvertFrom-TreeView and New-TieringTreeNodes).
+            $newTag.DistinguishedNameBase = $parent.Tag.DN
+        }
+        $newItem.Tag = $newTag
+        Set-TieringTreeItemHeader $newItem
         $parent.Items.Add($newItem) | Out-Null
+        Sort-TieringTreeSiblings $parent.Items
         $parent.IsExpanded = $true
         $newItem.IsSelected = $true
     })
     $UI.BtnDeleteOU.Add_Click({
         $selected = $UI.TieringTree.SelectedItem
         if (-not $selected) { return }
+        if ($selected.Tag.Planned -eq $false) {
+            Write-ConsoleUI "'$($selected.Tag.Name)' already exists in AD and is only shown for reference -- there is nothing to remove from the configuration." "Warning"
+            return
+        }
         $parent = $selected.Parent
         if ($parent -is [System.Windows.Controls.TreeView]) {
             $parent.Items.Remove($selected)
