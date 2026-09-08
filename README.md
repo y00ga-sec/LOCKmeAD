@@ -1,3 +1,5 @@
+<img width="1387" height="462" alt="2026-09-08 18_08_09-2026-08-14 15_32_55-Greenshot" src="https://github.com/user-attachments/assets/47ba4ff5-0e7c-4bd8-a870-1c0ae87e756f" />
+
 # LOCKmeAD
 
 **A lightweight, JSON-driven Active Directory hardening & security deployment tool, made by pentesters**
