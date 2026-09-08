@@ -16,12 +16,12 @@ LOCKmeAD hardens, structures, and locks down Active Directory environments throu
 ## Why LOCKmeAD?
 
 - **JSON-first configuration** : No GPO imports, no XML blobs. Every setting lives in clean JSON files you can read, diff, version, and customize in seconds.
-- **Modular deployment** : Pick what you need: tiering, RBAC, hardening, GPOs, password policies, authentication silos, or JIT access. Deploy them individually, in specific combinations, or all at once.
+- **Modular deployment** : Pick what you need : tiering, RBAC, hardening, GPOs, password policies, authentication silos, or JIT access. Deploy them individually, in specific combinations, or all at once.
 - **GUIs included** : A full WPF graphical interface lets you configure and deploy every module visually. No need to touch the command line if you don't want to.
 - **JIT Access Manager** : A dedicated GUI tool deployed to admin machines for adding, removing and managing temporary, time-limited group memberships (PAM TTL). Request access, set a duration, watch the countdown, revoke early if needed.
 - **Idempotent & safe** : Every operation checks existing state before acting. Built-in `‑WhatIf` simulation mode lets you preview all changes without touching AD.
 
-In order to avoid breaking your environnement when deploying, LOCKmeAD includes by default :
+In order to avoid breaking your environnement when deploying, LOCKmeAD includes by default : 
 
 - GPOs with APPLY/DENY security filtering groups : after linking LOCKmeAD GPOs to its target OU, add machines/users to the APPLY group and exceptions to the DENY one for smooth and step-by-step pilot phases
 - Silos deployed in **audit mode** (non-enforced) : monitor Kerberos logs before switching to enforce
@@ -34,11 +34,11 @@ In order to avoid breaking your environnement when deploying, LOCKmeAD includes 
 | Module | What it does |
 |---|---|
 | **Tiering** | Creates the OU structure for AD tiering (T0 / T1 / T2) |
-| **RBAC** | Deploys roles using AGDLP methodology — groups, memberships, NTFS / AD / ADCS permissions |
-| **Hardening** | Applies AD hardening tasks — MachineAccountQuota, functional levels, Recycle Bin, PAM, LAPS, Central Store, etc. |
-| **GPO** | Creates security GPOs from JSON templates — disables LLMNR, mDNS, NBT-NS, NTLMv1, Wdigest, SMBv1, and more |
+| **RBAC** | Deploys roles using AGDLP methodology : groups, memberships, NTFS / AD / ADCS permissions |
+| **Hardening** | Applies AD hardening tasks : MachineAccountQuota, functional levels, Recycle Bin, PAM, LAPS, Central Store, etc. |
+| **GPO** | Creates security GPOs from JSON templates : disables LLMNR, mDNS, NBT-NS, NTLMv1, Wdigest, SMBv1, and more |
 | **PSO** | Creates Fine-Grained Password Policies with full AD Admin Center parity |
-| **Silo** | Creates Authentication Policy Silos to restrict service account lateral movement — deployed in **audit mode** by default, switch to enforce after validating no auth failures |
+| **Silo** | Creates Authentication Policy Silos to restrict service account lateral movement : deployed in **audit mode** by default, switch to enforce after validating no auth failures |
 | **JIT** | Deploys the JIT Access Manager tool to T0 admin workstations via GPO |
 
 ---
@@ -46,7 +46,7 @@ In order to avoid breaking your environnement when deploying, LOCKmeAD includes 
 ## Quick Start
 
 ```powershell
-# Interactive menu — select modules to deploy
+# Interactive menu : select modules to deploy
 .\LOCKmeAD.ps1
 
 # Or launch the GUI
@@ -64,7 +64,7 @@ In order to avoid breaking your environnement when deploying, LOCKmeAD includes 
 ## Requirements
 
 PowerShell 7.5 and local administrator privileges. Which PowerShell modules you need depends on
-what you deploy:
+what you deploy : 
 
 | LOCKmeAD module | Required PowerShell modules |
 |---|---|
@@ -80,7 +80,7 @@ what you deploy:
 ¹ only for the `ExtendLAPSSchema` and `ConfigureLAPSADPermissions` tasks
 ² only for the `AddDNSSecurityRecords` task
 
-`ActiveDirectory` is the only hard requirement — LOCKmeAD refuses to start without it. The others
+`ActiveDirectory` is the only hard requirement : LOCKmeAD refuses to start without it. The others
 are checked when the module that needs them is actually deployed.
 
 ```powershell
@@ -93,12 +93,12 @@ Add-WindowsCapability -Online -Name Rsat.GroupPolicy.Management.Tools~~~~0.0.1.0
 Add-WindowsCapability -Online -Name Rsat.Dns.Tools~~~~0.0.1.0
 ```
 
-Nothing has to be imported by hand — LOCKmeAD loads what it needs. Two modules are never installed
-manually: `LAPS` ships in-box with Windows Server 2019+ and Windows 10+ (April 11 2023 update
+Nothing has to be imported by hand : LOCKmeAD loads what it needs. Two modules are never installed
+manually :  `LAPS` ships in-box with Windows Server 2019+ and Windows 10+ (April 11 2023 update
 onward), and `SmbShare` is only needed on the file server, not on the host running LOCKmeAD.
 
-**Running from a non-domain-joined host** — LOCKmeAD does not require a domain-joined machine. With
-`-Server` / `-Credential`, `GroupPolicy` and `LAPS` are **not** needed locally: those cmdlets accept
+**Running from a non-domain-joined host** : LOCKmeAD does not require a domain-joined machine. With
+`-Server` / `-Credential`, `GroupPolicy` and `LAPS` are **not** needed locally : those cmdlets accept
 no `-Credential`, so LOCKmeAD runs them inside a WinRM session on the domain controller, where they
 must be present instead. `ActiveDirectory` is then enough on your own host, plus `DnsServer` if you
 use `AddDNSSecurityRecords`.
@@ -111,6 +111,6 @@ use `AddDNSSecurityRecords`.
 2. **Run LOCKmeAD** via CLI or GUI. You can directly edit configurations through GUI, which will edit JSON files.
 3. **The PowerShell modules create everything in AD** based on your JSON : no manual steps, no GPO imports, no pre-built templates to maintain.
 
-Safe deployment order is enforced automatically: Hardening > Tiering > RBAC > PSO > Silo > GPO > JIT.
+Safe deployment order is enforced automatically : Hardening > Tiering > RBAC > PSO > Silo > GPO > JIT.
 
 
