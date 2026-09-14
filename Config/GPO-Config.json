@@ -1,7 +1,7 @@
 {
   "Settings": {
     "LogDirectory": "./Logs",
-    "FilteringGroupsOU": "OU=GPO,OU=GroupsT0,OU=Admin,DC=corp,DC=local"
+    "FilteringGroupsOU": ""
   },
   "GPOs": [
     {
@@ -126,9 +126,9 @@
     {
       "Name": "SEC-Tiering-T0-DenyLogon",
       "Description": "Deny all logon types to Tier 0 assets for T1 and T2 accounts - link to T0-Prod OUs",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
-      "LinkTargets": "OU=T0-Prod,DC=corp,DC=local",
+      "LinkTargets": null,
       "UserRightsAssignments": [
         {
           "Right": "SeDenyInteractiveLogonRight",
@@ -178,7 +178,7 @@
       "Description": "Deny all logon types to Tier 1 assets for T0, T2, and privileged AD groups - link to T1-Prod OUs",
       "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
-      "LinkTargets": "OU=Servers,OU=T1-Prod,DC=corp,DC=local",
+      "LinkTargets": null,
       "UserRightsAssignments": [
         {
           "Right": "SeDenyInteractiveLogonRight",
@@ -242,7 +242,7 @@
       "Description": "Deny all logon types to Tier 2 assets for T0, T1, and privileged AD groups - link to T2-Prod OUs",
       "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
-      "LinkTargets": "OU=Workstations,OU=T2-Prod,DC=corp,DC=local",
+      "LinkTargets": null,
       "UserRightsAssignments": [
         {
           "Right": "SeDenyInteractiveLogonRight",
@@ -485,9 +485,9 @@
     {
       "Name": "SEC-Tiering-T0-LocalAdmins-Servers",
       "Description": "Enforce local Administrators membership on T0 servers via Restricted Groups (replaces full membership - add any additional local admin groups to the Members array below)",
-      "Enabled": true,
+      "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
-      "LinkTargets": "OU=Servers,OU=T0-Prod,DC=corp,DC=local",
+      "LinkTargets": null,
       "RestrictedGroups": [
         {
           "Group": "Administrators",
@@ -504,7 +504,7 @@
       "Description": "Enforce local Administrators membership on T0 PAWs via Restricted Groups (replaces full membership - add any additional local admin groups to the Members array below)",
       "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
-      "LinkTargets": "OU=PAWs,OU=T0-Prod,DC=corp,DC=local",
+      "LinkTargets": null,
       "RestrictedGroups": [
         {
           "Group": "Administrators",
@@ -521,7 +521,7 @@
       "Description": "Enforce local Administrators membership on T1 servers via Restricted Groups (replaces full membership - add any additional local admin groups to the Members array below)",
       "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
-      "LinkTargets": "OU=Servers,OU=T1-Prod,DC=corp,DC=local",
+      "LinkTargets": null,
       "RestrictedGroups": [
         {
           "Group": "Administrators",
@@ -537,7 +537,7 @@
       "Description": "Enforce local Administrators membership on T2 workstations via Restricted Groups (replaces full membership - add any additional local admin groups to the Members array below)",
       "Enabled": false,
       "GpoStatus": "UserSettingsDisabled",
-      "LinkTargets": "OU=Workstations,OU=T2-Prod,DC=corp,DC=local",
+      "LinkTargets": null,
       "RestrictedGroups": [
         {
           "Group": "Administrators",

@@ -7,7 +7,7 @@
     "GPO": {
       "Name": "SEC_JIT_Tool_Deploy",
       "Description": "Deploys JIT Access Manager to T0 admin workstations via startup script",
-      "LinkTargets": "OU=PAWs,OU=T0-Prod,DC=corp,DC=local"
+      "LinkTargets": []
     }
   }
 }

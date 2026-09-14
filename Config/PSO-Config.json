@@ -6,7 +6,7 @@
     {
       "Name": "T0-Admins",
       "Description": "",
-      "Enabled": true,
+      "Enabled": false,
       "Precedence": 50,
       "ComplexityEnabled": true,
       "MinPasswordLength": 16,
@@ -25,7 +25,7 @@
     {
       "Name": "T1-Admins",
       "Description": "",
-      "Enabled": true,
+      "Enabled": false,
       "Precedence": 50,
       "ComplexityEnabled": true,
       "MinPasswordLength": 12,
@@ -44,7 +44,7 @@
     {
       "Name": "T2-Admins",
       "Description": "",
-      "Enabled": true,
+      "Enabled": false,
       "Precedence": 50,
       "ComplexityEnabled": true,
       "MinPasswordLength": 12,
